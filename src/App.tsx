@@ -1,51 +1,115 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from 'react';
+import { Settings } from 'lucide-react';
+import { useProjectStore } from './store/projectStore';
+import { useCharacterStore } from './store/characterStore';
+import { useScriptStore } from './store/scriptStore';
+import ProjectList from './components/project/ProjectList';
+import CharacterPanel from './components/character/CharacterPanel';
+import ScriptEditor from './components/editor/ScriptEditor';
+import SettingsDialog from './components/settings/SettingsDialog';
+import ExportPanel from './components/editor/ExportPanel';
+import './App.css';
+
+type Tab = 'editor' | 'characters' | 'export';
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+    const { currentProject, loadProject } = useProjectStore();
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState<Tab>('editor');
+    const { isDirty } = useScriptStore();
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+    const handleSelectProject = async (projectId: string) => {
+        await loadProject(projectId);
+    };
 
-  return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    const handleBack = () => {
+        if (isDirty && !window.confirm('有未保存的更改，确定要离开吗？')) {
+            return;
+        }
+        useProjectStore.setState({ currentProject: null });
+        useCharacterStore.setState({ characters: [] });
+        useScriptStore.setState({ lines: [], isDirty: false, streamingText: '' });
+        setActiveTab('editor');
+    };
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+    useEffect(() => {
+        if (currentProject) {
+            useCharacterStore.getState().fetchCharacters();
+            // Load script lines from project detail
+            useScriptStore.setState({
+                lines: currentProject.script_lines,
+                isDirty: false,
+            });
+        }
+    }, [currentProject]);
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
-  );
+    if (!currentProject) {
+        return (
+            <div className="min-h-screen">
+                <div className="fixed top-4 right-4 z-10">
+                    <button
+                        className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+                        onClick={() => setSettingsOpen(true)}
+                        aria-label="Settings"
+                    >
+                        <Settings className="h-5 w-5" />
+                    </button>
+                </div>
+                <ProjectList onSelectProject={handleSelectProject} />
+                {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-h-screen flex flex-col">
+            {/* Header */}
+            <header className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-3">
+                <div className="flex items-center gap-4">
+                    <button
+                        className="text-sm text-blue-600 hover:underline"
+                        onClick={handleBack}
+                    >
+                        ← 返回项目列表
+                    </button>
+                    <h1 className="text-lg font-semibold">{currentProject.project.name}</h1>
+                </div>
+                <div className="flex items-center gap-2">
+                    <nav className="flex gap-1 rounded-lg bg-gray-100 dark:bg-gray-800 p-1">
+                        {(['editor', 'characters', 'export'] as Tab[]).map((tab) => (
+                            <button
+                                key={tab}
+                                className={`px-3 py-1.5 text-sm rounded-md transition ${
+                                    activeTab === tab
+                                        ? 'bg-white dark:bg-gray-700 shadow-sm font-medium'
+                                        : 'hover:bg-gray-200 dark:hover:bg-gray-600'
+                                }`}
+                                onClick={() => setActiveTab(tab)}
+                            >
+                                {tab === 'editor' ? '剧本编辑' : tab === 'characters' ? '角色管理' : '导出'}
+                            </button>
+                        ))}
+                    </nav>
+                    <button
+                        className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+                        onClick={() => setSettingsOpen(true)}
+                        aria-label="Settings"
+                    >
+                        <Settings className="h-5 w-5" />
+                    </button>
+                </div>
+            </header>
+
+            {/* Content */}
+            <main className="flex-1 overflow-auto">
+                {activeTab === 'editor' && <ScriptEditor />}
+                {activeTab === 'characters' && <CharacterPanel />}
+                {activeTab === 'export' && <ExportPanel />}
+            </main>
+
+            {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+        </div>
+    );
 }
 
 export default App;

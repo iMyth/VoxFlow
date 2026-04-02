@@ -7,15 +7,21 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "node scripts/load-env.mjs tauri build",
+    "tauri:build:debug": "node scripts/load-env.mjs tauri build --debug"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "lucide-react": "^1.7.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tailwindcss": "^4.2.2",
-    "ui": "github:shadcn/ui"
+    "ui": "github:shadcn/ui",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
