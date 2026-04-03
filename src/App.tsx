@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Settings } from 'lucide-react';
+import { Settings, Plus } from 'lucide-react';
 import { useProjectStore } from './store/projectStore';
 import { useCharacterStore } from './store/characterStore';
 import { useScriptStore } from './store/scriptStore';
@@ -16,6 +16,7 @@ function App() {
     const { currentProject, loadProject } = useProjectStore();
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>('editor');
+    const [showNewProject, setShowNewProject] = useState(false);
     const { isDirty } = useScriptStore();
 
     const handleSelectProject = async (projectId: string) => {
@@ -48,7 +49,15 @@ function App() {
     if (!currentProject) {
         return (
             <div className="min-h-screen">
-                <div className="fixed top-4 right-4 z-10">
+                <div className="fixed top-4 right-4 z-10 flex items-center gap-1">
+                    <button
+                        className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+                        onClick={() => setShowNewProject(true)}
+                        aria-label="新建项目"
+                        title="新建项目"
+                    >
+                        <Plus className="h-5 w-5" />
+                    </button>
                     <button
                         className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition"
                         onClick={() => setSettingsOpen(true)}
@@ -57,7 +66,11 @@ function App() {
                         <Settings className="h-5 w-5" />
                     </button>
                 </div>
-                <ProjectList onSelectProject={handleSelectProject} />
+                <ProjectList
+                    onSelectProject={handleSelectProject}
+                    showInput={showNewProject}
+                    onShowInput={setShowNewProject}
+                />
                 {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
             </div>
         );

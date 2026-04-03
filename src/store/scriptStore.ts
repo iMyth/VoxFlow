@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as ipc from '../lib/ipc';
+import { useProjectStore } from './projectStore';
 import type { ScriptLine } from '../types';
 
 interface ScriptStore {
@@ -24,7 +25,6 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
     streamingText: '',
 
     generateScript: async (outline: string) => {
-        const { useProjectStore } = await import('./projectStore');
         const { useSettingsStore } = await import('./settingsStore');
         const project = useProjectStore.getState().currentProject;
         if (!project) return;
@@ -84,7 +84,10 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
 
     addLine: (afterIndex: number) => {
         set((state) => {
-            const projectId = state.lines[0]?.project_id ?? '';
+            // Get project_id from existing lines, or fall back to the current project in projectStore
+            const projectId = state.lines[0]?.project_id
+                || useProjectStore.getState().currentProject?.project.id
+                || '';
             const newLine: ScriptLine = {
                 id: crypto.randomUUID(),
                 project_id: projectId,
@@ -135,7 +138,6 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
     },
 
     saveScript: async () => {
-        const { useProjectStore } = await import('./projectStore');
         const projectId = useProjectStore.getState().currentProject?.project.id;
         if (!projectId) return;
         try {

@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Plus } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
 import ProjectCard from './ProjectCard';
 
 interface ProjectListProps {
     onSelectProject: (projectId: string) => void;
+    showInput: boolean;
+    onShowInput: (show: boolean) => void;
 }
 
-export default function ProjectList({ onSelectProject }: ProjectListProps) {
+export default function ProjectList({ onSelectProject, showInput, onShowInput }: ProjectListProps) {
     const { projects, fetchProjects, createProject, deleteProject } = useProjectStore();
     const [newName, setNewName] = useState('');
-    const [showInput, setShowInput] = useState(false);
 
     useEffect(() => {
         fetchProjects();
@@ -21,7 +21,7 @@ export default function ProjectList({ onSelectProject }: ProjectListProps) {
         if (!name) return;
         await createProject(name);
         setNewName('');
-        setShowInput(false);
+        onShowInput(false);
     };
 
     const handleDelete = async (id: string) => {
@@ -34,13 +34,6 @@ export default function ProjectList({ onSelectProject }: ProjectListProps) {
         <div className="mx-auto max-w-4xl px-6 py-10">
             <div className="flex items-center justify-between mb-8">
                 <h1 className="text-2xl font-bold">VoxFlow 项目</h1>
-                <button
-                    className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition"
-                    onClick={() => setShowInput(true)}
-                >
-                    <Plus className="h-4 w-4" />
-                    新建项目
-                </button>
             </div>
 
             {showInput && (
@@ -61,7 +54,7 @@ export default function ProjectList({ onSelectProject }: ProjectListProps) {
                     </button>
                     <button
                         className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
-                        onClick={() => { setShowInput(false); setNewName(''); }}
+                        onClick={() => { onShowInput(false); setNewName(''); }}
                     >
                         取消
                     </button>
@@ -69,7 +62,7 @@ export default function ProjectList({ onSelectProject }: ProjectListProps) {
             )}
 
             {projects.length === 0 ? (
-                <p className="text-center text-gray-500 py-20">暂无项目，点击"新建项目"开始创作</p>
+                <p className="text-center text-gray-500 py-20">暂无项目，点击右上角 + 新建项目</p>
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {projects.map((p) => (

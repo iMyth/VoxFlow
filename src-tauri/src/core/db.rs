@@ -285,7 +285,7 @@ impl Database {
                    character_id = excluded.character_id,
                    gap_after_ms = excluded.gap_after_ms,
                    updated_at = datetime('now')",
-                rusqlite::params![line.id, line.project_id, line.line_order, line.text, line.character_id, line.gap_after_ms],
+                rusqlite::params![line.id, project_id, line.line_order, line.text, line.character_id, line.gap_after_ms],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }

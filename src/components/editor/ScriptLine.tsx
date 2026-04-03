@@ -45,7 +45,6 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                 apiKey ?? '',
             );
             setAudioFragment(fragment);
-            debugger
             // Update audio_fragments in project store so ExportPanel sees it
             const store = useProjectStore.getState();
             if (store.currentProject) {
