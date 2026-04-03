@@ -31,7 +31,7 @@ Follow these instructions to get a local copy of the project up and running.
 
    ```bash
    git clone https://github.com/iMyth/VoxFlow.git
-   cd vox-flow
+   cd VoxFlow
    ```
 
 2. **Install dependencies:**
