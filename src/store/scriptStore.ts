@@ -13,6 +13,7 @@ interface ScriptStore {
     addLine: (afterIndex: number) => void;
     deleteLine: (lineId: string) => void;
     reorderLines: (fromIndex: number, toIndex: number) => void;
+    setGap: (lineId: string, gapMs: number) => void;
     saveScript: () => Promise<void>;
 }
 
@@ -90,6 +91,7 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
                 line_order: afterIndex + 1,
                 text: '',
                 character_id: null,
+                gap_after_ms: 500,
             };
             const newLines = [...state.lines];
             newLines.splice(afterIndex + 1, 0, newLine);
@@ -121,6 +123,15 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
                 isDirty: true,
             };
         });
+    },
+
+    setGap: (lineId: string, gapMs: number) => {
+        set((state) => ({
+            lines: state.lines.map((l) =>
+                l.id === lineId ? { ...l, gap_after_ms: gapMs } : l,
+            ),
+            isDirty: true,
+        }));
     },
 
     saveScript: async () => {

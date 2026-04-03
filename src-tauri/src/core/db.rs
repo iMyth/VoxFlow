@@ -50,6 +50,7 @@ impl Database {
                     line_order    INTEGER NOT NULL,
                     text          TEXT NOT NULL,
                     character_id  TEXT REFERENCES characters(id) ON DELETE SET NULL,
+                    gap_after_ms  INTEGER NOT NULL DEFAULT 500,
                     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
                 );
 
@@ -244,23 +245,47 @@ impl Database {
 
     // ---- Script Line operations ----
 
-    /// Delete all existing script lines for the project and insert the new ones in a transaction.
+    /// Save script lines for a project using upsert to avoid cascade-deleting audio fragments.
+    /// Lines not in the new set are deleted; existing lines are updated; new lines are inserted.
     pub fn save_script(&self, project_id: &str, lines: &[ScriptLine]) -> Result<(), AppError> {
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        tx.execute(
-            "DELETE FROM script_lines WHERE project_id = ?1",
-            rusqlite::params![project_id],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        // Collect IDs of lines being saved
+        let new_ids: Vec<&str> = lines.iter().map(|l| l.id.as_str()).collect();
 
+        // Delete lines that are no longer in the set (this will cascade-delete their audio fragments, which is correct)
+        if new_ids.is_empty() {
+            tx.execute(
+                "DELETE FROM script_lines WHERE project_id = ?1",
+                rusqlite::params![project_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        } else {
+            // Build a comma-separated list of quoted IDs for the NOT IN clause
+            let placeholders: Vec<String> = new_ids.iter().map(|id| format!("'{}'", id.replace('\'', "''"))).collect();
+            let sql = format!(
+                "DELETE FROM script_lines WHERE project_id = ?1 AND id NOT IN ({})",
+                placeholders.join(",")
+            );
+            tx.execute(&sql, rusqlite::params![project_id])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        // Upsert each line
         for line in lines {
             tx.execute(
-                "INSERT INTO script_lines (id, project_id, line_order, text, character_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![line.id, line.project_id, line.line_order, line.text, line.character_id],
+                "INSERT INTO script_lines (id, project_id, line_order, text, character_id, gap_after_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                   line_order = excluded.line_order,
+                   text = excluded.text,
+                   character_id = excluded.character_id,
+                   gap_after_ms = excluded.gap_after_ms,
+                   updated_at = datetime('now')",
+                rusqlite::params![line.id, line.project_id, line.line_order, line.text, line.character_id, line.gap_after_ms],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
@@ -275,7 +300,7 @@ impl Database {
     pub fn load_script(&self, project_id: &str) -> Result<Vec<ScriptLine>, AppError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, project_id, line_order, text, character_id FROM script_lines WHERE project_id = ?1 ORDER BY line_order ASC")
+            .prepare("SELECT id, project_id, line_order, text, character_id, gap_after_ms FROM script_lines WHERE project_id = ?1 ORDER BY line_order ASC")
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let lines = stmt
@@ -286,6 +311,7 @@ impl Database {
                     line_order: row.get(2)?,
                     text: row.get(3)?,
                     character_id: row.get(4)?,
+                    gap_after_ms: row.get(5)?,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?
@@ -985,6 +1011,7 @@ mod tests {
             line_order: order,
             text: text.to_string(),
             character_id: character_id.map(|s| s.to_string()),
+            gap_after_ms: 500,
         }
     }
 

@@ -7,37 +7,14 @@ use tauri::Manager;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 use crate::core::models::MixProgress;
+use log::{debug, info, error};
 
 // --- Audio playback via rodio on a dedicated thread ---
 
-use cpal::traits::{DeviceTrait, HostTrait};
-
-const VIRTUAL_KEYWORDS: &[&str] = &[
-    "blackhole", "soundflower", "vb-cable", "cable input",
-    "cable output", "virtual", "loopback",
-];
-
-fn is_virtual_device(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    VIRTUAL_KEYWORDS.iter().any(|kw| lower.contains(kw))
-}
-
-fn find_physical_device() -> Option<cpal::Device> {
-    let host = cpal::default_host();
-    if let Ok(devices) = host.output_devices() {
-        for device in devices {
-            if let Ok(name) = device.name() {
-                if !is_virtual_device(&name) {
-                    return Some(device);
-                }
-            }
-        }
-    }
-    host.default_output_device()
-}
+use cpal::traits::HostTrait;
 
 enum AudioCommand {
-    Play(String, mpsc::Sender<Result<(), String>>),
+    Play(String, mpsc::Sender<Result<(), String>>, Option<tauri::AppHandle>),
     Stop,
     Shutdown,
 }
@@ -46,7 +23,6 @@ pub struct AudioPlayer {
     tx: mpsc::Sender<AudioCommand>,
 }
 
-// AudioPlayer only holds a Sender which is Send + Sync
 unsafe impl Sync for AudioPlayer {}
 
 impl AudioPlayer {
@@ -54,50 +30,60 @@ impl AudioPlayer {
         let (tx, rx) = mpsc::channel::<AudioCommand>();
 
         std::thread::spawn(move || {
-            // These stay on this thread — no Send/Sync needed
-            let mut current_sink: Option<rodio::Sink> = None;
+            let mut current_sink: Option<std::sync::Arc<rodio::Sink>> = None;
             let mut current_stream: Option<rodio::OutputStream> = None;
 
             while let Ok(cmd) = rx.recv() {
                 match cmd {
-                    AudioCommand::Play(path, reply) => {
-                        // Stop previous playback
+                    AudioCommand::Play(path, reply, app_handle) => {
                         if let Some(sink) = current_sink.take() {
                             sink.stop();
                         }
                         current_stream.take();
 
-                        let result = (|| -> Result<(), String> {
-                            let device = find_physical_device()
-                                .ok_or("No audio output device found")?;
+                        let result = (|| -> Result<std::sync::Arc<rodio::Sink>, String> {
+                            let host = cpal::default_host();
+                            let device = host
+                                .default_output_device()
+                                .ok_or("No default audio output device found")?;
 
                             let (stream, stream_handle) =
                                 rodio::OutputStream::try_from_device(&device)
-                                    .map_err(|e| format!("Failed to open device: {}", e))?;
+                                    .map_err(|e| format!("Failed to open audio device: {}", e))?;
 
                             let sink = rodio::Sink::try_new(&stream_handle)
-                                .map_err(|e| format!("Failed to create sink: {}", e))?;
+                                .map_err(|e| format!("Failed to create audio sink: {}", e))?;
 
                             let file = std::fs::File::open(&path)
-                                .map_err(|e| format!("Failed to open file: {}", e))?;
+                                .map_err(|e| format!("Failed to open file {}: {}", path, e))?;
 
                             let reader = std::io::BufReader::new(file);
                             let source = rodio::Decoder::new(reader)
-                                .or_else(|_| {
-                                    // Retry as WAV — some TTS services return WAV with .mp3 extension
-                                    let file2 = std::fs::File::open(&path)
-                                        .map_err(|e| rodio::decoder::DecoderError::IoError(e.to_string()))?;
-                                    rodio::Decoder::new_wav(std::io::BufReader::new(file2))
-                                })
                                 .map_err(|e| format!("Failed to decode audio: {}", e))?;
 
                             sink.append(source);
-                            current_sink = Some(sink);
+                            let sink = std::sync::Arc::new(sink);
                             current_stream = Some(stream);
-                            Ok(())
+                            Ok(sink)
                         })();
 
-                        let _ = reply.send(result);
+                        match result {
+                            Ok(sink) => {
+                                current_sink = Some(sink.clone());
+                                let _ = reply.send(Ok(()));
+
+                                // Spawn a watcher thread that emits audio-finished when done
+                                if let Some(app) = app_handle {
+                                    std::thread::spawn(move || {
+                                        sink.sleep_until_end();
+                                        let _ = app.emit("audio-finished", ());
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = reply.send(Err(e));
+                            }
+                        }
                     }
                     AudioCommand::Stop => {
                         if let Some(sink) = current_sink.take() {
@@ -113,10 +99,10 @@ impl AudioPlayer {
         AudioPlayer { tx }
     }
 
-    pub fn play(&self, file_path: &str) -> Result<(), String> {
+    pub fn play(&self, file_path: &str, app: Option<tauri::AppHandle>) -> Result<(), String> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
-            .send(AudioCommand::Play(file_path.to_string(), reply_tx))
+            .send(AudioCommand::Play(file_path.to_string(), reply_tx, app))
             .map_err(|e| format!("Audio thread gone: {}", e))?;
         reply_rx
             .recv()
@@ -136,10 +122,11 @@ impl Drop for AudioPlayer {
 
 #[tauri::command]
 pub fn play_audio(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AudioPlayer>,
     file_path: String,
 ) -> Result<(), AppError> {
-    state.play(&file_path).map_err(AppError::Audio)
+    state.play(&file_path, Some(app)).map_err(AppError::Audio)
 }
 
 #[tauri::command]
@@ -172,101 +159,98 @@ pub fn detect_missing_audio(
 
 /// Build FFmpeg command arguments for mixing audio files, optionally with BGM.
 ///
-/// Pure function: takes audio paths, optional BGM config, and output path.
-/// Returns the complete list of FFmpeg command-line arguments.
-///
-/// Without BGM: uses concat demuxer to join audio files sequentially.
-/// With BGM: concatenates voice tracks first, then uses amix filter to mix with BGM.
+/// `gaps_ms` is a slice of per-line gap durations (in ms) after each audio clip.
+/// gaps_ms[i] is the silence after audio_paths[i]. The last element is ignored (no gap after last clip).
+/// If gaps_ms is empty, no gaps are inserted.
 pub fn build_ffmpeg_args(
     audio_paths: &[String],
     bgm_path: Option<&str>,
     bgm_volume: f32,
+    gaps_ms: &[i32],
     output_path: &str,
 ) -> Vec<String> {
-    match bgm_path {
-        None => {
-            // Simple concat: use concat demuxer via pipe
-            // ffmpeg -f concat -safe 0 -i <concat_file> -c copy <output>
-            // We'll use a concat file approach; the caller writes the concat file.
-            // Here we build args assuming a concat list file will be provided.
-            //
-            // Actually, for a pure function we build the full command.
-            // Use multiple -i inputs and a filter_complex to concat them.
-            let mut args = Vec::new();
-            args.push("-y".to_string());
+    let n = audio_paths.len();
+    let mut args = Vec::new();
+    args.push("-y".to_string());
 
-            for path in audio_paths {
-                args.push("-i".to_string());
-                args.push(path.clone());
+    for path in audio_paths {
+        args.push("-i".to_string());
+        args.push(path.clone());
+    }
+
+    if let Some(bgm) = bgm_path {
+        args.push("-i".to_string());
+        args.push(bgm.to_string());
+    }
+
+    if n == 1 && bgm_path.is_none() && (gaps_ms.is_empty() || gaps_ms[0] == 0) {
+        args.push("-c".to_string());
+        args.push("copy".to_string());
+        args.push(output_path.to_string());
+        return args;
+    }
+
+    let mut filter = String::new();
+
+    // Check if any gap > 0 exists between clips
+    let has_gaps = n > 1 && !gaps_ms.is_empty() && gaps_ms.iter().take(n - 1).any(|&g| g > 0);
+
+    if has_gaps {
+        // Generate unique silence pads for each gap
+        let mut gap_count = 0;
+        for i in 0..(n - 1) {
+            let gap = gaps_ms.get(i).copied().unwrap_or(0);
+            if gap > 0 {
+                let gap_sec = gap as f64 / 1000.0;
+                filter.push_str(&format!(
+                    "anullsrc=r=44100:cl=stereo[sil{s}];[sil{s}]atrim=0:{dur}[gap{s}];",
+                    s = i, dur = gap_sec
+                ));
+                gap_count += 1;
             }
-
-            let n = audio_paths.len();
-            if n == 1 {
-                // Single file, just copy
-                args.push("-c".to_string());
-                args.push("copy".to_string());
-            } else {
-                // Use concat filter
-                let mut filter = String::new();
-                for i in 0..n {
-                    filter.push_str(&format!("[{}:a]", i));
-                }
-                filter.push_str(&format!("concat=n={}:v=0:a=1[out]", n));
-
-                args.push("-filter_complex".to_string());
-                args.push(filter);
-                args.push("-map".to_string());
-                args.push("[out]".to_string());
-            }
-
-            args.push(output_path.to_string());
-            args
         }
-        Some(bgm) => {
-            // With BGM: concat voice tracks, then amix with BGM
-            let mut args = Vec::new();
-            args.push("-y".to_string());
-
-            for path in audio_paths {
-                args.push("-i".to_string());
-                args.push(path.clone());
-            }
-
-            // Add BGM as last input
-            args.push("-i".to_string());
-            args.push(bgm.to_string());
-
-            let n = audio_paths.len();
-            let bgm_idx = n; // BGM is the last input
-
-            let mut filter = String::new();
-
-            // Concat all voice tracks
-            if n == 1 {
-                // Single voice track, use it directly
-                filter.push_str(&format!(
-                    "[0:a]volume=1.0[voice];[{}:a]volume={}[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[out]",
-                    bgm_idx, bgm_volume
-                ));
-            } else {
-                // Multiple voice tracks: concat first, then mix with BGM
-                for i in 0..n {
-                    filter.push_str(&format!("[{}:a]", i));
+        // Interleave audio and gaps
+        let total_segments = n + gap_count;
+        for i in 0..n {
+            filter.push_str(&format!("[{}:a]", i));
+            if i < n - 1 {
+                let gap = gaps_ms.get(i).copied().unwrap_or(0);
+                if gap > 0 {
+                    filter.push_str(&format!("[gap{}]", i));
                 }
-                filter.push_str(&format!(
-                    "concat=n={}:v=0:a=1[voice];[{}:a]volume={}[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[out]",
-                    n, bgm_idx, bgm_volume
-                ));
             }
-
-            args.push("-filter_complex".to_string());
-            args.push(filter);
-            args.push("-map".to_string());
-            args.push("[out]".to_string());
-            args.push(output_path.to_string());
-            args
+        }
+        filter.push_str(&format!("concat=n={}:v=0:a=1[voice]", total_segments));
+    } else {
+        for i in 0..n {
+            filter.push_str(&format!("[{}:a]", i));
+        }
+        if n > 1 {
+            filter.push_str(&format!("concat=n={}:v=0:a=1[voice]", n));
+        } else {
+            filter.push_str("acopy[voice]");
         }
     }
+
+    if bgm_path.is_some() {
+        let bgm_idx = n;
+        filter.push_str(&format!(
+            ";[{}:a]volume={}[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[out]",
+            bgm_idx, bgm_volume
+        ));
+        args.push("-filter_complex".to_string());
+        args.push(filter);
+        args.push("-map".to_string());
+        args.push("[out]".to_string());
+    } else {
+        args.push("-filter_complex".to_string());
+        args.push(filter);
+        args.push("-map".to_string());
+        args.push("[voice]".to_string());
+    }
+
+    args.push(output_path.to_string());
+    args
 }
 
 #[tauri::command]
@@ -278,27 +262,41 @@ pub async fn export_audio_mix(
     bgm_path: Option<String>,
     bgm_volume: f32,
 ) -> Result<String, AppError> {
-    // Load audio fragments from database
-    let fragments = {
+    // Load script lines (ordered) and audio fragments from database
+    let (script_lines, fragments) = {
         let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
-        db.list_audio_fragments(&project_id)?
+        let lines = db.load_script(&project_id)?;
+        let frags = db.list_audio_fragments(&project_id)?;
+        (lines, frags)
     };
 
     if fragments.is_empty() {
         return Err(AppError::FFmpeg("No audio fragments found for this project".to_string()));
     }
 
-    // Verify all audio fragment files exist
+    // Build ordered audio paths and per-line gaps based on script line order
+    let frag_map: std::collections::HashMap<&str, &crate::core::models::AudioFragment> =
+        fragments.iter().map(|f| (f.line_id.as_str(), f)).collect();
+
     let mut audio_paths: Vec<String> = Vec::new();
-    for fragment in &fragments {
-        let path = std::path::Path::new(&fragment.file_path);
-        if !path.exists() {
-            return Err(AppError::FileSystem(format!(
-                "Audio fragment file not found: {}",
-                fragment.file_path
-            )));
+    let mut gaps_ms: Vec<i32> = Vec::new();
+
+    for line in &script_lines {
+        if let Some(frag) = frag_map.get(line.id.as_str()) {
+            let path = std::path::Path::new(&frag.file_path);
+            if !path.exists() {
+                return Err(AppError::FileSystem(format!(
+                    "Audio fragment file not found: {}",
+                    frag.file_path
+                )));
+            }
+            audio_paths.push(frag.file_path.clone());
+            gaps_ms.push(line.gap_after_ms);
         }
-        audio_paths.push(fragment.file_path.clone());
+    }
+
+    if audio_paths.is_empty() {
+        return Err(AppError::FFmpeg("No audio fragments found for this project".to_string()));
     }
 
     // Verify BGM file exists if provided
@@ -310,6 +308,24 @@ pub async fn export_audio_mix(
             )));
         }
     }
+
+    // Resolve output path: if relative, put it under the project's export directory
+    let resolved_output = if std::path::Path::new(&output_path).is_relative() {
+        let app_data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| AppError::FileSystem(e.to_string()))?;
+        let export_dir = app_data_dir
+            .join("projects")
+            .join(&project_id)
+            .join("export");
+        std::fs::create_dir_all(&export_dir).map_err(|e| {
+            AppError::FileSystem(format!("Failed to create export directory: {}", e))
+        })?;
+        export_dir.join(&output_path).to_string_lossy().to_string()
+    } else {
+        output_path.clone()
+    };
 
     // Emit initial progress
     let _ = app.emit(
@@ -325,7 +341,8 @@ pub async fn export_audio_mix(
         &audio_paths,
         bgm_path.as_deref(),
         bgm_volume,
-        &output_path,
+        &gaps_ms,
+        &resolved_output,
     );
 
     let _ = app.emit(
@@ -336,8 +353,10 @@ pub async fn export_audio_mix(
         },
     );
 
-    // Run FFmpeg subprocess
-    let output = std::process::Command::new("ffmpeg")
+    // Run FFmpeg subprocess — try common macOS paths if not in PATH
+    let ffmpeg_bin = find_ffmpeg();
+
+    let output = std::process::Command::new(&ffmpeg_bin)
         .args(&ffmpeg_args)
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -345,7 +364,7 @@ pub async fn export_audio_mix(
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 AppError::FFmpeg(
-                    "FFmpeg not found. Please install FFmpeg and ensure it is in your PATH."
+                    "FFmpeg not found. Please install FFmpeg (brew install ffmpeg) and ensure it is in your PATH."
                         .to_string(),
                 )
             } else {
@@ -369,7 +388,25 @@ pub async fn export_audio_mix(
         },
     );
 
-    Ok(output_path)
+    Ok(resolved_output)
+}
+
+/// Find ffmpeg binary — check common macOS Homebrew paths if not in PATH.
+fn find_ffmpeg() -> String {
+    let candidates = [
+        "ffmpeg",
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ];
+    for candidate in &candidates {
+        if std::path::Path::new(candidate).exists() || candidate == &"ffmpeg" {
+            // "ffmpeg" without path will be resolved by the OS via PATH
+            if candidate != &"ffmpeg" {
+                return candidate.to_string();
+            }
+        }
+    }
+    "ffmpeg".to_string()
 }
 
 #[tauri::command]
@@ -474,7 +511,7 @@ mod tests {
     #[test]
     fn test_build_ffmpeg_args_single_file_no_bgm() {
         let paths = vec!["/tmp/a.mp3".to_string()];
-        let args = build_ffmpeg_args(&paths, None, 0.3, "/tmp/out.mp3");
+        let args = build_ffmpeg_args(&paths, None, 0.3, &[], "/tmp/out.mp3");
 
         assert!(args.contains(&"-y".to_string()));
         assert!(args.contains(&"-i".to_string()));
@@ -491,7 +528,7 @@ mod tests {
             "/tmp/b.mp3".to_string(),
             "/tmp/c.mp3".to_string(),
         ];
-        let args = build_ffmpeg_args(&paths, None, 0.3, "/tmp/out.mp3");
+        let args = build_ffmpeg_args(&paths, None, 0.3, &[], "/tmp/out.mp3");
 
         assert!(args.contains(&"-y".to_string()));
         assert!(args.contains(&"/tmp/a.mp3".to_string()));
@@ -503,14 +540,14 @@ mod tests {
         let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
         let filter = &args[fc_idx + 1];
         assert!(filter.contains("concat=n=3:v=0:a=1"));
-        assert!(filter.contains("[out]"));
+        assert!(filter.contains("[voice]"));
         assert!(args.contains(&"/tmp/out.mp3".to_string()));
     }
 
     #[test]
     fn test_build_ffmpeg_args_with_bgm() {
         let paths = vec!["/tmp/a.mp3".to_string(), "/tmp/b.mp3".to_string()];
-        let args = build_ffmpeg_args(&paths, Some("/tmp/bgm.mp3"), 0.3, "/tmp/out.mp3");
+        let args = build_ffmpeg_args(&paths, Some("/tmp/bgm.mp3"), 0.3, &[], "/tmp/out.mp3");
 
         assert!(args.contains(&"-y".to_string()));
         assert!(args.contains(&"/tmp/a.mp3".to_string()));
@@ -529,7 +566,7 @@ mod tests {
     #[test]
     fn test_build_ffmpeg_args_single_file_with_bgm() {
         let paths = vec!["/tmp/a.mp3".to_string()];
-        let args = build_ffmpeg_args(&paths, Some("/tmp/bgm.mp3"), 0.5, "/tmp/out.mp3");
+        let args = build_ffmpeg_args(&paths, Some("/tmp/bgm.mp3"), 0.5, &[], "/tmp/out.mp3");
 
         assert!(args.contains(&"/tmp/bgm.mp3".to_string()));
         let fc_idx = args.iter().position(|a| a == "-filter_complex").unwrap();
@@ -541,7 +578,7 @@ mod tests {
     #[test]
     fn test_build_ffmpeg_args_output_is_last() {
         let paths = vec!["/tmp/a.mp3".to_string()];
-        let args = build_ffmpeg_args(&paths, None, 0.3, "/tmp/out.mp3");
+        let args = build_ffmpeg_args(&paths, None, 0.3, &[], "/tmp/out.mp3");
         assert_eq!(args.last().unwrap(), "/tmp/out.mp3");
     }
 
@@ -553,7 +590,7 @@ mod tests {
             "/tmp/3.mp3".to_string(),
             "/tmp/4.mp3".to_string(),
         ];
-        let args = build_ffmpeg_args(&paths, None, 0.3, "/tmp/out.mp3");
+        let args = build_ffmpeg_args(&paths, None, 0.3, &[], "/tmp/out.mp3");
 
         for p in &paths {
             assert!(args.contains(p), "Expected {} in args", p);

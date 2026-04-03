@@ -28,6 +28,7 @@ export interface ScriptLine {
     line_order: number;
     text: string;
     character_id: string | null;
+    gap_after_ms: number;
 }
 
 export interface AudioFragment {

@@ -40,3 +40,13 @@ pub fn load_api_key(
     let config = ConfigManager::new(app);
     config.load_api_key(&service)
 }
+
+/// Read an audio file and return its contents as base64-encoded string.
+#[tauri::command]
+pub fn read_audio_file(file_path: String) -> Result<String, AppError> {
+    use base64::Engine;
+    let bytes = std::fs::read(&file_path).map_err(|e| {
+        AppError::FileSystem(format!("Failed to read audio file {}: {}", file_path, e))
+    })?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}

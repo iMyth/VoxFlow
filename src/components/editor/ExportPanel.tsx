@@ -30,7 +30,7 @@ export default function ExportPanel() {
     const handleExport = async () => {
         if (!currentProject || missingLines.length > 0) return;
         setExporting(true);
-        setProgress(null);
+        setProgress(null); 
         setDone(false);
         setError(null);
 

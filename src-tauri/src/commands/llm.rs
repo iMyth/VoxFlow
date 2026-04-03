@@ -25,6 +25,7 @@ pub fn parse_llm_output(raw_text: &str, project_id: &str) -> Vec<ScriptLine> {
             line_order: i as i32,
             text: line.trim().to_string(),
             character_id: None,
+            gap_after_ms: 500,
         })
         .collect()
 }

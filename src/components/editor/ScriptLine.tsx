@@ -13,7 +13,7 @@ interface ScriptLineProps {
 }
 
 export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
-    const { updateLine, assignCharacter, deleteLine, reorderLines } = useScriptStore();
+    const { updateLine, assignCharacter, deleteLine, reorderLines, setGap } = useScriptStore();
     const { characters } = useCharacterStore();
     const currentProject = useProjectStore((s) => s.currentProject);
     const [generating, setGenerating] = useState(false);
@@ -26,6 +26,11 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
         const character = characters.find((c) => c.id === line.character_id);
         setGenerating(true);
         try {
+            // Auto-save script before TTS to ensure line_id exists in DB
+            const { saveScript } = useScriptStore.getState();
+            await saveScript();
+
+
             const apiKey = await ipc.loadApiKey('dashscope');
             const fragment = await ipc.generateTts(
                 currentProject.project.id,
@@ -40,6 +45,20 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                 apiKey ?? '',
             );
             setAudioFragment(fragment);
+            debugger
+            // Update audio_fragments in project store so ExportPanel sees it
+            const store = useProjectStore.getState();
+            if (store.currentProject) {
+                const existing = store.currentProject.audio_fragments.filter(
+                    (a) => a.line_id !== fragment.line_id,
+                );
+                useProjectStore.setState({
+                    currentProject: {
+                        ...store.currentProject,
+                        audio_fragments: [...existing, fragment],
+                    },
+                });
+            }
         } catch (e) {
             console.error('TTS generation failed:', e);
         } finally {
@@ -130,6 +149,21 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
 
                     {/* Audio player */}
                     {audioFragment && <AudioPlayer filePath={audioFragment.file_path} />}
+
+                    {/* Per-line gap control */}
+                    <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                        停顿
+                        <input
+                            type="number"
+                            className="w-14 rounded border border-gray-300 dark:border-gray-600 px-1 py-0.5 text-xs text-center dark:bg-gray-900"
+                            value={line.gap_after_ms}
+                            onChange={(e) => setGap(line.id, parseInt(e.target.value) || 0)}
+                            min={0}
+                            max={5000}
+                            step={100}
+                        />
+                        ms
+                    </span>
                 </div>
             </div>
 

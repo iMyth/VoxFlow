@@ -52,6 +52,7 @@ pub fn run() {
             commands::load_settings,
             commands::save_api_key,
             commands::load_api_key,
+            commands::read_audio_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

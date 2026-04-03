@@ -32,16 +32,18 @@ function App() {
         setActiveTab('editor');
     };
 
+    const projectId = currentProject?.project.id;
     useEffect(() => {
-        if (currentProject) {
+        if (currentProject && projectId) {
             useCharacterStore.getState().fetchCharacters();
-            // Load script lines from project detail
             useScriptStore.setState({
                 lines: currentProject.script_lines,
                 isDirty: false,
             });
         }
-    }, [currentProject]);
+        // Only re-run when the project ID changes, not on every currentProject update
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [projectId]);
 
     if (!currentProject) {
         return (

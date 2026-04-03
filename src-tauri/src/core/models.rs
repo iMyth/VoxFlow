@@ -34,6 +34,7 @@ pub struct ScriptLine {
     pub line_order: i32,
     pub text: String,
     pub character_id: Option<String>,
+    pub gap_after_ms: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
