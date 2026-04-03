@@ -1,0 +1,87 @@
+{
+  "app": {
+    "newProject": "新建项目",
+    "settings": "设置",
+    "backToProjects": "← 返回项目列表",
+    "unsavedChanges": "有未保存的更改，确定要离开吗？",
+    "tab": {
+      "editor": "剧本编辑",
+      "characters": "角色管理",
+      "export": "导出"
+    }
+  },
+  "project": {
+    "title": "VoxFlow 项目",
+    "inputPlaceholder": "输入项目名称...",
+    "create": "创建",
+    "cancel": "取消",
+    "empty": "暂无项目，点击右上角 + 新建项目",
+    "confirmDelete": "确定要删除此项目吗？所有关联数据将被清除。"
+  },
+  "editor": {
+    "outlineLabel": "大纲输入",
+    "outlinePlaceholder": "输入有声书大纲，AI 将为你生成剧本...",
+    "generating": "生成中...",
+    "generate": "生成剧本",
+    "save": "保存剧本",
+    "aiGenerating": "AI 正在生成...",
+    "addLine": "添加新行",
+    "addFirstLine": "添加第一行",
+    "emptyHint": "输入大纲生成剧本，或手动添加剧本行",
+    "linePlaceholder": "输入台词...",
+    "unassigned": "未分配角色",
+    "generated": "✓ 已生成",
+    "notGenerated": "未生成",
+    "generatingTts": "生成中",
+    "generateTts": "生成语音",
+    "gap": "停顿",
+    "play": "播放",
+    "pause": "暂停"
+  },
+  "character": {
+    "title": "角色管理",
+    "create": "新建角色",
+    "name": "角色名称",
+    "namePlaceholder": "输入角色名称",
+    "ttsModel": "TTS 模型",
+    "voice": "音色",
+    "speed": "语速",
+    "pitch": "音调",
+    "save": "保存",
+    "cancel": "取消",
+    "empty": "暂无角色，点击\"新建角色\"添加",
+    "confirmDelete": "删除角色后，关联的剧本行将变为未分配状态。确定删除？"
+  },
+  "export": {
+    "title": "导出有声书",
+    "missingAudio": "{{count}} 行剧本缺少音频",
+    "missingLine": "第 {{line}} 行: {{text}}...",
+    "missingMore": "...还有 {{count}} 行",
+    "missingHint": "请先为所有剧本行生成语音后再导出",
+    "bgm": "背景音乐 (BGM)",
+    "bgmPlaceholder": "BGM 文件路径（可选）",
+    "browse": "浏览",
+    "bgmVolume": "BGM 音量 ({{percent}}%)",
+    "outputLabel": "输出文件名",
+    "exportSuccess": "导出成功！",
+    "exportFailed": "导出失败",
+    "exporting": "导出中...",
+    "exportButton": "导出有声书"
+  },
+  "settings": {
+    "title": "设置",
+    "apiKeySection": "百炼 API 密钥",
+    "apiKeyHint": "请配置百炼 API 密钥以使用 LLM 剧本生成和 TTS 语音合成功能",
+    "llmSection": "LLM 配置",
+    "apiEndpoint": "API 端点",
+    "modelName": "模型名称",
+    "ttsSection": "默认 TTS 配置",
+    "ttsModel": "TTS 模型",
+    "defaultVoice": "默认音色",
+    "defaultSpeed": "默认语速",
+    "defaultPitch": "默认音调",
+    "cancel": "取消",
+    "save": "保存设置",
+    "language": "语言"
+  }
+}

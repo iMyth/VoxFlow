@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Plus, Pencil, Trash2, Save, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useCharacterStore } from '../../store/characterStore';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -24,6 +25,7 @@ const defaultInput: CharacterInput = {
 };
 
 export default function CharacterPanel() {
+    const { t } = useTranslation();
     const { characters, createCharacter, updateCharacter, deleteCharacter } = useCharacterStore();
     const [editing, setEditing] = useState<string | null>(null);
     const [form, setForm] = useState<CharacterInput>(defaultInput);
@@ -64,7 +66,7 @@ export default function CharacterPanel() {
     };
 
     const handleDelete = async (id: string) => {
-        if (window.confirm('删除角色后，关联的剧本行将变为未分配状态。确定删除？')) {
+        if (window.confirm(t('character.confirmDelete'))) {
             await deleteCharacter(id);
         }
     };
@@ -73,17 +75,17 @@ export default function CharacterPanel() {
         <Card>
             <CardContent className="space-y-4">
                 <div className="space-y-1.5">
-                    <Label>角色名称</Label>
+                    <Label>{t('character.name')}</Label>
                     <Input
                         value={form.name}
                         onChange={(e) => setForm({ ...form, name: e.target.value })}
-                        placeholder="输入角色名称"
+                        placeholder={t('character.namePlaceholder')}
                         autoFocus
                     />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                        <Label>TTS 模型</Label>
+                        <Label>{t('character.ttsModel')}</Label>
                         <Select value={form.tts_model} onValueChange={(v) => setForm({ ...form, tts_model: v })}>
                             <SelectTrigger className="w-full">
                                 <SelectValue />
@@ -97,7 +99,7 @@ export default function CharacterPanel() {
                         </Select>
                     </div>
                     <div className="space-y-1.5">
-                        <Label>音色</Label>
+                        <Label>{t('character.voice')}</Label>
                         <Input
                             value={form.voice_name}
                             onChange={(e) => setForm({ ...form, voice_name: e.target.value })}
@@ -107,7 +109,7 @@ export default function CharacterPanel() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <Label>语速 ({form.speed.toFixed(1)}x)</Label>
+                        <Label>{t('character.speed')} ({form.speed.toFixed(1)}x)</Label>
                         <Slider
                             min={0.5} max={2.0} step={0.1}
                             value={[form.speed]}
@@ -115,7 +117,7 @@ export default function CharacterPanel() {
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label>音调 ({form.pitch.toFixed(1)}x)</Label>
+                        <Label>{t('character.pitch')} ({form.pitch.toFixed(1)}x)</Label>
                         <Slider
                             min={0.5} max={2.0} step={0.1}
                             value={[form.pitch]}
@@ -125,10 +127,10 @@ export default function CharacterPanel() {
                 </div>
                 <div className="flex gap-2 justify-end">
                     <Button variant="outline" onClick={cancel}>
-                        <X className="h-4 w-4" /> 取消
+                        <X className="h-4 w-4" /> {t('character.cancel')}
                     </Button>
                     <Button onClick={handleSave}>
-                        <Save className="h-4 w-4" /> 保存
+                        <Save className="h-4 w-4" /> {t('character.save')}
                     </Button>
                 </div>
             </CardContent>
@@ -138,9 +140,9 @@ export default function CharacterPanel() {
     return (
         <div className="mx-auto max-w-3xl px-6 py-8">
             <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-bold">角色管理</h2>
+                <h2 className="text-xl font-bold">{t('character.title')}</h2>
                 <Button onClick={startCreate}>
-                    <Plus className="h-4 w-4" /> 新建角色
+                    <Plus className="h-4 w-4" /> {t('character.create')}
                 </Button>
             </div>
             {isCreating && renderForm()}
@@ -154,7 +156,7 @@ export default function CharacterPanel() {
                                 <div>
                                     <p className="font-medium">{c.name}</p>
                                     <p className="text-sm text-muted-foreground">
-                                        {c.tts_model} · {c.voice_name} · 语速 {c.speed}x · 音调 {c.pitch}x
+                                        {c.tts_model} · {c.voice_name} · {t('character.speed')} {c.speed}x · {t('character.pitch')} {c.pitch}x
                                     </p>
                                 </div>
                                 <div className="flex gap-1">
@@ -170,7 +172,7 @@ export default function CharacterPanel() {
                     ),
                 )}
                 {characters.length === 0 && !isCreating && (
-                    <p className="text-center text-muted-foreground py-12">暂无角色，点击"新建角色"添加</p>
+                    <p className="text-center text-muted-foreground py-12">{t('character.empty')}</p>
                 )}
             </div>
         </div>

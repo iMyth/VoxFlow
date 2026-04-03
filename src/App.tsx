@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Settings, Plus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useProjectStore } from './store/projectStore';
 import { useCharacterStore } from './store/characterStore';
 import { useScriptStore } from './store/scriptStore';
@@ -20,25 +21,26 @@ import './App.css';
 
 type Tab = 'editor' | 'characters' | 'export';
 
-const tabLabels: Record<Tab, string> = {
-    editor: '剧本编辑',
-    characters: '角色管理',
-    export: '导出',
-};
-
 function App() {
+    const { t } = useTranslation();
     const { currentProject, loadProject } = useProjectStore();
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>('editor');
     const [showNewProject, setShowNewProject] = useState(false);
     const { isDirty } = useScriptStore();
 
+    const tabLabels: Record<Tab, string> = {
+        editor: t('app.tab.editor'),
+        characters: t('app.tab.characters'),
+        export: t('app.tab.export'),
+    };
+
     const handleSelectProject = async (projectId: string) => {
         await loadProject(projectId);
     };
 
     const handleBack = () => {
-        if (isDirty && !window.confirm('有未保存的更改，确定要离开吗？')) {
+        if (isDirty && !window.confirm(t('app.unsavedChanges'))) {
             return;
         }
         useProjectStore.setState({ currentProject: null });
@@ -56,7 +58,6 @@ function App() {
                 isDirty: false,
             });
         }
-        // Only re-run when the project ID changes, not on every currentProject update
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [projectId]);
 
@@ -71,12 +72,12 @@ function App() {
                                     variant="ghost"
                                     size="icon"
                                     onClick={() => setShowNewProject(true)}
-                                    aria-label="新建项目"
+                                    aria-label={t('app.newProject')}
                                 >
                                     <Plus className="h-5 w-5" />
                                 </Button>
                             </TooltipTrigger>
-                            <TooltipContent>新建项目</TooltipContent>
+                            <TooltipContent>{t('app.newProject')}</TooltipContent>
                         </Tooltip>
                         <Tooltip>
                             <TooltipTrigger asChild>
@@ -84,12 +85,12 @@ function App() {
                                     variant="ghost"
                                     size="icon"
                                     onClick={() => setSettingsOpen(true)}
-                                    aria-label="设置"
+                                    aria-label={t('app.settings')}
                                 >
                                     <Settings className="h-5 w-5" />
                                 </Button>
                             </TooltipTrigger>
-                            <TooltipContent>设置</TooltipContent>
+                            <TooltipContent>{t('app.settings')}</TooltipContent>
                         </Tooltip>
                     </div>
                     <ProjectList
@@ -106,11 +107,10 @@ function App() {
     return (
         <TooltipProvider>
             <div className="min-h-screen flex flex-col">
-                {/* Header */}
                 <header className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-3">
                     <div className="flex items-center gap-4">
                         <Button variant="link" size="sm" onClick={handleBack}>
-                            ← 返回项目列表
+                            {t('app.backToProjects')}
                         </Button>
                         <h1 className="text-lg font-semibold">{currentProject.project.name}</h1>
                     </div>
@@ -130,17 +130,16 @@ function App() {
                                     variant="ghost"
                                     size="icon"
                                     onClick={() => setSettingsOpen(true)}
-                                    aria-label="设置"
+                                    aria-label={t('app.settings')}
                                 >
                                     <Settings className="h-5 w-5" />
                                 </Button>
                             </TooltipTrigger>
-                            <TooltipContent>设置</TooltipContent>
+                            <TooltipContent>{t('app.settings')}</TooltipContent>
                         </Tooltip>
                     </div>
                 </header>
 
-                {/* Content */}
                 <main className="flex-1 overflow-auto">
                     {activeTab === 'editor' && <ScriptEditor />}
                     {activeTab === 'characters' && <CharacterPanel />}

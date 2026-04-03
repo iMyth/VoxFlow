@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../../store/projectStore';
 import ProjectCard from './ProjectCard';
 import { Button } from '../ui/button';
@@ -11,6 +12,7 @@ interface ProjectListProps {
 }
 
 export default function ProjectList({ onSelectProject, showInput, onShowInput }: ProjectListProps) {
+    const { t } = useTranslation();
     const { projects, fetchProjects, createProject, deleteProject } = useProjectStore();
     const [newName, setNewName] = useState('');
 
@@ -27,7 +29,7 @@ export default function ProjectList({ onSelectProject, showInput, onShowInput }:
     };
 
     const handleDelete = async (id: string) => {
-        if (window.confirm('确定要删除此项目吗？所有关联数据将被清除。')) {
+        if (window.confirm(t('project.confirmDelete'))) {
             await deleteProject(id);
         }
     };
@@ -35,28 +37,28 @@ export default function ProjectList({ onSelectProject, showInput, onShowInput }:
     return (
         <div className="mx-auto max-w-4xl px-6 py-10">
             <div className="flex items-center justify-between mb-8">
-                <h1 className="text-2xl font-bold">VoxFlow 项目</h1>
+                <h1 className="text-2xl font-bold">{t('project.title')}</h1>
             </div>
 
             {showInput && (
                 <div className="mb-6 flex gap-3">
                     <Input
                         className="flex-1"
-                        placeholder="输入项目名称..."
+                        placeholder={t('project.inputPlaceholder')}
                         value={newName}
                         onChange={(e) => setNewName(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
                         autoFocus
                     />
-                    <Button onClick={handleCreate}>创建</Button>
+                    <Button onClick={handleCreate}>{t('project.create')}</Button>
                     <Button variant="outline" onClick={() => { onShowInput(false); setNewName(''); }}>
-                        取消
+                        {t('project.cancel')}
                     </Button>
                 </div>
             )}
 
             {projects.length === 0 ? (
-                <p className="text-center text-muted-foreground py-20">暂无项目，点击右上角 + 新建项目</p>
+                <p className="text-center text-muted-foreground py-20">{t('project.empty')}</p>
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {projects.map((p) => (

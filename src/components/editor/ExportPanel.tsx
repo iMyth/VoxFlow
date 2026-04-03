@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Download, Music, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../../store/projectStore';
 import { useScriptStore } from '../../store/scriptStore';
 import * as ipc from '../../lib/ipc';
@@ -13,6 +14,7 @@ import { Slider } from '../ui/slider';
 import type { MixProgress } from '../../types';
 
 export default function ExportPanel() {
+    const { t } = useTranslation();
     const currentProject = useProjectStore((s) => s.currentProject);
     const { lines } = useScriptStore();
     const [bgmPath, setBgmPath] = useState<string | null>(null);
@@ -64,45 +66,43 @@ export default function ExportPanel() {
 
     return (
         <div className="mx-auto max-w-3xl px-6 py-8 space-y-6">
-            <h2 className="text-xl font-bold">导出有声书</h2>
+            <h2 className="text-xl font-bold">{t('export.title')}</h2>
 
-            {/* Missing audio warning */}
             {missingLines.length > 0 && (
                 <Alert variant="destructive">
                     <AlertTriangle className="h-4 w-4" />
-                    <AlertTitle>{missingLines.length} 行剧本缺少音频</AlertTitle>
+                    <AlertTitle>{t('export.missingAudio', { count: missingLines.length })}</AlertTitle>
                     <AlertDescription>
                         <ul className="mt-1 space-y-0.5">
                             {missingLines.slice(0, 5).map((l) => (
-                                <li key={l.id}>第 {l.line_order + 1} 行: {l.text.slice(0, 40)}...</li>
+                                <li key={l.id}>{t('export.missingLine', { line: l.line_order + 1, text: l.text.slice(0, 40) })}</li>
                             ))}
-                            {missingLines.length > 5 && <li>...还有 {missingLines.length - 5} 行</li>}
+                            {missingLines.length > 5 && <li>{t('export.missingMore', { count: missingLines.length - 5 })}</li>}
                         </ul>
-                        <p className="mt-2">请先为所有剧本行生成语音后再导出</p>
+                        <p className="mt-2">{t('export.missingHint')}</p>
                     </AlertDescription>
                 </Alert>
             )}
 
-            {/* BGM config */}
             <Card>
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2">
-                        <Music className="h-4 w-4" /> 背景音乐 (BGM)
+                        <Music className="h-4 w-4" /> {t('export.bgm')}
                     </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="flex gap-3 items-center">
                         <Input
                             className="flex-1"
-                            placeholder="BGM 文件路径（可选）"
+                            placeholder={t('export.bgmPlaceholder')}
                             value={bgmPath ?? ''}
                             onChange={(e) => setBgmPath(e.target.value || null)}
                         />
-                        <Button variant="outline" onClick={handleBgmImport}>浏览</Button>
+                        <Button variant="outline" onClick={handleBgmImport}>{t('export.browse')}</Button>
                     </div>
                     {bgmPath && (
                         <div className="space-y-2">
-                            <Label>BGM 音量 ({Math.round(bgmVolume * 100)}%)</Label>
+                            <Label>{t('export.bgmVolume', { percent: Math.round(bgmVolume * 100) })}</Label>
                             <Slider
                                 min={0} max={1} step={0.05}
                                 value={[bgmVolume]}
@@ -113,10 +113,9 @@ export default function ExportPanel() {
                 </CardContent>
             </Card>
 
-            {/* Output path */}
             <Card>
                 <CardContent className="space-y-2">
-                    <Label>输出文件名</Label>
+                    <Label>{t('export.outputLabel')}</Label>
                     <Input
                         value={outputPath}
                         onChange={(e) => setOutputPath(e.target.value)}
@@ -124,7 +123,6 @@ export default function ExportPanel() {
                 </CardContent>
             </Card>
 
-            {/* Progress */}
             {exporting && progress && (
                 <Alert>
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -136,31 +134,28 @@ export default function ExportPanel() {
                 </Alert>
             )}
 
-            {/* Success */}
             {done && (
                 <Alert>
                     <CheckCircle className="h-4 w-4 text-green-500" />
-                    <AlertTitle>导出成功！</AlertTitle>
+                    <AlertTitle>{t('export.exportSuccess')}</AlertTitle>
                 </Alert>
             )}
 
-            {/* Error */}
             {error && (
                 <Alert variant="destructive">
                     <AlertTriangle className="h-4 w-4" />
-                    <AlertTitle>导出失败</AlertTitle>
+                    <AlertTitle>{t('export.exportFailed')}</AlertTitle>
                     <AlertDescription>{error}</AlertDescription>
                 </Alert>
             )}
 
-            {/* Export button */}
             <Button
                 size="lg"
                 onClick={handleExport}
                 disabled={exporting || missingLines.length > 0 || !outputPath.trim()}
             >
                 <Download className="h-4 w-4" />
-                {exporting ? '导出中...' : '导出有声书'}
+                {exporting ? t('export.exporting') : t('export.exportButton')}
             </Button>
         </div>
     );

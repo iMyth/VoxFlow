@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { GripVertical, Trash2, Volume2, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useScriptStore } from '../../store/scriptStore';
 import { useCharacterStore } from '../../store/characterStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -24,6 +25,7 @@ interface ScriptLineProps {
 }
 
 export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
+    const { t } = useTranslation();
     const { updateLine, assignCharacter, deleteLine, reorderLines, setGap } = useScriptStore();
     const { characters } = useCharacterStore();
     const currentProject = useProjectStore((s) => s.currentProject);
@@ -92,7 +94,6 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
     };
 
     const characterName = characters.find((c) => c.id === line.character_id)?.name;
-    // Use a sentinel value for "unassigned" since Select doesn't support empty string well
     const UNASSIGNED = '__unassigned__';
 
     return (
@@ -114,7 +115,7 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                     className="w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none resize-y min-h-[40px] dark:bg-input/30"
                     value={line.text}
                     onChange={(e) => updateLine(line.id, e.target.value)}
-                    placeholder="输入台词..."
+                    placeholder={t('editor.linePlaceholder')}
                 />
                 <div className="flex items-center gap-3 flex-wrap">
                     <Select
@@ -122,10 +123,10 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                         onValueChange={(v) => assignCharacter(line.id, v === UNASSIGNED ? '' : v)}
                     >
                         <SelectTrigger size="sm">
-                            <SelectValue placeholder="未分配角色" />
+                            <SelectValue placeholder={t('editor.unassigned')} />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value={UNASSIGNED}>未分配角色</SelectItem>
+                            <SelectItem value={UNASSIGNED}>{t('editor.unassigned')}</SelectItem>
                             {characters.map((c) => (
                                 <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                             ))}
@@ -137,9 +138,9 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                     )}
 
                     {audioFragment ? (
-                        <Badge variant="outline" className="text-green-600 border-green-300">✓ 已生成</Badge>
+                        <Badge variant="outline" className="text-green-600 border-green-300">{t('editor.generated')}</Badge>
                     ) : (
-                        <Badge variant="outline" className="text-muted-foreground">未生成</Badge>
+                        <Badge variant="outline" className="text-muted-foreground">{t('editor.notGenerated')}</Badge>
                     )}
 
                     <Button
@@ -152,13 +153,13 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                         ) : (
                             <Volume2 className="h-3 w-3" />
                         )}
-                        {generating ? '生成中' : '生成语音'}
+                        {generating ? t('editor.generatingTts') : t('editor.generateTts')}
                     </Button>
 
                     {audioFragment && <AudioPlayer filePath={audioFragment.file_path} />}
 
                     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                        停顿
+                        {t('editor.gap')}
                         <Input
                             type="number"
                             className="w-24 h-6 text-xs text-center"

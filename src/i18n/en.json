@@ -1,0 +1,87 @@
+{
+  "app": {
+    "newProject": "New Project",
+    "settings": "Settings",
+    "backToProjects": "← Back to Projects",
+    "unsavedChanges": "You have unsaved changes. Are you sure you want to leave?",
+    "tab": {
+      "editor": "Script Editor",
+      "characters": "Characters",
+      "export": "Export"
+    }
+  },
+  "project": {
+    "title": "VoxFlow Projects",
+    "inputPlaceholder": "Enter project name...",
+    "create": "Create",
+    "cancel": "Cancel",
+    "empty": "No projects yet. Click + in the top right to create one.",
+    "confirmDelete": "Are you sure you want to delete this project? All associated data will be removed."
+  },
+  "editor": {
+    "outlineLabel": "Outline",
+    "outlinePlaceholder": "Enter an audiobook outline, AI will generate the script for you...",
+    "generating": "Generating...",
+    "generate": "Generate Script",
+    "save": "Save Script",
+    "aiGenerating": "AI is generating...",
+    "addLine": "Add New Line",
+    "addFirstLine": "Add First Line",
+    "emptyHint": "Enter an outline to generate a script, or add lines manually.",
+    "linePlaceholder": "Enter dialogue...",
+    "unassigned": "Unassigned",
+    "generated": "✓ Generated",
+    "notGenerated": "Not generated",
+    "generatingTts": "Generating",
+    "generateTts": "Generate TTS",
+    "gap": "Gap",
+    "play": "Play",
+    "pause": "Pause"
+  },
+  "character": {
+    "title": "Characters",
+    "create": "New Character",
+    "name": "Character Name",
+    "namePlaceholder": "Enter character name",
+    "ttsModel": "TTS Model",
+    "voice": "Voice",
+    "speed": "Speed",
+    "pitch": "Pitch",
+    "save": "Save",
+    "cancel": "Cancel",
+    "empty": "No characters yet. Click \"New Character\" to add one.",
+    "confirmDelete": "Deleting a character will unassign related script lines. Are you sure?"
+  },
+  "export": {
+    "title": "Export Audiobook",
+    "missingAudio": "{{count}} script lines are missing audio",
+    "missingLine": "Line {{line}}: {{text}}...",
+    "missingMore": "...and {{count}} more",
+    "missingHint": "Please generate audio for all script lines before exporting.",
+    "bgm": "Background Music (BGM)",
+    "bgmPlaceholder": "BGM file path (optional)",
+    "browse": "Browse",
+    "bgmVolume": "BGM Volume ({{percent}}%)",
+    "outputLabel": "Output Filename",
+    "exportSuccess": "Export successful!",
+    "exportFailed": "Export failed",
+    "exporting": "Exporting...",
+    "exportButton": "Export Audiobook"
+  },
+  "settings": {
+    "title": "Settings",
+    "apiKeySection": "DashScope API Key",
+    "apiKeyHint": "Please configure a DashScope API key to use LLM script generation and TTS synthesis.",
+    "llmSection": "LLM Configuration",
+    "apiEndpoint": "API Endpoint",
+    "modelName": "Model Name",
+    "ttsSection": "Default TTS Configuration",
+    "ttsModel": "TTS Model",
+    "defaultVoice": "Default Voice",
+    "defaultSpeed": "Default Speed",
+    "defaultPitch": "Default Pitch",
+    "cancel": "Cancel",
+    "save": "Save Settings",
+    "language": "Language"
+  }
+}

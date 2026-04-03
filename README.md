@@ -4,6 +4,8 @@ VoxFlow AI is a desktop application designed to streamline the creation of audio
 
 > **Note:** This application uses the **Alibaba Cloud Bailian (DashScope)** platform for its Text-to-Speech (TTS) capabilities. You will need a valid API Key from the platform to use the synthesis features.
 
+[![VoxFlow Demo](./docs/demo-screenshot.png)](https://github.com/iMyth/VoxFlow)
+
 ---
 
 ## ✨ Features

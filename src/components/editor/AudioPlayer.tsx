@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Play, Pause } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Button } from '../ui/button';
@@ -9,6 +10,7 @@ interface AudioPlayerProps {
 }
 
 export default function AudioPlayer({ filePath }: AudioPlayerProps) {
+    const { t } = useTranslation();
     const [playing, setPlaying] = useState(false);
 
     useEffect(() => {
@@ -38,10 +40,10 @@ export default function AudioPlayer({ filePath }: AudioPlayerProps) {
             variant="outline"
             size="xs"
             onClick={toggle}
-            aria-label={playing ? 'Pause' : 'Play'}
+            aria-label={playing ? t('editor.pause') : t('editor.play')}
         >
             {playing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {playing ? '暂停' : '播放'}
+            {playing ? t('editor.pause') : t('editor.play')}
         </Button>
     );
 }
