@@ -25,6 +25,7 @@
     "generate": "生成剧本",
     "save": "保存剧本",
     "aiGenerating": "AI 正在生成...",
+    "generatingHint": "请勿关闭页面或切换项目",
     "addLine": "添加新行",
     "addFirstLine": "添加第一行",
     "emptyHint": "输入大纲生成剧本，或手动添加剧本行",
@@ -36,7 +37,9 @@
     "generateTts": "生成语音",
     "gap": "停顿",
     "play": "播放",
-    "pause": "暂停"
+    "pause": "暂停",
+    "generateAllTts": "生成全部语音 ({{count}} 行)",
+    "batchTtsRunning": "生成中 ({{current}}/{{total}})"
   },
   "character": {
     "title": "角色管理",

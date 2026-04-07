@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as ipc from '../lib/ipc';
+import { useToastStore } from './toastStore';
 import type { UserSettings } from '../types';
 
 interface SettingsStore {
@@ -36,7 +37,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
                 defaultPitch: settings.default_pitch,
             });
         } catch (e) {
-            console.error('Failed to load settings:', e);
+            useToastStore.getState().addToast('加载设置失败');
         }
     },
 
@@ -53,7 +54,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         try {
             await ipc.saveSettings(settings);
         } catch (e) {
-            console.error('Failed to save settings:', e);
+            useToastStore.getState().addToast('保存设置失败');
         }
     },
 
@@ -61,7 +62,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         try {
             await ipc.saveApiKey(service, key);
         } catch (e) {
-            console.error('Failed to save API key:', e);
+            useToastStore.getState().addToast('保存 API Key 失败');
         }
     },
 

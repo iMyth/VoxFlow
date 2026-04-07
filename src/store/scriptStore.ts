@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import * as ipc from '../lib/ipc';
 import { useProjectStore } from './projectStore';
+import { useCharacterStore } from './characterStore';
+import { useToastStore } from './toastStore';
 import type { ScriptLine } from '../types';
 
 interface ScriptStore {
@@ -8,6 +10,8 @@ interface ScriptStore {
     isGenerating: boolean;
     isDirty: boolean;
     streamingText: string;
+    isBatchTtsRunning: boolean;
+    batchTtsProgress: { current: number; total: number } | null;
     generateScript: (outline: string) => Promise<void>;
     updateLine: (lineId: string, text: string) => void;
     assignCharacter: (lineId: string, characterId: string) => void;
@@ -16,6 +20,7 @@ interface ScriptStore {
     reorderLines: (fromIndex: number, toIndex: number) => void;
     setGap: (lineId: string, gapMs: number) => void;
     saveScript: () => Promise<void>;
+    generateAllTts: () => Promise<void>;
 }
 
 export const useScriptStore = create<ScriptStore>((set, get) => ({
@@ -23,6 +28,8 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
     isGenerating: false,
     isDirty: false,
     streamingText: '',
+    isBatchTtsRunning: false,
+    batchTtsProgress: null,
 
     generateScript: async (outline: string) => {
         const { useSettingsStore } = await import('./settingsStore');
@@ -31,8 +38,11 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
 
         const settings = useSettingsStore.getState();
         const apiKey = await ipc.loadApiKey('dashscope');
+        const characters = useCharacterStore.getState().characters;
 
-        set({ isGenerating: true, streamingText: '', lines: [] });
+        // Preserve old lines in case generation fails
+        const oldLines = get().lines;
+        set({ isGenerating: true, streamingText: '' });
 
         const unlistenToken = await ipc.onLlmToken((token) => {
             set((state) => ({ streamingText: state.streamingText + token }));
@@ -47,7 +57,8 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
 
         const unlistenError = await ipc.onLlmError((error) => {
             console.error('LLM generation error:', error);
-            set({ isGenerating: false });
+            useToastStore.getState().addToast('AI 生成出错，已恢复旧内容');
+            set({ lines: oldLines, isGenerating: false, streamingText: '' });
         });
 
         try {
@@ -55,10 +66,11 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
                 api_endpoint: settings.llmEndpoint,
                 api_key: apiKey ?? '',
                 model: settings.llmModel,
-            });
+            }, characters);
         } catch (e) {
             console.error('Failed to generate script:', e);
-            set({ isGenerating: false });
+            useToastStore.getState().addToast('生成剧本失败');
+            set({ lines: oldLines, isGenerating: false, streamingText: '' });
         } finally {
             unlistenToken();
             unlistenComplete();
@@ -145,6 +157,33 @@ export const useScriptStore = create<ScriptStore>((set, get) => ({
             set({ isDirty: false });
         } catch (e) {
             console.error('Failed to save script:', e);
+            useToastStore.getState().addToast('保存剧本失败');
+        }
+    },
+
+    generateAllTts: async () => {
+        const project = useProjectStore.getState().currentProject;
+        if (!project) return;
+
+        const apiKey = await ipc.loadApiKey('dashscope');
+        if (!apiKey) return;
+
+        set({ isBatchTtsRunning: true, batchTtsProgress: null });
+
+        const unlisten = await ipc.onTtsBatchProgress((p) => {
+            set({ batchTtsProgress: { current: p.current, total: p.total } });
+        });
+
+        try {
+            await ipc.generateAllTts(project.project.id, apiKey);
+            // Reload project to refresh audio fragments
+            await useProjectStore.getState().loadProject(project.project.id);
+        } catch (e) {
+            console.error('Batch TTS generation failed:', e);
+            useToastStore.getState().addToast('批量生成语音失败');
+        } finally {
+            unlisten();
+            set({ isBatchTtsRunning: false });
         }
     },
 }));

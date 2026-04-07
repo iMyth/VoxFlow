@@ -18,6 +18,7 @@ pub fn create_project(
     let project = Project {
         id: id.clone(),
         name,
+        outline: String::new(),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -94,4 +95,14 @@ pub fn delete_project(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn save_outline(
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+    outline: String,
+) -> Result<(), AppError> {
+    let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+    db.save_project_outline(&project_id, &outline)
 }

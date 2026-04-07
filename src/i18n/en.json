@@ -25,6 +25,7 @@
     "generate": "Generate Script",
     "save": "Save Script",
     "aiGenerating": "AI is generating...",
+    "generatingHint": "Please do not close the page or switch projects",
     "addLine": "Add New Line",
     "addFirstLine": "Add First Line",
     "emptyHint": "Enter an outline to generate a script, or add lines manually.",
@@ -36,7 +37,9 @@
     "generateTts": "Generate TTS",
     "gap": "Gap",
     "play": "Play",
-    "pause": "Pause"
+    "pause": "Pause",
+    "generateAllTts": "Generate All Voice ({{count}} lines)",
+    "batchTtsRunning": "Generating ({{current}}/{{total}})"
   },
   "character": {
     "title": "Characters",

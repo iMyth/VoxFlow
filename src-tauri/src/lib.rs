@@ -12,6 +12,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -36,6 +37,7 @@ pub fn run() {
             commands::list_projects,
             commands::load_project,
             commands::delete_project,
+            commands::save_outline,
             commands::create_character,
             commands::update_character,
             commands::delete_character,
@@ -44,6 +46,7 @@ pub fn run() {
             commands::save_script,
             commands::load_script,
             commands::generate_tts,
+            commands::generate_all_tts,
             commands::export_audio_mix,
             commands::import_bgm,
             commands::play_audio,

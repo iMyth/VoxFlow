@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct Project {
     pub id: String,
     pub name: String,
+    pub outline: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -75,6 +76,16 @@ pub struct MixProgress {
     pub stage: String,
 }
 
+/// Progress event for batch TTS generation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsBatchProgress {
+    pub current: usize,
+    pub total: usize,
+    pub line_id: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSettings {
     pub llm_endpoint: String,
@@ -92,4 +103,17 @@ pub struct CharacterInput {
     pub tts_model: String,
     pub speed: f32,
     pub pitch: f32,
+}
+
+/// LLM script generation response — parsed from JSON output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmScriptResponse {
+    pub lines: Vec<LlmScriptLine>,
+}
+
+/// A single line from LLM generation. `character` is a human-readable name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmScriptLine {
+    pub text: String,
+    pub character: Option<String>,
 }

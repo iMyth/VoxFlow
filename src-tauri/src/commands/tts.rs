@@ -1,11 +1,12 @@
 use std::sync::Mutex;
 
+use tauri::Emitter;
 use tauri::Manager;
 
 use crate::core::db::Database;
 use crate::core::error::AppError;
-use crate::core::models::{AudioFragment, VoiceConfig};
-use log::{debug, info, error};
+use crate::core::models::{AudioFragment, TtsBatchProgress, VoiceConfig};
+use log::{debug, error, info};
 
 /// Build the audio file path for a given project and line.
 /// Returns `{app_data_dir}/projects/{project_id}/audio/{line_id}.mp3`
@@ -80,18 +81,57 @@ pub async fn generate_tts(
     }
 
     let file_path = audio_path.to_string_lossy().to_string();
+    let duration_ms = get_audio_duration(&audio_path);
     let fragment = AudioFragment {
         id: uuid::Uuid::new_v4().to_string(),
         project_id: project_id.clone(),
         line_id: line_id.clone(),
         file_path,
-        duration_ms: None,
+        duration_ms,
     };
 
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
     db.upsert_audio_fragment(&fragment)?;
 
     Ok(fragment)
+}
+
+/// Get audio duration in milliseconds using FFprobe or rodio.
+/// Returns None if duration cannot be determined.
+fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
+    // Try FFprobe first (most reliable)
+    if let Ok(output) = std::process::Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            &path.to_string_lossy(),
+        ])
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(duration_str) = String::from_utf8(output.stdout) {
+                if let Ok(seconds) = duration_str.trim().parse::<f64>() {
+                    return Some((seconds * 1000.0).round() as i64);
+                }
+            }
+        }
+    }
+
+    // Fallback: try rodio decoder
+    if let Ok(file) = std::fs::File::open(path) {
+        let reader = std::io::BufReader::new(file);
+        use rodio::Source;
+        if let Ok(decoder) = rodio::Decoder::new(reader) {
+            let sample_rate = decoder.sample_rate() as f64;
+            let total_samples = decoder.count();
+            if sample_rate > 0.0 {
+                return Some((total_samples as f64 / sample_rate * 1000.0).round() as i64);
+            }
+        }
+    }
+
+    None
 }
 
 /// 调用阿里百炼 (DashScope) Qwen-TTS / CosyVoice 服务生成音频。
@@ -183,6 +223,193 @@ async fn call_dashscope_tts(
     )))
 }
 
+#[tauri::command]
+pub async fn generate_all_tts(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+    api_key: String,
+) -> Result<usize, AppError> {
+    let (script_lines, fragments, characters) = {
+        let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let lines = db.load_script(&project_id)?;
+        let frags = db.list_audio_fragments(&project_id)?;
+        let chars = db.list_characters(&project_id)?;
+        (lines, frags, chars)
+    };
+
+    let existing_line_ids: std::collections::HashSet<String> =
+        fragments.iter().map(|f| f.line_id.clone()).collect();
+
+    // Build character lookup map
+    let char_map: std::collections::HashMap<String, VoiceConfig> = characters
+        .iter()
+        .map(|c| {
+            (
+                c.id.clone(),
+                VoiceConfig {
+                    voice_name: c.voice_name.clone(),
+                    tts_model: c.tts_model.clone(),
+                    speed: c.speed,
+                    pitch: c.pitch,
+                },
+            )
+        })
+        .collect();
+
+    let missing: Vec<(String, String, Option<String>)> = script_lines
+        .iter()
+        .filter(|l| !existing_line_ids.contains(&l.id) && !l.text.trim().is_empty())
+        .map(|l| (l.id.clone(), l.text.clone(), l.character_id.clone()))
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(0);
+    }
+
+    let total = missing.len();
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::FileSystem(e.to_string()))?;
+
+    // Process with concurrency limit of 3 using futures::stream
+    const MAX_CONCURRENT: usize = 3;
+    let mut success_count = 0usize;
+    let mut completed = 0usize;
+
+    for chunk in missing.chunks(MAX_CONCURRENT) {
+        let mut handles = Vec::with_capacity(chunk.len());
+
+        for (line_id, text, character_id) in chunk {
+            let app_h = app.clone();
+            let proj_id = project_id.clone();
+            let key = api_key.clone();
+            let dir = app_data_dir.clone();
+            let id = line_id.clone();
+            let txt = text.clone();
+            let char_id = character_id.clone();
+            let cfg = char_id.and_then(|cid| char_map.get(&cid).cloned()).unwrap_or_else(|| VoiceConfig {
+                voice_name: String::new(),
+                tts_model: String::new(),
+                speed: 1.0,
+                pitch: 1.0,
+            });
+
+            let handle = tokio::spawn(async move {
+                let audio_path = build_audio_path(&dir, &proj_id, &id);
+                if let Some(parent) = audio_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+
+                let vc = VoiceConfig {
+                    voice_name: cfg.voice_name.clone(),
+                    tts_model: cfg.tts_model.clone(),
+                    speed: cfg.speed,
+                    pitch: cfg.pitch,
+                };
+
+                let result = call_dashscope_tts(&txt, &vc, &key).await;
+
+                match result {
+                    Ok(audio_bytes) => {
+                        if let Err(e) = std::fs::write(&audio_path, &audio_bytes) {
+                            return (id, false, Some(format!("Write file failed: {}", e)));
+                        }
+
+                        // Re-encode with FFmpeg
+                        let tmp_path = audio_path.with_extension("tmp.mp3");
+                        let ffmpeg_result = std::process::Command::new("ffmpeg")
+                            .args([
+                                "-y",
+                                "-i", &audio_path.to_string_lossy(),
+                                "-codec:a", "libmp3lame",
+                                "-b:a", "192k",
+                                &tmp_path.to_string_lossy(),
+                            ])
+                            .stderr(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .output();
+
+                        if let Ok(output) = ffmpeg_result {
+                            if output.status.success() {
+                                let _ = std::fs::rename(&tmp_path, &audio_path);
+                            } else {
+                                let _ = std::fs::remove_file(&tmp_path);
+                            }
+                        }
+
+                        let duration_ms = get_audio_duration(&audio_path);
+                        let fragment = AudioFragment {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            project_id: proj_id.clone(),
+                            line_id: id.clone(),
+                            file_path: audio_path.to_string_lossy().to_string(),
+                            duration_ms,
+                        };
+
+                        // Save to DB
+                        let db_result = {
+                            let db_guard = app_h.state::<Mutex<Database>>();
+                            let result = match db_guard.lock() {
+                                Ok(d) => d.upsert_audio_fragment(&fragment),
+                                Err(e) => Err(AppError::Database(e.to_string())),
+                            };
+                            result
+                        };
+
+                        match db_result {
+                            Ok(()) => (id, true, None),
+                            Err(e) => (id, false, Some(format!("DB save failed: {}", e))),
+                        }
+                    }
+                    Err(e) => (id, false, Some(e.to_string())),
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for this chunk to complete
+        for handle in handles {
+            match handle.await {
+                Ok((line_id, success, error)) => {
+                    completed += 1;
+                    if success {
+                        success_count += 1;
+                    }
+
+                    let _ = app.emit(
+                        "tts-batch-progress",
+                        TtsBatchProgress {
+                            current: completed,
+                            total,
+                            line_id,
+                            success,
+                            error,
+                        },
+                    );
+                }
+                Err(e) => {
+                    completed += 1;
+                    let _ = app.emit(
+                        "tts-batch-progress",
+                        TtsBatchProgress {
+                            current: completed,
+                            total,
+                            line_id: String::new(),
+                            success: false,
+                            error: Some(format!("Task join failed: {}", e)),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(success_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +422,17 @@ mod tests {
             path,
             std::path::PathBuf::from("/data/projects/proj-1/audio/line-42.mp3")
         );
+    }
+
+    #[test]
+    fn test_generate_all_tts_missing_lines() {
+        let lines = vec!["l1".to_string(), "l2".to_string(), "l3".to_string()];
+        let fragments = vec!["l1".to_string()];
+        let missing: Vec<String> = lines
+            .iter()
+            .filter(|id| !fragments.contains(*id))
+            .cloned()
+            .collect();
+        assert_eq!(missing, vec!["l2".to_string(), "l3".to_string()]);
     }
 }

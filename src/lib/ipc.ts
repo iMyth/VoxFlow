@@ -10,6 +10,7 @@ import type {
     VoiceConfig,
     LlmConfig,
     MixProgress,
+    TtsBatchProgress,
     UserSettings,
 } from '../types';
 
@@ -42,6 +43,10 @@ export async function deleteProject(projectId: string): Promise<void> {
     return ipcCall<void>('delete_project', { projectId });
 }
 
+export async function saveOutline(projectId: string, outline: string): Promise<void> {
+    return ipcCall<void>('save_outline', { projectId, outline });
+}
+
 // ---- Character Management ----
 
 export async function createCharacter(projectId: string, input: CharacterInput): Promise<Character> {
@@ -62,13 +67,19 @@ export async function listCharacters(projectId: string): Promise<Character[]> {
 
 // ---- LLM Script Generation ----
 
-export async function generateScript(projectId: string, outline: string, config: LlmConfig): Promise<void> {
+export async function generateScript(
+    projectId: string,
+    outline: string,
+    config: LlmConfig,
+    characters: Character[],
+): Promise<void> {
     return ipcCall<void>('generate_script', {
         projectId,
         outline,
         apiEndpoint: config.api_endpoint,
         apiKey: config.api_key,
         model: config.model,
+        characters,
     });
 }
 
@@ -110,6 +121,20 @@ export async function generateTts(
         voiceConfig,
         apiKey,
     });
+}
+
+export async function generateAllTts(
+    projectId: string,
+    apiKey: string,
+): Promise<number> {
+    return ipcCall<number>('generate_all_tts', {
+        projectId,
+        apiKey,
+    });
+}
+
+export function onTtsBatchProgress(callback: (progress: TtsBatchProgress) => void): Promise<UnlistenFn> {
+    return listen<TtsBatchProgress>('tts-batch-progress', (event) => callback(event.payload));
 }
 
 // ---- Audio Mix Export ----

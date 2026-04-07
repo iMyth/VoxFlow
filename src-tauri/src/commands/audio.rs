@@ -7,7 +7,7 @@ use tauri::Manager;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 use crate::core::models::MixProgress;
-use log::{debug, info, error};
+use log::error;
 
 // --- Audio playback via rodio on a dedicated thread ---
 
@@ -309,23 +309,12 @@ pub async fn export_audio_mix(
         }
     }
 
-    // Resolve output path: if relative, put it under the project's export directory
-    let resolved_output = if std::path::Path::new(&output_path).is_relative() {
-        let app_data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| AppError::FileSystem(e.to_string()))?;
-        let export_dir = app_data_dir
-            .join("projects")
-            .join(&project_id)
-            .join("export");
-        std::fs::create_dir_all(&export_dir).map_err(|e| {
-            AppError::FileSystem(format!("Failed to create export directory: {}", e))
+    // Verify output parent directory exists
+    if let Some(parent) = std::path::Path::new(&output_path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            AppError::FileSystem(format!("Failed to create output directory: {}", e))
         })?;
-        export_dir.join(&output_path).to_string_lossy().to_string()
-    } else {
-        output_path.clone()
-    };
+    }
 
     // Emit initial progress
     let _ = app.emit(
@@ -342,7 +331,7 @@ pub async fn export_audio_mix(
         bgm_path.as_deref(),
         bgm_volume,
         &gaps_ms,
-        &resolved_output,
+        &output_path,
     );
 
     let _ = app.emit(
@@ -388,7 +377,7 @@ pub async fn export_audio_mix(
         },
     );
 
-    Ok(resolved_output)
+    Ok(output_path)
 }
 
 /// Find ffmpeg binary — check common macOS Homebrew paths if not in PATH.

@@ -11,6 +11,7 @@ interface ProjectStore {
     createProject: (name: string) => Promise<void>;
     loadProject: (id: string) => Promise<void>;
     deleteProject: (id: string) => Promise<void>;
+    saveOutline: (outline: string) => Promise<void>;
 }
 
 export const useProjectStore = create<ProjectStore>((set) => ({
@@ -63,6 +64,21 @@ export const useProjectStore = create<ProjectStore>((set) => ({
             }));
         } catch (e) {
             set({ error: String(e), loading: false });
+        }
+    },
+
+    saveOutline: async (outline: string) => {
+        const project = useProjectStore.getState().currentProject;
+        if (!project) return;
+        try {
+            await ipc.saveOutline(project.project.id, outline);
+            set((state) => ({
+                currentProject: state.currentProject
+                    ? { ...state.currentProject, project: { ...state.currentProject.project, outline } }
+                    : state.currentProject,
+            }));
+        } catch (e) {
+            console.error('Failed to save outline:', e);
         }
     },
 }));

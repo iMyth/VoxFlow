@@ -1,9 +1,10 @@
-import { useState } from 'react';
-import { GripVertical, Trash2, Volume2, Loader2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { GripVertical, Trash2, Volume2, Loader2, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useScriptStore } from '../../store/scriptStore';
 import { useCharacterStore } from '../../store/characterStore';
 import { useProjectStore } from '../../store/projectStore';
+import { useToastStore } from '../../store/toastStore';
 import * as ipc from '../../lib/ipc';
 import AudioPlayer from './AudioPlayer';
 import { Button } from '../ui/button';
@@ -30,14 +31,27 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
     const { characters } = useCharacterStore();
     const currentProject = useProjectStore((s) => s.currentProject);
     const [generating, setGenerating] = useState(false);
+    const [ttsError, setTtsError] = useState<string | null>(null);
     const [audioFragment, setAudioFragment] = useState<AudioFragment | null>(
         currentProject?.audio_fragments.find((a) => a.line_id === line.id) ?? null,
     );
+
+    // Sync local audioFragment with project store (e.g. after batch TTS)
+    useEffect(() => {
+        const frag = currentProject?.audio_fragments.find((a) => a.line_id === line.id) ?? null;
+        setAudioFragment(frag);
+    }, [line.id, currentProject?.audio_fragments]);
+
+    // Clear error when audio fragment appears
+    useEffect(() => {
+        if (audioFragment) setTtsError(null);
+    }, [audioFragment]);
 
     const handleGenerateTts = async () => {
         if (!currentProject || !line.text.trim()) return;
         const character = characters.find((c) => c.id === line.character_id);
         setGenerating(true);
+        setTtsError(null);
         try {
             const { saveScript } = useScriptStore.getState();
             await saveScript();
@@ -69,7 +83,9 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                 });
             }
         } catch (e) {
-            console.error('TTS generation failed:', e);
+            const msg = String(e);
+            setTtsError(msg.length > 100 ? msg.slice(0, 100) + '...' : msg);
+            useToastStore.getState().addToast(`第 ${index + 1} 行语音生成失败`);
         } finally {
             setGenerating(false);
         }
@@ -137,11 +153,24 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
                         <Badge variant="secondary">{characterName}</Badge>
                     )}
 
-                    {audioFragment ? (
-                        <Badge variant="outline" className="text-green-600 border-green-300">{t('editor.generated')}</Badge>
-                    ) : (
-                        <Badge variant="outline" className="text-muted-foreground">{t('editor.notGenerated')}</Badge>
+                    {ttsError && (
+                        <Badge variant="destructive" className="gap-1">
+                            <AlertCircle className="h-3 w-3" /> 生成失败
+                        </Badge>
                     )}
+
+                    {audioFragment ? (
+                        <Badge variant="outline" className="text-green-600 border-green-300 gap-1">
+                            {t('editor.generated')}
+                            {audioFragment.duration_ms != null && (
+                                <span className="text-xs opacity-70">
+                                    ({(audioFragment.duration_ms / 1000).toFixed(1)}s)
+                                </span>
+                            )}
+                        </Badge>
+                    ) : !ttsError ? (
+                        <Badge variant="outline" className="text-muted-foreground">{t('editor.notGenerated')}</Badge>
+                    ) : null}
 
                     <Button
                         size="xs"

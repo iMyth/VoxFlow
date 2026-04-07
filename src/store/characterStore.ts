@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as ipc from '../lib/ipc';
+import { useToastStore } from './toastStore';
 import type { Character, CharacterInput } from '../types';
 
 interface CharacterStore {
@@ -21,7 +22,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
             const characters = await ipc.listCharacters(projectId);
             set({ characters });
         } catch (e) {
-            console.error('Failed to fetch characters:', e);
+            useToastStore.getState().addToast('获取角色列表失败');
         }
     },
 
@@ -33,7 +34,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
             const character = await ipc.createCharacter(projectId, input);
             set((state) => ({ characters: [...state.characters, character] }));
         } catch (e) {
-            console.error('Failed to create character:', e);
+            useToastStore.getState().addToast('创建角色失败');
         }
     },
 
@@ -44,7 +45,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
                 characters: state.characters.map((c) => (c.id === id ? updated : c)),
             }));
         } catch (e) {
-            console.error('Failed to update character:', e);
+            useToastStore.getState().addToast('更新角色失败');
         }
     },
 
@@ -55,7 +56,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
                 characters: state.characters.filter((c) => c.id !== id),
             }));
         } catch (e) {
-            console.error('Failed to delete character:', e);
+            useToastStore.getState().addToast('删除角色失败');
         }
     },
 }));

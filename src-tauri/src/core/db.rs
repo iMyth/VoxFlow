@@ -21,10 +21,30 @@ impl Database {
         Ok(Self { conn })
     }
 
-    /// Run schema migrations – creates all 6 tables if they don't already exist.
+    /// Run schema migrations.
+    /// Uses a `schema_migrations` table to track applied migrations, so upgrades
+    /// never re-run old steps and users don't need to manually edit SQLite.
     pub fn migrate(&self) -> Result<(), AppError> {
+        // Ensure schema_migrations table exists
         self.conn
-            .execute_batch(
+            .execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // Get current version
+        let current_version: i32 = self
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+
+        // Define migrations: (version, sql)
+        let migrations: &[(i32, &str)] = &[
+            (
+                1,
                 "
                 CREATE TABLE IF NOT EXISTS projects (
                     id          TEXT PRIMARY KEY,
@@ -76,8 +96,29 @@ impl Database {
                     value TEXT NOT NULL
                 );
                 ",
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            ),
+            (
+                2,
+                "ALTER TABLE projects ADD COLUMN outline TEXT NOT NULL DEFAULT '';",
+            ),
+        ];
+
+        for (version, sql) in migrations {
+            if *version <= current_version {
+                continue;
+            }
+
+            self.conn
+                .execute_batch(sql)
+                .map_err(|e| AppError::Database(format!(
+                    "Migration {} failed: {}",
+                    version, e
+                )))?;
+
+            self.conn
+                .execute("INSERT INTO schema_migrations (version) VALUES (?1)", rusqlite::params![version])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+        }
 
         Ok(())
     }
@@ -88,8 +129,8 @@ impl Database {
     pub fn insert_project(&self, project: &Project) -> Result<(), AppError> {
         self.conn
             .execute(
-                "INSERT INTO projects (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![project.id, project.name, project.created_at, project.updated_at],
+                "INSERT INTO projects (id, name, outline, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![project.id, project.name, project.outline, project.created_at, project.updated_at],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -99,7 +140,7 @@ impl Database {
     pub fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, created_at, updated_at FROM projects ORDER BY created_at DESC")
+            .prepare("SELECT id, name, outline, created_at, updated_at FROM projects ORDER BY created_at DESC")
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let projects = stmt
@@ -107,8 +148,9 @@ impl Database {
                 Ok(Project {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
+                    outline: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?
@@ -122,14 +164,15 @@ impl Database {
     pub fn get_project(&self, id: &str) -> Result<Project, AppError> {
         self.conn
             .query_row(
-                "SELECT id, name, created_at, updated_at FROM projects WHERE id = ?1",
+                "SELECT id, name, outline, created_at, updated_at FROM projects WHERE id = ?1",
                 rusqlite::params![id],
                 |row| {
                     Ok(Project {
                         id: row.get(0)?,
                         name: row.get(1)?,
-                        created_at: row.get(2)?,
-                        updated_at: row.get(3)?,
+                        outline: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
                     })
                 },
             )
@@ -146,6 +189,17 @@ impl Database {
         if affected == 0 {
             return Err(AppError::Database(format!("Project not found: {}", id)));
         }
+        Ok(())
+    }
+
+    /// Save only the outline text for a project.
+    pub fn save_project_outline(&self, id: &str, outline: &str) -> Result<(), AppError> {
+        self.conn
+            .execute(
+                "UPDATE projects SET outline = ?1, updated_at = datetime('now') WHERE id = ?2",
+                rusqlite::params![outline, id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -282,7 +336,10 @@ impl Database {
                  ON CONFLICT(id) DO UPDATE SET
                    line_order = excluded.line_order,
                    text = excluded.text,
-                   character_id = excluded.character_id,
+                   character_id = CASE
+                     WHEN excluded.character_id IS NOT NULL THEN excluded.character_id
+                     ELSE script_lines.character_id
+                   END,
                    gap_after_ms = excluded.gap_after_ms,
                    updated_at = datetime('now')",
                 rusqlite::params![line.id, project_id, line.line_order, line.text, line.character_id, line.gap_after_ms],
@@ -517,6 +574,7 @@ mod tests {
             "bgm_files",
             "characters",
             "projects",
+            "schema_migrations",
             "script_lines",
             "user_settings",
         ];
@@ -685,6 +743,7 @@ mod tests {
         let project = Project {
             id: "p1".to_string(),
             name: "My Audiobook".to_string(),
+            outline: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
@@ -710,12 +769,14 @@ mod tests {
         let p1 = Project {
             id: "p1".to_string(),
             name: "First".to_string(),
+            outline: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
         let p2 = Project {
             id: "p2".to_string(),
             name: "Second".to_string(),
+            outline: String::new(),
             created_at: "2024-01-02 00:00:00".to_string(),
             updated_at: "2024-01-02 00:00:00".to_string(),
         };
@@ -742,6 +803,7 @@ mod tests {
         let project = Project {
             id: "p1".to_string(),
             name: "To Delete".to_string(),
+            outline: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
@@ -767,6 +829,7 @@ mod tests {
         let project = Project {
             id: "p1".to_string(),
             name: "Cascade Test".to_string(),
+            outline: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
@@ -821,6 +884,7 @@ mod tests {
         let project = Project {
             id: id.to_string(),
             name: "Test Project".to_string(),
+            outline: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };

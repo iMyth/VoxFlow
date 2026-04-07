@@ -1,6 +1,7 @@
 export interface Project {
     id: string;
     name: string;
+    outline: string;
     created_at: string;
     updated_at: string;
 }
@@ -62,6 +63,14 @@ export interface MixConfig {
 export interface MixProgress {
     percent: number;
     stage: string;
+}
+
+export interface TtsBatchProgress {
+    current: number;
+    total: number;
+    line_id: string;
+    success: boolean;
+    error: string | null;
 }
 
 export interface UserSettings {

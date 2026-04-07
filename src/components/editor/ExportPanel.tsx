@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Download, Music, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { save } from '@tauri-apps/plugin-dialog';
 import { useProjectStore } from '../../store/projectStore';
 import { useScriptStore } from '../../store/scriptStore';
 import * as ipc from '../../lib/ipc';
@@ -37,6 +38,15 @@ export default function ExportPanel() {
 
     const handleExport = async () => {
         if (!currentProject || missingLines.length > 0) return;
+
+        // Open save dialog to let user choose full output path
+        const selectedPath = await save({
+            title: '导出有声书',
+            defaultPath: outputPath,
+            filters: [{ name: 'MP3 Audio', extensions: ['mp3'] }],
+        });
+        if (!selectedPath) return;
+
         setExporting(true);
         setProgress(null);
         setDone(false);
@@ -47,7 +57,7 @@ export default function ExportPanel() {
         try {
             await ipc.exportAudioMix(
                 currentProject.project.id,
-                outputPath,
+                selectedPath,
                 bgmPath,
                 bgmVolume,
             );
