@@ -6,6 +6,7 @@ import type {
     Character,
     CharacterInput,
     ScriptLine,
+    ScriptSection,
     AudioFragment,
     VoiceConfig,
     LlmConfig,
@@ -83,6 +84,7 @@ export async function generateScript(
     outline: string,
     config: LlmConfig,
     characters: Character[],
+    agentPlan?: AgentPlan | null,
     extraInstructions?: string,
     enableThinking: boolean = false,
 ): Promise<void> {
@@ -93,6 +95,7 @@ export async function generateScript(
         apiKey: config.api_key,
         model: config.model,
         characters,
+        agentPlan: agentPlan || undefined,
         extraInstructions: extraInstructions || undefined,
         enableThinking,
     });
@@ -163,8 +166,8 @@ export async function cancelLlm(): Promise<void> {
 
 // ---- Script Operations ----
 
-export async function saveScript(projectId: string, lines: ScriptLine[]): Promise<void> {
-    return ipcCall<void>('save_script', { projectId, lines });
+export async function saveScript(projectId: string, lines: ScriptLine[], sections: ScriptSection[]): Promise<void> {
+    return ipcCall<void>('save_script', { projectId, lines, sections });
 }
 
 export async function loadScript(projectId: string): Promise<ScriptLine[]> {

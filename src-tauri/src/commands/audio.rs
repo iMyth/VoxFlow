@@ -172,10 +172,11 @@ impl AudioPlayer {
                                 let _ = reply.send(Ok(()));
 
                                 // Spawn a watcher thread that emits audio-finished when done
-                                if let Some(app) = app_handle {
+                                if let Some(app) = app_handle.clone() {
+                                    let path = path.clone();
                                     std::thread::spawn(move || {
                                         sink.sleep_until_end();
-                                        let _ = app.emit("audio-finished", ());
+                                        let _ = app.emit("audio-finished", &path);
                                     });
                                 }
                             }

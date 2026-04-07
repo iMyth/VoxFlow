@@ -4,10 +4,45 @@ import * as ipc from '../lib/ipc';
 import { useProjectStore } from './projectStore';
 import { useCharacterStore } from './characterStore';
 import { useToastStore } from './toastStore';
-import type { ScriptLine } from '../types';
+import type { ScriptLine, ScriptSection } from '../types';
+
+// ---- Batched streaming text updates via rAF to avoid per-token re-renders ----
+let textBuf = '';
+let thinkBuf = '';
+let textRaf: number | null = null;
+let thinkRaf: number | null = null;
+
+function flushText(set: (u: Partial<ScriptStore>) => void) {
+    if (textBuf) {
+        set({ streamingText: textBuf });
+    }
+    textRaf = null;
+}
+
+function flushThink(set: (u: Partial<ScriptStore>) => void) {
+    if (thinkBuf) {
+        set({ thinkingText: thinkBuf });
+    }
+    thinkRaf = null;
+}
+
+function queueText(set: (u: Partial<ScriptStore>) => void, token: string) {
+    textBuf += token;
+    if (!textRaf) {
+        textRaf = requestAnimationFrame(() => flushText(set));
+    }
+}
+
+function queueThink(set: (u: Partial<ScriptStore>) => void, token: string) {
+    thinkBuf += token;
+    if (!thinkRaf) {
+        thinkRaf = requestAnimationFrame(() => flushThink(set));
+    }
+}
 
 interface ScriptStore {
     lines: ScriptLine[];
+    sections: ScriptSection[];
     isGenerating: boolean;
     isAnalyzing: boolean;
     isDirty: boolean;
@@ -26,11 +61,16 @@ interface ScriptStore {
     setAgentPlan: (plan: ipc.AgentPlan | null) => void;
     updateLine: (lineId: string, text: string) => void;
     assignCharacter: (lineId: string, characterId: string) => void;
-    addLine: (afterIndex: number) => void;
+    addLine: (afterIndex: number, sectionId?: string) => void;
     deleteLine: (lineId: string) => void;
     reorderLines: (fromIndex: number, toIndex: number) => void;
     setGap: (lineId: string, gapMs: number) => void;
     setInstructions: (lineId: string, instructions: string) => void;
+    addSection: () => void;
+    deleteSection: (sectionId: string) => void;
+    renameSection: (sectionId: string, title: string) => void;
+    reorderSections: (fromIndex: number, toIndex: number) => void;
+    moveLineToSection: (lineId: string, sectionId: string | null) => void;
     saveScript: () => Promise<void>;
     generateAllTts: () => Promise<void>;
 }
@@ -47,6 +87,7 @@ export const useScriptStore = create<ScriptStore>()(
     temporal(
         (set, get) => ({
             lines: [],
+            sections: [],
             isGenerating: false,
             isAnalyzing: false,
             isDirty: false,
@@ -60,6 +101,11 @@ export const useScriptStore = create<ScriptStore>()(
 
             setEnableThinking: (v: boolean) => {
                 set({ enableThinking: v });
+                // Persist to settings
+                import('./settingsStore').then(({ useSettingsStore }) => {
+                    useSettingsStore.getState().set({ enableThinking: v });
+                    useSettingsStore.getState().saveSettings();
+                });
             },
 
             setWorkflow: (mode: 'ai' | 'manual' | null) => {
@@ -74,25 +120,32 @@ export const useScriptStore = create<ScriptStore>()(
                 const settings = useSettingsStore.getState();
                 const apiKey = await ipc.loadApiKey('dashscope');
                 const characters = useCharacterStore.getState().characters;
-                const enableThinking = get().enableThinking;
+                // Read persisted settings value
+                const enableThinking = settings.enableThinking;
 
+                textBuf = '';
+                thinkBuf = '';
                 set({ isAnalyzing: true, streamingText: '', thinkingText: '' });
 
                 const unlistenToken = await ipc.onLlmToken((token) => {
-                    set((state) => ({ streamingText: state.streamingText + token }));
+                    queueText(set, token);
                 });
 
                 const unlistenThinking = await ipc.onLlmThinking((token) => {
-                    set((state) => ({ thinkingText: state.thinkingText + token }));
+                    queueThink(set, token);
                 });
 
                 const unlistenCancel = await ipc.onLlmCancel(() => {
-                    useToastStore.getState().addToast('已取消分析', 'info');
+                    flushText(set);
+                    flushThink(set);
+                    useToastStore.getState().addToast('editor.cancelAnalyzeToast', 'info');
                     set({ isAnalyzing: false, streamingText: '', thinkingText: '' });
                 });
 
                 const unlistenError = await ipc.onLlmError((_error) => {
-                    useToastStore.getState().addToast('分析大纲失败');
+                    flushText(set);
+                    flushThink(set);
+                    useToastStore.getState().addToast('editor.analyzeFailed');
                     set({ isAnalyzing: false, streamingText: '', thinkingText: '' });
                 });
 
@@ -102,12 +155,16 @@ export const useScriptStore = create<ScriptStore>()(
                         api_key: apiKey ?? '',
                         model: settings.llmModel,
                     }, characters, enableThinking);
+                    flushText(set);
+                    flushThink(set);
                     set({ agentPlan: plan, isAnalyzing: false, streamingText: '', thinkingText: '' });
                 } catch (e) {
                     const errMsg = String(e);
                     if (!errMsg.includes('已取消')) {
-                        useToastStore.getState().addToast('分析大纲失败');
+                        useToastStore.getState().addToast('editor.analyzeFailed');
                     }
+                    flushText(set);
+                    flushThink(set);
                     set({ isAnalyzing: false, streamingText: '', thinkingText: '' });
                 } finally {
                     unlistenToken();
@@ -133,36 +190,53 @@ export const useScriptStore = create<ScriptStore>()(
                 const settings = useSettingsStore.getState();
                 const apiKey = await ipc.loadApiKey('dashscope');
                 const allCharacters = useCharacterStore.getState().characters;
-                const enableThinking = get().enableThinking;
+                // Read persisted settings value
+                const enableThinking = settings.enableThinking;
+                const agentPlan = get().agentPlan;
 
                 const characters = confirmedCharNames
                     ? allCharacters.filter((c) => confirmedCharNames.includes(c.name))
                     : allCharacters;
 
                 const oldLines = get().lines;
+                textBuf = '';
+                thinkBuf = '';
                 set({ isGenerating: true, streamingText: '', thinkingText: '' });
 
                 const unlistenToken = await ipc.onLlmToken((token) => {
-                    set((state) => ({ streamingText: state.streamingText + token }));
+                    queueText(set, token);
                 });
 
                 const unlistenThinking = await ipc.onLlmThinking((token) => {
-                    set((state) => ({ thinkingText: state.thinkingText + token }));
+                    queueThink(set, token);
                 });
 
                 const unlistenCancel = await ipc.onLlmCancel(() => {
-                    useToastStore.getState().addToast('已取消生成', 'info');
+                    useToastStore.getState().addToast('editor.cancelGenerate', 'info');
                     set({ lines: oldLines, isGenerating: false, streamingText: '', thinkingText: '' });
                 });
 
                 const unlistenComplete = await ipc.onLlmComplete(() => {
-                    ipc.loadScript(project.project.id).then((lines) => {
-                        set({ lines, isGenerating: false, streamingText: '', thinkingText: '', isDirty: false });
+                    // Reload full project to get both lines and sections
+                    useProjectStore.getState().loadProject(project.project.id).then(() => {
+                        const updated = useProjectStore.getState().currentProject;
+                        if (updated) {
+                            set({
+                                lines: updated.script_lines,
+                                sections: updated.sections ?? [],
+                                isGenerating: false,
+                                streamingText: '',
+                                thinkingText: '',
+                                isDirty: false,
+                            });
+                        } else {
+                            set({ lines: [], sections: [], isGenerating: false, streamingText: '', thinkingText: '', isDirty: false });
+                        }
                     });
                 });
 
                 const unlistenError = await ipc.onLlmError((_error) => {
-                    useToastStore.getState().addToast('AI 生成出错，已恢复旧内容');
+                    useToastStore.getState().addToast('editor.generateErrorRecovered');
                     set({ lines: oldLines, isGenerating: false, streamingText: '', thinkingText: '' });
                 });
 
@@ -171,9 +245,9 @@ export const useScriptStore = create<ScriptStore>()(
                         api_endpoint: settings.llmEndpoint,
                         api_key: apiKey ?? '',
                         model: settings.llmModel,
-                    }, characters, extraInstructions, enableThinking);
+                    }, characters, agentPlan, extraInstructions, enableThinking);
                 } catch (e) {
-                    useToastStore.getState().addToast('生成剧本失败');
+                    useToastStore.getState().addToast('editor.generateFailed');
                     set({ lines: oldLines, isGenerating: false, streamingText: '', thinkingText: '' });
                 } finally {
                     unlistenToken();
@@ -200,9 +274,8 @@ export const useScriptStore = create<ScriptStore>()(
                 }));
             },
 
-            addLine: (afterIndex: number) => {
+            addLine: (afterIndex: number, sectionId?: string) => {
                 set((state) => {
-                    // Get project_id from existing lines, or fall back to the current project in projectStore
                     const projectId = state.lines[0]?.project_id
                         || useProjectStore.getState().currentProject?.project.id
                         || '';
@@ -214,10 +287,10 @@ export const useScriptStore = create<ScriptStore>()(
                         character_id: null,
                         gap_after_ms: 500,
                         instructions: '',
+                        section_id: sectionId ?? state.lines[afterIndex]?.section_id ?? null,
                     };
                     const newLines = [...state.lines];
                     newLines.splice(afterIndex + 1, 0, newLine);
-                    // Re-index line_order
                     return {
                         lines: newLines.map((l, i) => ({ ...l, line_order: i })),
                         isDirty: true,
@@ -265,14 +338,72 @@ export const useScriptStore = create<ScriptStore>()(
                 }));
             },
 
+            addSection: () => {
+                set((state) => {
+                    const projectId = state.lines[0]?.project_id
+                        || useProjectStore.getState().currentProject?.project.id
+                        || '';
+                    const newSection: ScriptSection = {
+                        id: crypto.randomUUID(),
+                        project_id: projectId,
+                        title: '新段落',
+                        section_order: state.sections.length,
+                    };
+                    return {
+                        sections: [...state.sections, newSection],
+                        isDirty: true,
+                    };
+                });
+            },
+
+            deleteSection: (sectionId: string) => {
+                set((state) => ({
+                    sections: state.sections.filter((s) => s.id !== sectionId),
+                    lines: state.lines.map((l) =>
+                        l.section_id === sectionId ? { ...l, section_id: null } : l,
+                    ),
+                    isDirty: true,
+                }));
+            },
+
+            renameSection: (sectionId: string, title: string) => {
+                set((state) => ({
+                    sections: state.sections.map((s) =>
+                        s.id === sectionId ? { ...s, title } : s,
+                    ),
+                    isDirty: true,
+                }));
+            },
+
+            reorderSections: (fromIndex: number, toIndex: number) => {
+                set((state) => {
+                    const newSections = [...state.sections];
+                    const [moved] = newSections.splice(fromIndex, 1);
+                    newSections.splice(toIndex, 0, moved);
+                    return {
+                        sections: newSections.map((s, i) => ({ ...s, section_order: i })),
+                        isDirty: true,
+                    };
+                });
+            },
+
+            moveLineToSection: (lineId: string, sectionId: string | null) => {
+                set((state) => ({
+                    lines: state.lines.map((l) =>
+                        l.id === lineId ? { ...l, section_id: sectionId } : l,
+                    ),
+                    isDirty: true,
+                }));
+            },
+
             saveScript: async () => {
                 const projectId = useProjectStore.getState().currentProject?.project.id;
                 if (!projectId) return;
                 try {
-                    await ipc.saveScript(projectId, get().lines);
+                    await ipc.saveScript(projectId, get().lines, get().sections);
                     set({ isDirty: false });
                 } catch (e) {
-                    useToastStore.getState().addToast('保存剧本失败');
+                    useToastStore.getState().addToast('editor.saveScriptFailed');
                 }
             },
 
@@ -283,7 +414,14 @@ export const useScriptStore = create<ScriptStore>()(
                 const apiKey = await ipc.loadApiKey('dashscope');
                 if (!apiKey) return;
 
-                set({ isBatchTtsRunning: true, batchTtsProgress: null });
+                // Compute total missing count upfront so UI shows immediately
+                const audioFragments = useProjectStore.getState().currentProject?.audio_fragments ?? [];
+                const coveredLineIds = new Set(audioFragments.map((a) => a.line_id));
+                const totalMissing = get().lines.filter(
+                    (l) => l.text.trim() && !coveredLineIds.has(l.id),
+                ).length;
+
+                set({ isBatchTtsRunning: true, batchTtsProgress: { current: 0, total: totalMissing } });
 
                 const unlisten = await ipc.onTtsBatchProgress((p) => {
                     set({ batchTtsProgress: { current: p.current, total: p.total } });
@@ -294,7 +432,7 @@ export const useScriptStore = create<ScriptStore>()(
                     // Reload project to refresh audio fragments
                     await useProjectStore.getState().loadProject(project.project.id);
                 } catch (e) {
-                    useToastStore.getState().addToast('批量生成语音失败');
+                    useToastStore.getState().addToast('editor.batchTtsFailed');
                 } finally {
                     unlisten();
                     set({ isBatchTtsRunning: false });

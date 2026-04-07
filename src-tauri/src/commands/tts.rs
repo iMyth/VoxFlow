@@ -322,7 +322,16 @@ pub async fn generate_all_tts(
                     pitch: cfg.pitch,
                 };
 
-                let result = call_dashscope_tts(&txt, &vc, if instr.is_empty() { None } else { Some(&instr) }, &key).await;
+                // Wrap TTS call with timeout to prevent hanging on API issues
+                let tts_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    call_dashscope_tts(&txt, &vc, if instr.is_empty() { None } else { Some(&instr) }, &key),
+                ).await;
+
+                let result = match tts_result {
+                    Ok(inner) => inner,
+                    Err(_) => Err(AppError::TtsService(format!("TTS request timed out for line {}", id))),
+                };
 
                 match result {
                     Ok(audio_bytes) => {

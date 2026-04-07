@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { GripVertical, Trash2, Volume2, Loader2, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useScriptStore } from '../../store/scriptStore';
@@ -86,13 +86,20 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
         } catch (e) {
             const msg = String(e);
             setTtsError(msg.length > 100 ? msg.slice(0, 100) + '...' : msg);
-            useToastStore.getState().addToast(`第 ${index + 1} 行语音生成失败`);
+            useToastStore.getState().addToast(t('editor.ttsGenerateLineFailed', { line: String(index + 1) }));
         } finally {
             setGenerating(false);
         }
     };
 
+    const draggingFromGrip = useRef(false);
+
     const handleDragStart = (e: React.DragEvent) => {
+        if (!draggingFromGrip.current) {
+            e.preventDefault();
+            return;
+        }
+        draggingFromGrip.current = false;
         e.dataTransfer.setData('text/plain', String(index));
         e.dataTransfer.effectAllowed = 'move';
     };
@@ -118,10 +125,15 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
             className="flex-row items-start gap-2 p-3 group"
             draggable
             onDragStart={handleDragStart}
+            onDragEnd={() => { draggingFromGrip.current = false; }}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
         >
-            <div className="cursor-grab pt-2 text-muted-foreground hover:text-foreground">
+            <div
+                className="cursor-grab select-none pt-2 text-muted-foreground hover:text-foreground"
+                data-drag-handle
+                onMouseDown={() => { draggingFromGrip.current = true; }}
+            >
                 <GripVertical className="h-4 w-4" />
             </div>
 

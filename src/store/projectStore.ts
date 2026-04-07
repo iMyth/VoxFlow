@@ -79,7 +79,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
                     : state.currentProject,
             }));
         } catch (e) {
-            useToastStore.getState().addToast('保存大纲失败');
+            useToastStore.getState().addToast('project.saveOutlineFailed');
         }
     },
 }));

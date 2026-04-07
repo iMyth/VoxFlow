@@ -20,7 +20,8 @@
     "create": "创建",
     "cancel": "取消",
     "empty": "暂无项目，点击右上角 + 新建项目",
-    "confirmDelete": "确定要删除此项目吗？所有关联数据将被清除。"
+    "confirmDelete": "确定要删除此项目吗？所有关联数据将被清除。",
+    "saveOutlineFailed": "保存大纲失败"
   },
   "editor": {
     "outlineLabel": "大纲输入",
@@ -53,6 +54,7 @@
     "pause": "暂停",
     "generateAllTts": "生成全部语音 ({{count}} 行)",
     "batchTtsRunning": "生成中 ({{current}}/{{total}})",
+    "batchTtsHint": "正在批量生成语音，请勿关闭页面",
     "instructionsPlaceholder": "导演指令，如：语速较快、带有悲伤情绪",
     "analyze": "分析大纲",
     "analyzing": "分析中...",
@@ -82,7 +84,24 @@
     "confirmAnalyzeTitle": "重新分析大纲",
     "confirmAnalyze": "已有 {{textCount}} 行剧本内容，分析大纲将用于重新生成剧本规划，但不会直接覆盖现有剧本",
     "confirmAnalyzeBtn": "继续分析",
-    "chooseMode": "选择创作模式"
+    "chooseMode": "选择创作模式",
+    "addSection": "添加段落",
+    "deleteSection": "删除段落",
+    "confirmDeleteSection": "确定删除此段落吗？其中的台词将变为未分配状态。",
+    "defaultSection": "正文",
+    "audioPlaybackFailed": "音频播放失败",
+    "cancelGenerate": "已取消生成",
+    "cancelAnalyzeToast": "已取消分析",
+    "analyzeFailed": "分析大纲失败",
+    "generateFailed": "生成剧本失败",
+    "generateErrorRecovered": "AI 生成出错，已恢复旧内容",
+    "saveScriptFailed": "保存剧本失败",
+    "batchTtsFailed": "批量生成语音失败",
+    "ttsGenerateLineFailed": "第 {{line}} 行语音生成失败",
+    "charNameRequired": "角色名称不能为空",
+    "charCreated": "角色 \"{{name}}\" 已创建",
+    "mapAllCharsRequired": "请为所有角色指定已有角色或创建新角色",
+    "finishCreatingChars": "请先完成创建角色: {{names}}"
   },
   "character": {
     "title": "角色管理",
@@ -100,7 +119,12 @@
     "import": "导入角色",
     "importEmpty": "没有其他项目的角色可导入",
     "importSelected": "导入 {{count}} 个角色",
-    "importSuccess": "已导入 {{count}} 个角色"
+    "importSuccess": "已导入 {{count}} 个角色",
+    "fetchFailed": "获取角色列表失败",
+    "createFailed": "创建角色失败",
+    "updateFailed": "更新角色失败",
+    "deleteFailed": "删除角色失败",
+    "importFailed": "导入角色失败"
   },
   "export": {
     "title": "导出有声书",
@@ -133,6 +157,10 @@
     "defaultPitch": "默认音调",
     "cancel": "取消",
     "save": "保存设置",
-    "language": "语言"
+    "language": "语言",
+    "loadFailed": "加载设置失败",
+    "saveFailed": "保存设置失败",
+    "saveApiKeyFailed": "保存 API Key 失败",
+    "loadApiKeyFailed": "加载 API Key 失败"
   }
 }

@@ -20,7 +20,8 @@
     "create": "Create",
     "cancel": "Cancel",
     "empty": "No projects yet. Click + in the top right to create one.",
-    "confirmDelete": "Are you sure you want to delete this project? All associated data will be removed."
+    "confirmDelete": "Are you sure you want to delete this project? All associated data will be removed.",
+    "saveOutlineFailed": "Failed to save outline"
   },
   "editor": {
     "outlineLabel": "Outline",
@@ -53,6 +54,7 @@
     "pause": "Pause",
     "generateAllTts": "Generate All Voice ({{count}} lines)",
     "batchTtsRunning": "Generating ({{current}}/{{total}})",
+    "batchTtsHint": "Batch generating TTS, please do not close this page",
     "instructionsPlaceholder": "Director instructions, e.g. faster pace, with sadness",
     "analyze": "Analyze Outline",
     "analyzing": "Analyzing...",
@@ -82,7 +84,24 @@
     "confirmAnalyzeTitle": "Re-analyze Outline",
     "confirmAnalyze": "You already have {{textCount}} script lines. Analyzing will generate a new plan but will NOT overwrite your existing script",
     "confirmAnalyzeBtn": "Continue Analysis",
-    "chooseMode": "Choose Creation Mode"
+    "chooseMode": "Choose Creation Mode",
+    "addSection": "Add Section",
+    "deleteSection": "Delete Section",
+    "confirmDeleteSection": "Delete this section? Lines will be moved to unassigned.",
+    "defaultSection": "Main",
+    "audioPlaybackFailed": "Failed to play audio",
+    "cancelGenerate": "Generation canceled",
+    "cancelAnalyzeToast": "Analysis canceled",
+    "analyzeFailed": "Failed to analyze outline",
+    "generateFailed": "Failed to generate script",
+    "generateErrorRecovered": "AI generation error, restored previous content",
+    "saveScriptFailed": "Failed to save script",
+    "batchTtsFailed": "Failed to batch generate TTS",
+    "ttsGenerateLineFailed": "Failed to generate TTS for line {{line}}",
+    "charNameRequired": "Character name is required",
+    "charCreated": "Character \"{{name}}\" created",
+    "mapAllCharsRequired": "Please assign or create all suggested characters",
+    "finishCreatingChars": "Please finish creating characters: {{names}}"
   },
   "character": {
     "title": "Characters",
@@ -100,7 +119,12 @@
     "import": "Import Characters",
     "importEmpty": "No characters from other projects to import",
     "importSelected": "Import {{count}} characters",
-    "importSuccess": "Imported {{count}} characters"
+    "importSuccess": "Imported {{count}} characters",
+    "fetchFailed": "Failed to fetch characters",
+    "createFailed": "Failed to create character",
+    "updateFailed": "Failed to update character",
+    "deleteFailed": "Failed to delete character",
+    "importFailed": "Failed to import characters"
   },
   "export": {
     "title": "Export Audiobook",
@@ -133,6 +157,10 @@
     "defaultPitch": "Default Pitch",
     "cancel": "Cancel",
     "save": "Save Settings",
-    "language": "Language"
+    "language": "Language",
+    "loadFailed": "Failed to load settings",
+    "saveFailed": "Failed to save settings",
+    "saveApiKeyFailed": "Failed to save API key",
+    "loadApiKeyFailed": "Failed to load API key"
   }
 }

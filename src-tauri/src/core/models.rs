@@ -13,6 +13,7 @@ pub struct Project {
 pub struct ProjectDetail {
     pub project: Project,
     pub characters: Vec<Character>,
+    pub sections: Vec<ScriptSection>,
     pub script_lines: Vec<ScriptLine>,
     pub audio_fragments: Vec<AudioFragment>,
 }
@@ -37,6 +38,16 @@ pub struct ScriptLine {
     pub character_id: Option<String>,
     pub gap_after_ms: i32,
     pub instructions: String,
+    pub section_id: Option<String>,
+}
+
+/// A section/group of script lines (e.g. "片头", "第一幕", "片尾").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptSection {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub section_order: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +91,7 @@ pub struct UserSettings {
     pub default_voice_name: String,
     pub default_speed: f32,
     pub default_pitch: f32,
+    pub enable_thinking: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,8 +104,16 @@ pub struct CharacterInput {
 }
 
 /// LLM script generation response — parsed from JSON output.
+/// Contains sections, each with a title and lines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmScriptResponse {
+    pub sections: Vec<LlmSection>,
+}
+
+/// A section from LLM generation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmSection {
+    pub title: String,
     pub lines: Vec<LlmScriptLine>,
 }
 

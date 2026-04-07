@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use super::error::AppError;
-use super::models::{AudioFragment, Character, Project, ProjectDetail, ScriptLine, UserSettings};
+use super::models::{AudioFragment, Character, Project, ProjectDetail, ScriptLine, ScriptSection, UserSettings};
 
 pub struct Database {
     conn: Connection,
@@ -104,6 +104,18 @@ impl Database {
             (
                 3,
                 "ALTER TABLE script_lines ADD COLUMN instructions TEXT NOT NULL DEFAULT '';",
+            ),
+            (
+                4,
+                "
+                CREATE TABLE IF NOT EXISTS script_sections (
+                    id            TEXT PRIMARY KEY,
+                    project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    title         TEXT NOT NULL,
+                    section_order INTEGER NOT NULL
+                );
+                ALTER TABLE script_lines ADD COLUMN section_id TEXT REFERENCES script_sections(id) ON DELETE SET NULL;
+                ",
             ),
         ];
 
@@ -367,7 +379,10 @@ impl Database {
 
     /// Save script lines for a project using upsert to avoid cascade-deleting audio fragments.
     /// Lines not in the new set are deleted; existing lines are updated; new lines are inserted.
-    pub fn save_script(&self, project_id: &str, lines: &[ScriptLine]) -> Result<(), AppError> {
+    pub fn save_script(&self, project_id: &str, lines: &[ScriptLine], sections: &[ScriptSection]) -> Result<(), AppError> {
+        // First save sections
+        self.save_sections(project_id, sections)?;
+
         let tx = self
             .conn
             .unchecked_transaction()
@@ -397,8 +412,8 @@ impl Database {
         // Upsert each line
         for line in lines {
             tx.execute(
-                "INSERT INTO script_lines (id, project_id, line_order, text, character_id, gap_after_ms, instructions)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO script_lines (id, project_id, line_order, text, character_id, gap_after_ms, instructions, section_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(id) DO UPDATE SET
                    line_order = excluded.line_order,
                    text = excluded.text,
@@ -408,8 +423,9 @@ impl Database {
                    END,
                    gap_after_ms = excluded.gap_after_ms,
                    instructions = excluded.instructions,
+                   section_id = excluded.section_id,
                    updated_at = datetime('now')",
-                rusqlite::params![line.id, project_id, line.line_order, line.text, line.character_id, line.gap_after_ms, line.instructions],
+                rusqlite::params![line.id, project_id, line.line_order, line.text, line.character_id, line.gap_after_ms, line.instructions, line.section_id],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         }
@@ -420,11 +436,11 @@ impl Database {
         Ok(())
     }
 
-    /// Load all script lines for a project, ordered by line_order ASC.
+    /// Load all script lines for a project, ordered by section_order then line_order ASC.
     pub fn load_script(&self, project_id: &str) -> Result<Vec<ScriptLine>, AppError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, project_id, line_order, text, character_id, gap_after_ms, instructions FROM script_lines WHERE project_id = ?1 ORDER BY line_order ASC")
+            .prepare("SELECT sl.id, sl.project_id, sl.line_order, sl.text, sl.character_id, sl.gap_after_ms, sl.instructions, sl.section_id FROM script_lines sl LEFT JOIN script_sections ss ON sl.section_id = ss.id WHERE sl.project_id = ?1 ORDER BY COALESCE(ss.section_order, 999999), sl.line_order ASC")
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let lines = stmt
@@ -437,6 +453,7 @@ impl Database {
                     character_id: row.get(4)?,
                     gap_after_ms: row.get(5)?,
                     instructions: row.get(6)?,
+                    section_id: row.get(7)?,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?
@@ -444,6 +461,85 @@ impl Database {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(lines)
+    }
+
+    // ---- Script Sections operations ----
+
+    /// List all sections for a project, ordered by section_order ASC.
+    pub fn list_sections(&self, project_id: &str) -> Result<Vec<ScriptSection>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, project_id, title, section_order FROM script_sections WHERE project_id = ?1 ORDER BY section_order ASC")
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let sections = stmt
+            .query_map(rusqlite::params![project_id], |row| {
+                Ok(ScriptSection {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    title: row.get(2)?,
+                    section_order: row.get(3)?,
+                })
+            })
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(sections)
+    }
+
+    /// Delete all sections for a project (lines' section_id will be set to NULL via ON DELETE SET NULL).
+    pub fn delete_sections(&self, project_id: &str) -> Result<(), AppError> {
+        self.conn
+            .execute(
+                "DELETE FROM script_sections WHERE project_id = ?1",
+                rusqlite::params![project_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Save sections for a project. Deletes sections no longer in the set, upserts the rest.
+    pub fn save_sections(&self, project_id: &str, sections: &[ScriptSection]) -> Result<(), AppError> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let new_ids: Vec<&str> = sections.iter().map(|s| s.id.as_str()).collect();
+
+        if new_ids.is_empty() {
+            tx.execute(
+                "DELETE FROM script_sections WHERE project_id = ?1",
+                rusqlite::params![project_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        } else {
+            let placeholders: Vec<String> = new_ids.iter().map(|id| format!("'{}'", id.replace('\'', "''"))).collect();
+            let sql = format!(
+                "DELETE FROM script_sections WHERE project_id = ?1 AND id NOT IN ({})",
+                placeholders.join(",")
+            );
+            tx.execute(&sql, rusqlite::params![project_id])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        for section in sections {
+            tx.execute(
+                "INSERT INTO script_sections (id, project_id, title, section_order)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                   title = excluded.title,
+                   section_order = excluded.section_order",
+                rusqlite::params![section.id, project_id, section.title, section.section_order],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        tx.commit()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(())
     }
 
     // ---- Audio Fragment operations ----
@@ -547,6 +643,7 @@ impl Database {
                 default_voice_name: "Cherry".to_string(),
                 default_speed: 1.0,
                 default_pitch: 1.0,
+                enable_thinking: true,
             }),
             Err(e) => Err(AppError::Database(e.to_string())),
         }
@@ -554,16 +651,18 @@ impl Database {
 
     // ---- Aggregate load ----
 
-    /// Load a complete project with all associated characters, script lines, and audio fragments.
+    /// Load a complete project with all associated characters, sections, script lines, and audio fragments.
     pub fn load_project(&self, project_id: &str) -> Result<ProjectDetail, AppError> {
         let project = self.get_project(project_id)?;
         let characters = self.list_characters(project_id)?;
+        let sections = self.list_sections(project_id)?;
         let script_lines = self.load_script(project_id)?;
         let audio_fragments = self.list_audio_fragments(project_id)?;
 
         Ok(ProjectDetail {
             project,
             characters,
+            sections,
             script_lines,
             audio_fragments,
         })
@@ -1145,6 +1244,7 @@ mod tests {
             character_id: character_id.map(|s| s.to_string()),
             gap_after_ms: 500,
             instructions: String::new(),
+            section_id: None,
         }
     }
 
@@ -1159,7 +1259,7 @@ mod tests {
             make_script_line("l3", "p1", 2, "Goodbye!", None),
         ];
 
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
         let loaded = db.load_script("p1").unwrap();
 
         assert_eq!(loaded.len(), 3);
@@ -1184,12 +1284,12 @@ mod tests {
             make_script_line("l1", "p1", 0, "Original line 1", None),
             make_script_line("l2", "p1", 1, "Original line 2", None),
         ];
-        db.save_script("p1", &original).unwrap();
+        db.save_script("p1", &original, &[]).unwrap();
 
         let replacement = vec![
             make_script_line("l3", "p1", 0, "New line 1", None),
         ];
-        db.save_script("p1", &replacement).unwrap();
+        db.save_script("p1", &replacement, &[]).unwrap();
 
         let loaded = db.load_script("p1").unwrap();
         assert_eq!(loaded.len(), 1);
@@ -1208,7 +1308,7 @@ mod tests {
             make_script_line("l1", "p1", 0, "First", None),
             make_script_line("l2", "p1", 1, "Second", None),
         ];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         let loaded = db.load_script("p1").unwrap();
         assert_eq!(loaded[0].text, "First");
@@ -1228,7 +1328,7 @@ mod tests {
             make_script_line("l1", "p1", 0, "Hello", Some("c1")),
             make_script_line("l2", "p1", 1, "World", None),
         ];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         let loaded = db.load_script("p1").unwrap();
         assert_eq!(loaded[0].character_id, Some("c1".to_string()));
@@ -1243,10 +1343,10 @@ mod tests {
         let lines = vec![
             make_script_line("l1", "p1", 0, "Hello", None),
         ];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         // Save empty list should clear all lines
-        db.save_script("p1", &[]).unwrap();
+        db.save_script("p1", &[], &[]).unwrap();
         let loaded = db.load_script("p1").unwrap();
         assert!(loaded.is_empty());
     }
@@ -1259,8 +1359,8 @@ mod tests {
 
         let lines_p1 = vec![make_script_line("l1", "p1", 0, "Project 1 line", None)];
         let lines_p2 = vec![make_script_line("l2", "p2", 0, "Project 2 line", None)];
-        db.save_script("p1", &lines_p1).unwrap();
-        db.save_script("p2", &lines_p2).unwrap();
+        db.save_script("p1", &lines_p1, &[]).unwrap();
+        db.save_script("p2", &lines_p2, &[]).unwrap();
 
         let loaded_p1 = db.load_script("p1").unwrap();
         assert_eq!(loaded_p1.len(), 1);
@@ -1288,7 +1388,7 @@ mod tests {
         let (db, _dir) = temp_db();
         setup_project(&db, "p1");
         let lines = vec![make_script_line("l1", "p1", 0, "Hello", None)];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         let frag = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(3000));
         db.upsert_audio_fragment(&frag).unwrap();
@@ -1306,7 +1406,7 @@ mod tests {
         let (db, _dir) = temp_db();
         setup_project(&db, "p1");
         let lines = vec![make_script_line("l1", "p1", 0, "Hello", None)];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1_old.mp3", Some(2000));
         db.upsert_audio_fragment(&frag1).unwrap();
@@ -1329,7 +1429,7 @@ mod tests {
             make_script_line("l1", "p1", 0, "Hello", None),
             make_script_line("l2", "p1", 1, "World", None),
         ];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(1000));
         let frag2 = make_audio_fragment("a2", "p1", "l2", "/audio/l2.mp3", Some(2000));
@@ -1345,7 +1445,7 @@ mod tests {
         let (db, _dir) = temp_db();
         setup_project(&db, "p1");
         let lines = vec![make_script_line("l1", "p1", 0, "Hello", None)];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         let frag = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", None);
         db.upsert_audio_fragment(&frag).unwrap();
@@ -1372,8 +1472,8 @@ mod tests {
 
         let lines_p1 = vec![make_script_line("l1", "p1", 0, "Hello", None)];
         let lines_p2 = vec![make_script_line("l2", "p2", 0, "World", None)];
-        db.save_script("p1", &lines_p1).unwrap();
-        db.save_script("p2", &lines_p2).unwrap();
+        db.save_script("p1", &lines_p1, &[]).unwrap();
+        db.save_script("p2", &lines_p2, &[]).unwrap();
 
         let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(1000));
         let frag2 = make_audio_fragment("a2", "p2", "l2", "/audio/l2.mp3", Some(2000));
@@ -1401,6 +1501,7 @@ mod tests {
             default_voice_name: "Cherry".to_string(),
             default_speed: 1.0,
             default_pitch: 1.0,
+            enable_thinking: true,
         }
     }
 
@@ -1427,6 +1528,7 @@ mod tests {
             default_voice_name: "en-US-AriaNeural".to_string(),
             default_speed: 1.5,
             default_pitch: 0.8,
+            enable_thinking: false,
         };
 
         db.save_settings(&settings).unwrap();
@@ -1438,6 +1540,7 @@ mod tests {
         assert_eq!(loaded.default_voice_name, "en-US-AriaNeural");
         assert!((loaded.default_speed - 1.5).abs() < f32::EPSILON);
         assert!((loaded.default_pitch - 0.8).abs() < f32::EPSILON);
+        assert!(!loaded.enable_thinking);
     }
 
     #[test]
@@ -1454,6 +1557,7 @@ mod tests {
             default_voice_name: "ja-JP-NanamiNeural".to_string(),
             default_speed: 2.0,
             default_pitch: 0.5,
+            enable_thinking: true,
         };
         db.save_settings(&second).unwrap();
 
@@ -1500,7 +1604,7 @@ mod tests {
             make_script_line("l2", "p1", 1, "Hello from Bob", Some("c2")),
             make_script_line("l3", "p1", 2, "Narrator line", None),
         ];
-        db.save_script("p1", &lines).unwrap();
+        db.save_script("p1", &lines, &[]).unwrap();
 
         // Insert audio fragments
         let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(3000));

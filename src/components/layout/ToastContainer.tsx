@@ -1,8 +1,10 @@
 import { X, AlertTriangle, CheckCircle, Info } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useToastStore } from '../../store/toastStore';
 
 export default function ToastContainer() {
     const { toasts, removeToast } = useToastStore();
+    const { t } = useTranslation();
 
     if (toasts.length === 0) return null;
 
@@ -26,7 +28,7 @@ export default function ToastContainer() {
                     className={`flex items-center gap-2 rounded-lg border px-3 py-2 shadow-md ${bgMap[toast.type]}`}
                 >
                     {iconMap[toast.type]}
-                    <span className="flex-1 text-sm">{toast.message}</span>
+                    <span className="flex-1 text-sm">{t(toast.message)}</span>
                     <button onClick={() => removeToast(toast.id)} className="shrink-0 opacity-60 hover:opacity-100">
                         <X className="h-3 w-3" />
                     </button>

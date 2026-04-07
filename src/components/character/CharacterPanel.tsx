@@ -75,7 +75,7 @@ export default function CharacterPanel() {
             setImportSelected(new Set());
             setShowImport(true);
         } catch {
-            useToastStore.getState().addToast('获取角色列表失败');
+            useToastStore.getState().addToast('character.fetchFailed');
         }
     };
 
@@ -89,7 +89,7 @@ export default function CharacterPanel() {
             useToastStore.getState().addToast(t('character.importSuccess', { count: importSelected.size }), 'success');
             await useCharacterStore.getState().fetchCharacters();
         } catch {
-            useToastStore.getState().addToast('导入角色失败');
+            useToastStore.getState().addToast('character.importFailed');
         } finally {
             setShowImport(false);
         }

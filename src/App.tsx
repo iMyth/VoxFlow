@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useProjectStore } from './store/projectStore';
 import { useCharacterStore } from './store/characterStore';
 import { useScriptStore } from './store/scriptStore';
+import { useSettingsStore } from './store/settingsStore';
 import CharacterPanel from './components/character/CharacterPanel';
 import ScriptEditor from './components/editor/ScriptEditor';
 import ExportPanel from './components/editor/ExportPanel';
@@ -19,6 +20,17 @@ function App() {
     const [activeTab, setActiveTab] = useState<Tab>('editor');
     const { isDirty } = useScriptStore();
 
+    // Load settings on app startup to restore persisted preferences
+    useEffect(() => {
+        useSettingsStore.getState().loadSettings();
+    }, []);
+
+    // Sync enableThinking from settings to scriptStore when settings load
+    const settingsEnableThinking = useSettingsStore((s) => s.enableThinking);
+    useEffect(() => {
+        useScriptStore.getState().setEnableThinking(settingsEnableThinking);
+    }, [settingsEnableThinking]);
+
     const handleSelectProject = async (projectId: string) => {
         await loadProject(projectId);
     };
@@ -31,6 +43,7 @@ function App() {
         useCharacterStore.setState({ characters: [] });
         useScriptStore.setState({
             lines: [],
+            sections: [],
             isDirty: false,
             streamingText: '',
             thinkingText: '',
@@ -49,6 +62,7 @@ function App() {
             useCharacterStore.getState().fetchCharacters();
             useScriptStore.setState({
                 lines: currentProject.script_lines,
+                sections: currentProject.sections ?? [],
                 isDirty: false,
             });
         }

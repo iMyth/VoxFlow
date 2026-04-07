@@ -22,7 +22,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
             const characters = await ipc.listCharacters(projectId);
             set({ characters });
         } catch (e) {
-            useToastStore.getState().addToast('获取角色列表失败');
+            useToastStore.getState().addToast('character.fetchFailed');
         }
     },
 
@@ -34,7 +34,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
             const character = await ipc.createCharacter(projectId, input);
             set((state) => ({ characters: [...state.characters, character] }));
         } catch (e) {
-            useToastStore.getState().addToast('创建角色失败');
+            useToastStore.getState().addToast('character.createFailed');
         }
     },
 
@@ -45,7 +45,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
                 characters: state.characters.map((c) => (c.id === id ? updated : c)),
             }));
         } catch (e) {
-            useToastStore.getState().addToast('更新角色失败');
+            useToastStore.getState().addToast('character.updateFailed');
         }
     },
 
@@ -56,7 +56,7 @@ export const useCharacterStore = create<CharacterStore>((set) => ({
                 characters: state.characters.filter((c) => c.id !== id),
             }));
         } catch (e) {
-            useToastStore.getState().addToast('删除角色失败');
+            useToastStore.getState().addToast('character.deleteFailed');
         }
     },
 }));

@@ -17,7 +17,7 @@ import ConfirmDialog from '../ui/confirm-dialog';
 export default function ScriptEditor() {
     const { t } = useTranslation();
     const {
-        lines, isGenerating, isAnalyzing, isDirty, streamingText, thinkingText,
+        lines, sections, isGenerating, isAnalyzing, isDirty, streamingText, thinkingText,
         enableThinking, setEnableThinking,
         agentPlan, workflow, setWorkflow, analyzeOutline, setAgentPlan, generateScript,
         cancelLlm, saveScript, generateAllTts,
@@ -168,7 +168,7 @@ export default function ScriptEditor() {
     const handleCreateNewChar = async (suggestedName: string) => {
         const form = newCharForms[suggestedName];
         if (!form || !form.name.trim()) {
-            useToastStore.getState().addToast('角色名称不能为空');
+            useToastStore.getState().addToast('editor.charNameRequired');
             return;
         }
         await useCharacterStore.getState().createCharacter({
@@ -181,7 +181,7 @@ export default function ScriptEditor() {
         await useCharacterStore.getState().fetchCharacters();
         setCharacterMapping((prev) => ({ ...prev, [suggestedName]: form.name.trim() }));
         setCreatingChars((prev) => ({ ...prev, [suggestedName]: false }));
-        useToastStore.getState().addToast(`角色 "${form.name}" 已创建`);
+        useToastStore.getState().addToast(t('editor.charCreated', { name: form.name }));
     };
 
     const handleCancelNewChar = (suggestedName: string) => {
@@ -195,14 +195,15 @@ export default function ScriptEditor() {
             (c) => !characterMapping[c.name],
         );
         if (unmapped.length > 0) {
-            useToastStore.getState().addToast(`请为所有角色指定已有角色或创建新角色`);
+            useToastStore.getState().addToast('editor.mapAllCharsRequired');
             return;
         }
         const pendingCreate = agentPlan.suggested_characters.filter(
             (c) => creatingChars[c.name],
         );
         if (pendingCreate.length > 0) {
-            useToastStore.getState().addToast(`请先完成创建角色: ${pendingCreate.map(c => c.name).join(', ')}`);
+            const names = pendingCreate.map(c => c.name).join(', ');
+            useToastStore.getState().addToast(t('editor.finishCreatingChars', { names }));
             return;
         }
 
@@ -250,6 +251,27 @@ export default function ScriptEditor() {
                         onSelectAi={handleAiModeSelect}
                         onSelectManual={handleManualModeSelect}
                     />
+                </div>
+            )}
+
+            {/* Batch TTS blocking overlay */}
+            {isBatchTtsRunning && (
+                <div className="fixed z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm pointer-events-auto" style={{ top: 0, right: 0, bottom: 0, left: 0, width: '100vw', height: '100vh' }}>
+                    <div className="card p-6 space-y-3 text-center max-w-sm">
+                        <p className="text-sm font-medium">{t('editor.batchTtsRunning', { current: batchTtsProgress?.current ?? 0, total: batchTtsProgress?.total ?? 0 })}</p>
+                        {batchTtsProgress && batchTtsProgress.total > 0 && (
+                            <div className="space-y-1">
+                                <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
+                                    <div
+                                        className="h-full bg-primary rounded-full transition-all duration-300"
+                                        style={{ width: `${(batchTtsProgress.current / batchTtsProgress.total) * 100}%` }}
+                                    />
+                                </div>
+                                <p className="text-xs text-muted-foreground">{batchTtsProgress.current} / {batchTtsProgress.total}</p>
+                            </div>
+                        )}
+                        <p className="text-xs text-muted-foreground">{t('editor.batchTtsHint')}</p>
+                    </div>
                 </div>
             )}
 
@@ -347,6 +369,7 @@ export default function ScriptEditor() {
             {/* Script lines */}
             <ScriptLines
                 lines={lines}
+                sections={sections}
                 emptyHint={t('editor.emptyHint')}
                 emptyActionLabel={t('editor.addFirstLine')}
                 onEmptyAction={() => useScriptStore.getState().addLine(-1)}

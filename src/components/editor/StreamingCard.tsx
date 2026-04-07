@@ -66,7 +66,7 @@ export default function StreamingCard({ color, label, text, isAnalyzing, onCance
                         </Button>
                     )}
                 </div>
-                <pre className={`text-sm whitespace-pre-wrap ${c.textLight}`}>
+                <pre className={`text-sm whitespace-pre-wrap ${c.textLight}`} style={{ contain: 'layout style', minHeight: '4rem', maxHeight: '60vh', overflowY: 'auto' }}>
                     {text}
                     <span className="animate-pulse">▌</span>
                 </pre>

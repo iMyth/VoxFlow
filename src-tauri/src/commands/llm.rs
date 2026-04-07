@@ -9,140 +9,7 @@ use crate::core::agent::{
 use crate::core::cancel_token::CancellationToken;
 use crate::core::db::Database;
 use crate::core::error::AppError;
-use crate::core::models::{Character, LlmScriptLine, LlmScriptResponse, ScriptLine};
-
-/// Merge LLM-generated lines with existing script lines, preserving character
-/// assignments and audio references for matched lines.
-///
-/// Matching strategy (in priority order):
-/// 1. Exact text match
-/// 2. Fuzzy match (Jaccard bigram similarity >= 0.7)
-/// 3. Position match (same index)
-pub fn merge_script_lines(
-    old_lines: &[ScriptLine],
-    new_lines: &[LlmScriptLine],
-    characters: &[Character],
-) -> Vec<ScriptLine> {
-    let mut used_old: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut result: Vec<ScriptLine> = Vec::new();
-
-    for (i, new_line) in new_lines.iter().enumerate() {
-        let text = new_line.text.trim();
-        if text.is_empty() {
-            continue;
-        }
-
-        // Find the best matching old line
-        let matched_old = find_best_match(text, i, old_lines, &used_old);
-
-        if let Some(old_idx) = matched_old {
-            used_old.insert(old_idx);
-            let old = &old_lines[old_idx];
-
-            // Resolve character: old assignment takes priority
-            let character_id = old.character_id.clone().or_else(|| {
-                resolve_character(&new_line.character, characters)
-            });
-
-            // If text changed, use a new ID to avoid carrying over stale audio
-            let id = if old.text.trim() == text {
-                old.id.clone()
-            } else {
-                uuid::Uuid::new_v4().to_string()
-            };
-
-            // Resolve instructions: use old value if present, otherwise use LLM's suggestion
-            let instructions = if !old.instructions.is_empty() {
-                old.instructions.clone()
-            } else {
-                new_line.instructions.clone().unwrap_or_default()
-            };
-
-            result.push(ScriptLine {
-                id,
-                project_id: old.project_id.clone(),
-                line_order: i as i32,
-                text: text.to_string(),
-                character_id,
-                gap_after_ms: old.gap_after_ms,
-                instructions,
-            });
-        } else {
-            // Brand new line
-            let gap_ms = new_line.gap_ms.unwrap_or(500);
-            result.push(ScriptLine {
-                id: uuid::Uuid::new_v4().to_string(),
-                project_id: old_lines.first().map(|l| l.project_id.clone()).unwrap_or_default(),
-                line_order: i as i32,
-                text: text.to_string(),
-                character_id: resolve_character(&new_line.character, characters),
-                gap_after_ms: gap_ms as i32,
-                instructions: new_line.instructions.clone().unwrap_or_default(),
-            });
-        }
-    }
-
-    result
-}
-
-/// Find the best matching old line for a given new text.
-fn find_best_match(
-    new_text: &str,
-    index: usize,
-    old_lines: &[ScriptLine],
-    used: &std::collections::HashSet<usize>,
-) -> Option<usize> {
-    // Level 1: Exact match
-    for (idx, old) in old_lines.iter().enumerate() {
-        if used.contains(&idx) {
-            continue;
-        }
-        if old.text.trim() == new_text {
-            return Some(idx);
-        }
-    }
-
-    // Level 2: Fuzzy match (Jaccard bigram similarity)
-    let mut best_idx: Option<usize> = None;
-    let mut best_score: f64 = 0.0;
-    for (idx, old) in old_lines.iter().enumerate() {
-        if used.contains(&idx) {
-            continue;
-        }
-        let score = jaccard_similarity(new_text, old.text.trim());
-        if score > best_score && score >= 0.6 {
-            best_score = score;
-            best_idx = Some(idx);
-        }
-    }
-    if let Some(idx) = best_idx {
-        return Some(idx);
-    }
-
-    // Level 3: Position match
-    if index < old_lines.len() && !used.contains(&index) {
-        return Some(index);
-    }
-
-    None
-}
-
-/// Compute Jaccard similarity between two strings based on character sets.
-fn jaccard_similarity(a: &str, b: &str) -> f64 {
-    let set_a: std::collections::HashSet<char> = a.chars().collect();
-    let set_b: std::collections::HashSet<char> = b.chars().collect();
-
-    if set_a.is_empty() && set_b.is_empty() {
-        return 1.0;
-    }
-    if set_a.is_empty() || set_b.is_empty() {
-        return 0.0;
-    }
-
-    let intersection = set_a.intersection(&set_b).count();
-    let union = set_a.len() + set_b.len() - intersection;
-    intersection as f64 / union as f64
-}
+use crate::core::models::{Character, LlmScriptLine, LlmScriptResponse, LlmSection, ScriptLine, ScriptSection};
 
 /// Resolve a character name to its ID.
 fn resolve_character(name: &Option<String>, characters: &[Character]) -> Option<String> {
@@ -352,6 +219,7 @@ pub async fn generate_script(
     api_key: String,
     model: String,
     characters: Vec<Character>,
+    agent_plan: Option<AgentPlan>,
     extra_instructions: Option<String>,
     enable_thinking: bool,
 ) -> Result<(), AppError> {
@@ -369,6 +237,23 @@ pub async fn generate_script(
         format!("可用角色: {}", names.join("、"))
     };
 
+    // Build chapter reference info from the plan (as guidance, not hard requirement)
+    let chapter_info = agent_plan.as_ref().map(|p| {
+        let ch_descs: Vec<String> = p.chapters.iter().map(|ch| {
+            format!(
+                "「{}」约{}行台词，情绪氛围：{}，涉及角色：{}",
+                ch.title,
+                ch.estimated_lines,
+                ch.mood,
+                if ch.characters.is_empty() { "无特定角色".to_string() } else { ch.characters.join("、") }
+            )
+        }).collect();
+        format!(
+            "【章节规划参考】\n{}\n\n注意：以上章节结构仅供参考，请根据大纲内容自然展开剧情，每个章节的台词数量可以根据剧情需要自由调整，关键是内容充实、剧情完整。避免用省略号或重复内容填充行数，每句台词都应该推动故事发展。",
+            ch_descs.join("\n")
+        )
+    }).unwrap_or_default();
+
     let extra = extra_instructions
         .filter(|s| !s.trim().is_empty())
         .map(|s| format!("用户额外要求：{}\n", s))
@@ -377,18 +262,26 @@ pub async fn generate_script(
     let system_prompt = format!(
         "你是有声书剧本编写助手。根据用户提供的大纲，生成或更新有声书剧本。\n\n\
         {extra}{char_list}\n\n\
+        {chapter_info}\n\n\
+        按段落/场景分组返回剧本（如「片头」「第一幕」「第二幕」「片尾」等），\
+        如果大纲没有明确的段落划分，可自动分为 3-5 个场景。\n\n\
         返回 JSON 格式：\n\
-        {{\"lines\":[\
+        {{\"sections\":[\
+        {{\"title\":\"段落标题\",\"lines\":[\
         {{\"text\":\"台词内容\",\"character\":\"角色名\",\"instructions\":\"情绪/语速指令或null\",\"gap_ms\":500}},...\
+        ]}},...\
         ]}}\n\n\
         规则：\n\
         1. character 字段必填，每行必须指定角色\n\
         2. instructions 字段描述语音生成指令（情绪、语速、语调），如不确定用 null\n\
         3. gap_ms 表示停顿毫秒数，推荐 500-2000，默认 500\n\
-        4. 每行一句台词\n\
-        5. 不要包含任何 markdown 代码块，只返回 JSON",
+        4. 每行一句完整的台词，有实际内容\n\
+        5. 避免过度使用省略号（……）、占位符（略）或重复内容来凑字数。省略号可用于语气停顿，但不应作为填充手段\n\
+        6. 每个场景需要充分展开剧情，角色对话应推动情节发展或揭示角色性格\n\
+        7. 不要包含任何 markdown 代码块，只返回 JSON",
         extra = extra,
-        char_list = char_list
+        char_list = char_list,
+        chapter_info = chapter_info
     );
 
     let body = json!({
@@ -472,22 +365,58 @@ pub async fn generate_script(
         AppError::LlmService(msg)
     })?;
 
-    // Get existing script lines for merge
-    let old_lines = {
-        let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
-        db.load_script(&project_id)?
-    };
-
-    // Merge new lines with existing
-    let merged_lines = merge_script_lines(&old_lines, &llm_response.lines, &characters);
-
-    // Save to database
+    // Delete old sections and lines, save fresh LLM output directly
     let db = db.lock().map_err(|e| {
         let msg = format!("数据库锁获取失败: {}", e);
         let _ = app.emit("llm-error", &msg);
         AppError::Database(msg)
     })?;
-    db.save_script(&project_id, &merged_lines).map_err(|e| {
+    db.delete_sections(&project_id).map_err(|e| {
+        let msg = format!("删除旧章节失败: {}", e);
+        let _ = app.emit("llm-error", &msg);
+        AppError::Database(msg)
+    })?;
+
+    // Convert LLM sections to ScriptSections and ScriptLines
+    let mut sections: Vec<ScriptSection> = Vec::new();
+    let mut lines: Vec<ScriptLine> = Vec::new();
+    for (i, section) in llm_response.sections.iter().enumerate() {
+        let section_id = uuid::Uuid::new_v4().to_string();
+        sections.push(ScriptSection {
+            id: section_id.clone(),
+            project_id: project_id.clone(),
+            title: section.title.clone(),
+            section_order: i as i32,
+        });
+        for (_j, line) in section.lines.iter().enumerate() {
+            let text = line.text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            lines.push(ScriptLine {
+                id: uuid::Uuid::new_v4().to_string(),
+                project_id: project_id.clone(),
+                line_order: lines.len() as i32,
+                text: text.to_string(),
+                character_id: resolve_character(&line.character, &characters),
+                gap_after_ms: line.gap_ms.unwrap_or(500) as i32,
+                instructions: line.instructions.clone().unwrap_or_default(),
+                section_id: Some(section_id.clone()),
+            });
+        }
+    }
+
+    // If LLM returned no sections, flatten to lines without section_id
+    if llm_response.sections.is_empty() {
+        let flat_lines: Vec<ScriptLine> = Vec::new();
+        db.save_script(&project_id, &flat_lines, &[]).map_err(|e| {
+            let msg = format!("保存剧本失败: {}", e);
+            let _ = app.emit("llm-error", &msg);
+            e
+        })?;
+    }
+
+    db.save_script(&project_id, &lines, &sections).map_err(|e| {
         let msg = format!("保存剧本失败: {}", e);
         let _ = app.emit("llm-error", &msg);
         e
@@ -496,17 +425,66 @@ pub async fn generate_script(
     Ok(())
 }
 
+/// Auto-complete truncated JSON by appending missing closing delimiters.
+fn auto_complete_json(json: &str) -> String {
+    let mut result = json.to_string();
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut bracket_depth: usize = 0;
+    let mut array_depth: usize = 0;
+
+    for ch in result.chars() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if !in_string {
+            match ch {
+                '{' => bracket_depth += 1,
+                '}' => bracket_depth = bracket_depth.saturating_sub(1),
+                '[' => array_depth += 1,
+                ']' => array_depth = array_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+
+    // Close any open string
+    if in_string {
+        result.push('"');
+    }
+    // Close arrays
+    for _ in 0..array_depth {
+        result.push(']');
+    }
+    // Close objects
+    for _ in 0..bracket_depth {
+        result.push('}');
+    }
+
+    result
+}
+
 /// Parse LLM response text as JSON LlmScriptResponse.
 /// Strips markdown code block fences if present.
+/// Backward compatible: accepts both new `{"sections":[...]}` format
+/// and old `{"lines":[...]}` format (wraps lines in a default "正文" section).
+/// Handles truncated JSON from stream cutoff.
 fn parse_llm_json(text: &str) -> Result<LlmScriptResponse, String> {
     let trimmed = text.trim();
 
     // Strip markdown code block: ```json ... ``` or ``` ... ```
     let json_str = if trimmed.starts_with("```") {
-        // Find the end of the first line (may contain "json" or "JSON")
         if let Some(first_newline) = trimmed.find('\n') {
             let after_fence = &trimmed[first_newline + 1..];
-            // Strip trailing ```
             after_fence
                 .trim()
                 .strip_suffix("```")
@@ -524,8 +502,54 @@ fn parse_llm_json(text: &str) -> Result<LlmScriptResponse, String> {
         trimmed.to_string()
     };
 
-    serde_json::from_str::<LlmScriptResponse>(&json_str)
-        .map_err(|e| e.to_string())
+    // Try new sections format first
+    if let Ok(resp) = serde_json::from_str::<LlmScriptResponse>(&json_str) {
+        return Ok(resp);
+    }
+
+    // Try auto-completing truncated JSON
+    let completed = auto_complete_json(&json_str);
+    if let Ok(resp) = serde_json::from_str::<LlmScriptResponse>(&completed) {
+        return Ok(resp);
+    }
+
+    // Fallback: try old lines format and wrap in default section
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
+        if let Some(lines_array) = value.get("lines").and_then(|v| v.as_array()) {
+            let lines: Vec<LlmScriptLine> = lines_array
+                .iter()
+                .filter_map(|l| serde_json::from_value::<LlmScriptLine>(l.clone()).ok())
+                .collect();
+            if !lines.is_empty() {
+                return Ok(LlmScriptResponse {
+                    sections: vec![LlmSection {
+                        title: "正文".to_string(),
+                        lines,
+                    }],
+                });
+            }
+        }
+    }
+
+    // Try old lines format with auto-completed JSON
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&completed) {
+        if let Some(lines_array) = value.get("lines").and_then(|v| v.as_array()) {
+            let lines: Vec<LlmScriptLine> = lines_array
+                .iter()
+                .filter_map(|l| serde_json::from_value::<LlmScriptLine>(l.clone()).ok())
+                .collect();
+            if !lines.is_empty() {
+                return Ok(LlmScriptResponse {
+                    sections: vec![LlmSection {
+                        title: "正文".to_string(),
+                        lines,
+                    }],
+                });
+            }
+        }
+    }
+
+    Err(format!("无法解析为 sections 或 lines 格式，原始内容: {}", json_str.chars().take(500).collect::<String>()))
 }
 
 /// Cancel an ongoing LLM request (analyze_outline or generate_script).
@@ -541,9 +565,10 @@ pub fn save_script(
     db: tauri::State<'_, Mutex<Database>>,
     project_id: String,
     lines: Vec<ScriptLine>,
+    sections: Vec<ScriptSection>,
 ) -> Result<(), AppError> {
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
-    db.save_script(&project_id, &lines)
+    db.save_script(&project_id, &lines, &sections)
 }
 
 #[tauri::command]
@@ -571,173 +596,39 @@ mod tests {
         }
     }
 
-    fn make_old_line(id: &str, text: &str, character_id: Option<&str>) -> ScriptLine {
-        ScriptLine {
-            id: id.to_string(),
-            project_id: "p1".to_string(),
-            line_order: 0,
-            text: text.to_string(),
-            character_id: character_id.map(String::from),
-            gap_after_ms: 500,
-            instructions: String::new(),
-        }
-    }
-
-    fn make_llm_line(text: &str, character: Option<&str>, instructions: Option<&str>) -> LlmScriptLine {
-        LlmScriptLine {
-            text: text.to_string(),
-            character: character.map(String::from),
-            instructions: instructions.map(String::from),
-            gap_ms: None,
-        }
-    }
-
-    // ---- merge tests ----
-
-    #[test]
-    fn test_merge_exact_match_preserves_character_and_audio() {
-        let old = vec![
-            make_old_line("line-1", "你好世界", Some("char-A")),
-            make_old_line("line-2", "第二句话", None),
-        ];
-        let chars = vec![make_char("char-A", "Alice"), make_char("char-B", "Bob")];
-        let new = vec![
-            make_llm_line("你好世界", Some("Bob"), None),
-            make_llm_line("第二句话", None, None),
-        ];
-
-        let result = merge_script_lines(&old, &new, &chars);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].id, "line-1");  // preserved ID
-        assert_eq!(result[0].character_id, Some("char-A".to_string()));  // preserved char
-        assert_eq!(result[1].id, "line-2");
-    }
-
-    #[test]
-    fn test_merge_fuzzy_match() {
-        let old = vec![make_old_line("line-1", "今天天气真好", Some("char-A"))];
-        let chars = vec![make_char("char-A", "Alice")];
-        let new = vec![make_llm_line("今天天气很好", None, Some("语速缓慢，带有怀念的语气"))];  // similar but edited
-
-        let result = merge_script_lines(&old, &new, &chars);
-        assert_eq!(result.len(), 1);
-        assert_ne!(result[0].id, "line-1");  // new ID because text changed
-        assert_eq!(result[0].text, "今天天气很好");
-        assert_eq!(result[0].character_id, Some("char-A".to_string()));
-        // LLM provided instructions, new line adopts them
-        assert_eq!(result[0].instructions, "语速缓慢，带有怀念的语气");
-    }
-
-    #[test]
-    fn test_merge_new_lines_gets_character() {
-        let old = vec![];
-        let chars = vec![make_char("char-A", "Alice"), make_char("char-B", "Bob")];
-        let new = vec![make_llm_line("新台词", Some("Bob"), None)];
-
-        let result = merge_script_lines(&old, &new, &chars);
-        assert_eq!(result.len(), 1);
-        assert_ne!(result[0].id, "");  // new UUID
-        assert_eq!(result[0].character_id, Some("char-B".to_string()));
-    }
-
-    #[test]
-    fn test_merge_deletes_unmatched_old_lines() {
-        let old = vec![
-            make_old_line("line-1", "保留的行", None),
-            make_old_line("line-2", "删除的行", None),
-        ];
-        let new = vec![make_llm_line("保留的行", None, None)];
-
-        let result = merge_script_lines(&old, &new, &[]);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "line-1");
-    }
-
-    #[test]
-    fn test_merge_position_match_uses_llm_character() {
-        let old = vec![make_old_line("line-1", "旧文本", None)];
-        let chars = vec![make_char("char-A", "Alice")];
-        let new = vec![make_llm_line("全新内容", Some("Alice"), None)];  // position match
-
-        let result = merge_script_lines(&old, &new, &chars);
-        assert_eq!(result.len(), 1);
-        assert_ne!(result[0].id, "line-1");  // new ID because text changed
-        assert_eq!(result[0].text, "全新内容");
-        // Old had no character, LLM assigned one → use LLM's
-        assert_eq!(result[0].character_id, Some("char-A".to_string()));
-    }
-
-    #[test]
-    fn test_merge_position_match_preserves_old_character() {
-        let old = vec![make_old_line("line-1", "旧文本", Some("char-A"))];
-        let chars = vec![make_char("char-A", "Alice"), make_char("char-B", "Bob")];
-        let new = vec![make_llm_line("全新内容", Some("Bob"), Some("语气坚定，语速中等"))];  // position match
-
-        let result = merge_script_lines(&old, &new, &chars);
-        assert_eq!(result.len(), 1);
-        assert_ne!(result[0].id, "line-1");  // new ID because text changed
-        // Old had char-A → preserve it even though LLM suggested Bob
-        assert_eq!(result[0].character_id, Some("char-A".to_string()));
-    }
-
-    #[test]
-    fn test_merge_skips_empty_llm_lines() {
-        let old: Vec<ScriptLine> = vec![];
-        let new = vec![
-            make_llm_line("有效行", None, None),
-            make_llm_line("   ", None, None),
-            make_llm_line("", None, None),
-            make_llm_line("另一行", None, None),
-        ];
-
-        let result = merge_script_lines(&old, &new, &[]);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].text, "有效行");
-        assert_eq!(result[1].text, "另一行");
-    }
-
-    // ---- Jaccard similarity tests ----
-
-    #[test]
-    fn test_jaccard_identical_strings() {
-        assert_eq!(jaccard_similarity("hello", "hello"), 1.0);
-    }
-
-    #[test]
-    fn test_jaccard_completely_different() {
-        assert_eq!(jaccard_similarity("abc", "xyz"), 0.0);
-    }
-
-    #[test]
-    fn test_jaccard_similar_texts() {
-        let score = jaccard_similarity("今天天气真好", "今天天气很好");
-        assert!(score >= 0.6, "Expected similarity >= 0.6, got {}", score);
-    }
-
-    #[test]
-    fn test_jaccard_empty_strings() {
-        assert_eq!(jaccard_similarity("", ""), 1.0);
-    }
-
     // ---- JSON parsing tests ----
 
     #[test]
     fn test_parse_llm_json_basic() {
-        let text = r#"{"lines":[{"text":"台词1","character":null},{"text":"台词2","character":"Alice"}]}"#;
+        let text = r#"{"sections":[{"title":"第一幕","lines":[{"text":"台词1","character":null},{"text":"台词2","character":"Alice"}]}]}"#;
         let resp = parse_llm_json(text).unwrap();
-        assert_eq!(resp.lines.len(), 2);
-        assert_eq!(resp.lines[0].text, "台词1");
-        assert!(resp.lines[0].character.is_none());
-        assert_eq!(resp.lines[1].text, "台词2");
-        assert_eq!(resp.lines[1].character, Some("Alice".to_string()));
+        assert_eq!(resp.sections.len(), 1);
+        assert_eq!(resp.sections[0].title, "第一幕");
+        assert_eq!(resp.sections[0].lines.len(), 2);
+        assert_eq!(resp.sections[0].lines[0].text, "台词1");
+        assert!(resp.sections[0].lines[0].character.is_none());
+        assert_eq!(resp.sections[0].lines[1].text, "台词2");
+        assert_eq!(resp.sections[0].lines[1].character, Some("Alice".to_string()));
     }
 
     #[test]
     fn test_parse_llm_json_strips_markdown_fence() {
-        let text = "```json\n{\"lines\":[{\"text\":\"hello\",\"character\":null}]}\n```";
+        let text = "```json\n{\"sections\":[{\"title\":\"开场\",\"lines\":[{\"text\":\"hello\",\"character\":null}]}]}\n```";
         let resp = parse_llm_json(text).unwrap();
-        assert_eq!(resp.lines.len(), 1);
-        assert_eq!(resp.lines[0].text, "hello");
+        assert_eq!(resp.sections.len(), 1);
+        assert_eq!(resp.sections[0].lines.len(), 1);
+        assert_eq!(resp.sections[0].lines[0].text, "hello");
+    }
+
+    #[test]
+    fn test_parse_llm_json_old_format_fallback() {
+        // Old format without sections should be wrapped in a default "正文" section
+        let text = r#"{"lines":[{"text":"台词1","character":null},{"text":"台词2","character":"Alice"}]}"#;
+        let resp = parse_llm_json(text).unwrap();
+        assert_eq!(resp.sections.len(), 1);
+        assert_eq!(resp.sections[0].title, "正文");
+        assert_eq!(resp.sections[0].lines.len(), 2);
+        assert_eq!(resp.sections[0].lines[0].text, "台词1");
     }
 
     #[test]

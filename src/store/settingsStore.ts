@@ -10,6 +10,7 @@ interface SettingsStore {
     defaultVoiceName: string;
     defaultSpeed: number;
     defaultPitch: number;
+    enableThinking: boolean;
     loadSettings: () => Promise<void>;
     saveSettings: () => Promise<void>;
     saveApiKey: (service: string, key: string) => Promise<void>;
@@ -24,6 +25,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     defaultVoiceName: 'Cherry',
     defaultSpeed: 1.0,
     defaultPitch: 1.0,
+    enableThinking: true,
 
     loadSettings: async () => {
         try {
@@ -35,9 +37,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
                 defaultVoiceName: settings.default_voice_name,
                 defaultSpeed: settings.default_speed,
                 defaultPitch: settings.default_pitch,
+                enableThinking: settings.enable_thinking,
             });
         } catch (e) {
-            useToastStore.getState().addToast('加载设置失败');
+            useToastStore.getState().addToast('settings.loadFailed');
         }
     },
 
@@ -50,11 +53,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
             default_voice_name: state.defaultVoiceName,
             default_speed: state.defaultSpeed,
             default_pitch: state.defaultPitch,
+            enable_thinking: state.enableThinking,
         };
         try {
             await ipc.saveSettings(settings);
         } catch (e) {
-            useToastStore.getState().addToast('保存设置失败');
+            useToastStore.getState().addToast('settings.saveFailed');
         }
     },
 
@@ -62,7 +66,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         try {
             await ipc.saveApiKey(service, key);
         } catch (e) {
-            useToastStore.getState().addToast('保存 API Key 失败');
+            useToastStore.getState().addToast('settings.saveApiKeyFailed');
         }
     },
 
@@ -70,7 +74,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         try {
             return await ipc.loadApiKey(service);
         } catch (e) {
-            useToastStore.getState().addToast('加载 API Key 失败');
+            useToastStore.getState().addToast('settings.loadApiKeyFailed');
             return null;
         }
     },

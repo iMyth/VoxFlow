@@ -9,6 +9,7 @@ export interface Project {
 export interface ProjectDetail {
     project: Project;
     characters: Character[];
+    sections: ScriptSection[];
     script_lines: ScriptLine[];
     audio_fragments: AudioFragment[];
 }
@@ -31,6 +32,14 @@ export interface ScriptLine {
     character_id: string | null;
     gap_after_ms: number;
     instructions: string;
+    section_id: string | null;
+}
+
+export interface ScriptSection {
+    id: string;
+    project_id: string;
+    title: string;
+    section_order: number;
 }
 
 export interface AudioFragment {
@@ -81,6 +90,7 @@ export interface UserSettings {
     default_voice_name: string;
     default_speed: number;
     default_pitch: number;
+    enable_thinking: boolean;
 }
 
 export interface CharacterInput {

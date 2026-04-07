@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { Play, Pause } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useToastStore } from '../../store/toastStore';
+import { useAudioStore } from '../../store/audioStore';
 import { Button } from '../ui/button';
 
 interface AudioPlayerProps {
@@ -12,27 +13,32 @@ interface AudioPlayerProps {
 
 export default function AudioPlayer({ filePath }: AudioPlayerProps) {
     const { t } = useTranslation();
-    const [playing, setPlaying] = useState(false);
+    const playingPath = useAudioStore((s) => s.playingPath);
+    const setPlayingPath = useAudioStore((s) => s.setPlayingPath);
+    const isPlaying = playingPath === filePath;
+
+    const clearIfPlaying = useAudioStore((s) => s.clearIfPlaying);
 
     useEffect(() => {
-        const unlisten = listen('audio-finished', () => {
-            setPlaying(false);
+        const unlisten = listen('audio-finished', (e) => {
+            const finishedPath = e.payload as string;
+            clearIfPlaying(finishedPath);
         });
         return () => { unlisten.then((fn) => fn()); };
-    }, []);
+    }, [clearIfPlaying]);
 
     const toggle = async () => {
         try {
-            if (playing) {
+            if (isPlaying) {
                 await invoke('stop_audio');
-                setPlaying(false);
+                setPlayingPath(null);
             } else {
                 await invoke('play_audio', { filePath });
-                setPlaying(true);
+                setPlayingPath(filePath);
             }
         } catch (e) {
-            useToastStore.getState().addToast('音频播放失败');
-            setPlaying(false);
+            useToastStore.getState().addToast('editor.audioPlaybackFailed');
+            setPlayingPath(null);
         }
     };
 
@@ -41,10 +47,10 @@ export default function AudioPlayer({ filePath }: AudioPlayerProps) {
             variant="outline"
             size="xs"
             onClick={toggle}
-            aria-label={playing ? t('editor.pause') : t('editor.play')}
+            aria-label={isPlaying ? t('editor.pause') : t('editor.play')}
         >
-            {playing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {playing ? t('editor.pause') : t('editor.play')}
+            {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+            {isPlaying ? t('editor.pause') : t('editor.play')}
         </Button>
     );
 }
