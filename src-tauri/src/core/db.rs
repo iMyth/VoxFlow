@@ -302,36 +302,44 @@ impl Database {
     }
 
     /// List all characters across all projects, grouped by (project_id, characters).
-    pub fn list_all_project_characters(&self) -> Result<Vec<(String, Vec<Character>)>, AppError> {
+    pub fn list_all_project_characters(&self) -> Result<Vec<(String, String, Vec<Character>)>, AppError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, project_id, name, tts_model, voice_name, speed, pitch FROM characters ORDER BY project_id, name")
+            .prepare("SELECT c.id, c.project_id, p.name, c.name, c.tts_model, c.voice_name, c.speed, c.pitch FROM characters c JOIN projects p ON c.project_id = p.id ORDER BY p.name, c.name")
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let characters = stmt
             .query_map([], |row| {
-                Ok(Character {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    name: row.get(2)?,
-                    tts_model: row.get(3)?,
-                    voice_name: row.get(4)?,
-                    speed: row.get(5)?,
-                    pitch: row.get(6)?,
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    crate::core::models::Character {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        name: row.get(3)?,
+                        tts_model: row.get(4)?,
+                        voice_name: row.get(5)?,
+                        speed: row.get(6)?,
+                        pitch: row.get(7)?,
+                    },
+                ))
             })
             .map_err(|e| AppError::Database(e.to_string()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // Group by project_id
-        let mut grouped: std::collections::HashMap<String, Vec<Character>> =
+        // Group by project_id, keeping project_name
+        let mut grouped: std::collections::HashMap<String, (String, Vec<crate::core::models::Character>)> =
             std::collections::HashMap::new();
-        for c in characters {
-            grouped.entry(c.project_id.clone()).or_default().push(c);
+        for (_, project_id, project_name, c) in characters {
+            grouped.entry(project_id.clone()).or_insert((project_name, Vec::new())).1.push(c);
         }
 
-        Ok(grouped.into_iter().collect())
+        Ok(grouped
+            .into_iter()
+            .map(|(project_id, (project_name, chars))| (project_id, project_name, chars))
+            .collect())
     }
 
     /// Get a single character by ID.

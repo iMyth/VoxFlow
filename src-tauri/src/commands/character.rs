@@ -75,7 +75,7 @@ pub fn list_characters(
 #[tauri::command]
 pub fn list_all_project_characters(
     db: tauri::State<'_, Mutex<Database>>,
-) -> Result<Vec<(String, Vec<Character>)>, AppError> {
+) -> Result<Vec<(String, String, Vec<Character>)>, AppError> {
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
     db.list_all_project_characters()
 }

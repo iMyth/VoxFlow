@@ -12,6 +12,9 @@ interface ScriptStore {
     isAnalyzing: boolean;
     isDirty: boolean;
     streamingText: string;
+    thinkingText: string;
+    enableThinking: boolean;
+    setEnableThinking: (v: boolean) => void;
     isBatchTtsRunning: boolean;
     batchTtsProgress: { current: number; total: number } | null;
     agentPlan: ipc.AgentPlan | null;
@@ -19,6 +22,7 @@ interface ScriptStore {
     setWorkflow: (mode: 'ai' | 'manual' | null) => void;
     analyzeOutline: (outline: string) => Promise<void>;
     generateScript: (outline: string, extraInstructions?: string, confirmedCharNames?: string[]) => Promise<void>;
+    cancelLlm: () => Promise<void>;
     setAgentPlan: (plan: ipc.AgentPlan | null) => void;
     updateLine: (lineId: string, text: string) => void;
     assignCharacter: (lineId: string, characterId: string) => void;
@@ -47,10 +51,16 @@ export const useScriptStore = create<ScriptStore>()(
             isAnalyzing: false,
             isDirty: false,
             streamingText: '',
+            thinkingText: '',
+            enableThinking: true,
             isBatchTtsRunning: false,
             batchTtsProgress: null,
             agentPlan: null,
             workflow: null,
+
+            setEnableThinking: (v: boolean) => {
+                set({ enableThinking: v });
+            },
 
             setWorkflow: (mode: 'ai' | 'manual' | null) => {
                 set({ workflow: mode });
@@ -64,16 +74,26 @@ export const useScriptStore = create<ScriptStore>()(
                 const settings = useSettingsStore.getState();
                 const apiKey = await ipc.loadApiKey('dashscope');
                 const characters = useCharacterStore.getState().characters;
+                const enableThinking = get().enableThinking;
 
-                set({ isAnalyzing: true, streamingText: '' });
+                set({ isAnalyzing: true, streamingText: '', thinkingText: '' });
 
                 const unlistenToken = await ipc.onLlmToken((token) => {
                     set((state) => ({ streamingText: state.streamingText + token }));
                 });
 
+                const unlistenThinking = await ipc.onLlmThinking((token) => {
+                    set((state) => ({ thinkingText: state.thinkingText + token }));
+                });
+
+                const unlistenCancel = await ipc.onLlmCancel(() => {
+                    useToastStore.getState().addToast('已取消分析', 'info');
+                    set({ isAnalyzing: false, streamingText: '', thinkingText: '' });
+                });
+
                 const unlistenError = await ipc.onLlmError((_error) => {
                     useToastStore.getState().addToast('分析大纲失败');
-                    set({ isAnalyzing: false, streamingText: '' });
+                    set({ isAnalyzing: false, streamingText: '', thinkingText: '' });
                 });
 
                 try {
@@ -81,15 +101,24 @@ export const useScriptStore = create<ScriptStore>()(
                         api_endpoint: settings.llmEndpoint,
                         api_key: apiKey ?? '',
                         model: settings.llmModel,
-                    }, characters);
-                    set({ agentPlan: plan, isAnalyzing: false, streamingText: '' });
+                    }, characters, enableThinking);
+                    set({ agentPlan: plan, isAnalyzing: false, streamingText: '', thinkingText: '' });
                 } catch (e) {
-                    useToastStore.getState().addToast('分析大纲失败');
-                    set({ isAnalyzing: false, streamingText: '' });
+                    const errMsg = String(e);
+                    if (!errMsg.includes('已取消')) {
+                        useToastStore.getState().addToast('分析大纲失败');
+                    }
+                    set({ isAnalyzing: false, streamingText: '', thinkingText: '' });
                 } finally {
                     unlistenToken();
+                    unlistenThinking();
+                    unlistenCancel();
                     unlistenError();
                 }
+            },
+
+            cancelLlm: async () => {
+                await ipc.cancelLlm();
             },
 
             setAgentPlan: (plan: ipc.AgentPlan | null) => {
@@ -104,31 +133,37 @@ export const useScriptStore = create<ScriptStore>()(
                 const settings = useSettingsStore.getState();
                 const apiKey = await ipc.loadApiKey('dashscope');
                 const allCharacters = useCharacterStore.getState().characters;
+                const enableThinking = get().enableThinking;
 
-                // If confirmed character names are provided, only use those.
-                // Otherwise fall back to all characters (for direct generate without plan).
                 const characters = confirmedCharNames
                     ? allCharacters.filter((c) => confirmedCharNames.includes(c.name))
                     : allCharacters;
 
-                // Preserve old lines in case generation fails
                 const oldLines = get().lines;
-                set({ isGenerating: true, streamingText: '' });
+                set({ isGenerating: true, streamingText: '', thinkingText: '' });
 
                 const unlistenToken = await ipc.onLlmToken((token) => {
                     set((state) => ({ streamingText: state.streamingText + token }));
                 });
 
+                const unlistenThinking = await ipc.onLlmThinking((token) => {
+                    set((state) => ({ thinkingText: state.thinkingText + token }));
+                });
+
+                const unlistenCancel = await ipc.onLlmCancel(() => {
+                    useToastStore.getState().addToast('已取消生成', 'info');
+                    set({ lines: oldLines, isGenerating: false, streamingText: '', thinkingText: '' });
+                });
+
                 const unlistenComplete = await ipc.onLlmComplete(() => {
-                    // Reload script lines from backend after generation completes
                     ipc.loadScript(project.project.id).then((lines) => {
-                        set({ lines, isGenerating: false, streamingText: '', isDirty: false });
+                        set({ lines, isGenerating: false, streamingText: '', thinkingText: '', isDirty: false });
                     });
                 });
 
                 const unlistenError = await ipc.onLlmError((_error) => {
                     useToastStore.getState().addToast('AI 生成出错，已恢复旧内容');
-                    set({ lines: oldLines, isGenerating: false, streamingText: '' });
+                    set({ lines: oldLines, isGenerating: false, streamingText: '', thinkingText: '' });
                 });
 
                 try {
@@ -136,12 +171,14 @@ export const useScriptStore = create<ScriptStore>()(
                         api_endpoint: settings.llmEndpoint,
                         api_key: apiKey ?? '',
                         model: settings.llmModel,
-                    }, characters, extraInstructions);
+                    }, characters, extraInstructions, enableThinking);
                 } catch (e) {
                     useToastStore.getState().addToast('生成剧本失败');
-                    set({ lines: oldLines, isGenerating: false, streamingText: '' });
+                    set({ lines: oldLines, isGenerating: false, streamingText: '', thinkingText: '' });
                 } finally {
                     unlistenToken();
+                    unlistenThinking();
+                    unlistenCancel();
                     unlistenComplete();
                     unlistenError();
                 }

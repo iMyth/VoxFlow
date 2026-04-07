@@ -11,14 +11,16 @@ import PlanCard from './PlanCard';
 import ScriptLines from './ScriptLines';
 import StreamingCard from './StreamingCard';
 import ActionBar from './ActionBar';
+import ThinkingPanel from './ThinkingPanel';
 import ConfirmDialog from '../ui/confirm-dialog';
 
 export default function ScriptEditor() {
     const { t } = useTranslation();
     const {
-        lines, isGenerating, isAnalyzing, isDirty, streamingText,
+        lines, isGenerating, isAnalyzing, isDirty, streamingText, thinkingText,
+        enableThinking, setEnableThinking,
         agentPlan, workflow, setWorkflow, analyzeOutline, setAgentPlan, generateScript,
-        saveScript, generateAllTts,
+        cancelLlm, saveScript, generateAllTts,
         isBatchTtsRunning, batchTtsProgress,
     } = useScriptStore();
     const currentProject = useProjectStore((s) => s.currentProject);
@@ -32,6 +34,24 @@ export default function ScriptEditor() {
     const [creatingChars, setCreatingChars] = useState<Record<string, boolean>>({});
     const [newCharForms, setNewCharForms] = useState<Record<string, { name: string; voice: string; speed: number; pitch: number }>>({});
     const outlineRef = useRef(outline);
+
+    // Auto-populate character mapping when plan arrives with matched characters
+    useEffect(() => {
+        if (agentPlan) {
+            const autoMapping: Record<string, string> = {};
+            agentPlan.suggested_characters.forEach((ch) => {
+                if (ch.matched_existing && ch.existing_id) {
+                    // characterMapping stores character names (used by SelectItem values),
+                    // but existing_id is a UUID — look up the name
+                    const matchedChar = existingCharacters.find((ec) => ec.id === ch.existing_id);
+                    if (matchedChar) {
+                        autoMapping[ch.name] = matchedChar.name;
+                    }
+                }
+            });
+            setCharacterMapping(autoMapping);
+        }
+    }, [agentPlan, existingCharacters]);
 
     // Sync outline from project data and restore workflow on re-entry
     useEffect(() => {
@@ -217,7 +237,6 @@ export default function ScriptEditor() {
     };
 
     const isAiMode = workflow === 'ai';
-    const isManualMode = workflow === 'manual';
     const hasNoWorkflow = !workflow;
     const hasLines = lines.length > 0;
 
@@ -249,34 +268,22 @@ export default function ScriptEditor() {
                 </div>
             )}
 
-            {/* Blocking overlay during generation */}
-            {isGenerating && (
-                <div className="absolute inset-0 z-50 bg-background/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
-                    <div className="flex flex-col items-center gap-3">
-                        <div className="h-10 w-10 animate-spin text-primary">
-                            <svg className="h-10 w-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
-                            </svg>
-                        </div>
-                        <p className="text-sm font-medium text-muted-foreground">{t('editor.generating')}</p>
-                        <p className="text-xs text-muted-foreground">{t('editor.generatingHint')}</p>
-                    </div>
-                </div>
-            )}
-
             {/* Outline section - AI mode only */}
             {isAiMode && (
                 <OutlinePanel
                     outline={outline}
                     onOutlineChange={setOutline}
                     isAnalyzing={isAnalyzing}
+                    enableThinking={enableThinking}
+                    onToggleThinking={setEnableThinking}
                     onAnalyze={handleAnalyze}
+                    onCancel={cancelLlm}
                     hasAgentPlan={!!agentPlan}
                 />
             )}
 
-            {/* Action bar - manual mode */}
-            {isManualMode && (
+            {/* Action bar - shown when lines exist and no active plan */}
+            {workflow && hasLines && !agentPlan && (
                 <ActionBar
                     isDirty={isDirty}
                     isBatchTtsRunning={isBatchTtsRunning}
@@ -293,6 +300,25 @@ export default function ScriptEditor() {
                     color="blue"
                     label={t('editor.analyzing')}
                     text={streamingText}
+                    onCancel={cancelLlm}
+                />
+            )}
+
+            {/* Generating streaming */}
+            {isGenerating && streamingText && (
+                <StreamingCard
+                    color="purple"
+                    label={t('editor.aiGenerating')}
+                    text={streamingText}
+                    onCancel={cancelLlm}
+                />
+            )}
+
+            {/* Thinking panel - shown during analysis or generation when thinking content is present */}
+            {(isAnalyzing || isGenerating) && thinkingText && (
+                <ThinkingPanel
+                    thinkingText={thinkingText}
+                    isThinking={isAnalyzing || isGenerating}
                 />
             )}
 
@@ -301,6 +327,7 @@ export default function ScriptEditor() {
                 <PlanCard
                     plan={agentPlan}
                     existingCharacters={existingCharacters}
+                    currentProjectId={currentProject?.project.id ?? ''}
                     onDismiss={() => setAgentPlan(null)}
                     onConfirmGenerate={handleConfirmGenerate}
                     onManualMode={handlePlanManualMode}

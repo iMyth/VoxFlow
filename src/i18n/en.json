@@ -56,6 +56,9 @@
     "instructionsPlaceholder": "Director instructions, e.g. faster pace, with sadness",
     "analyze": "Analyze Outline",
     "analyzing": "Analyzing...",
+    "cancelAnalyze": "Cancel Analysis",
+    "thinking": "AI Thinking",
+    "enableThinking": "Deep Think",
     "planTitle": "Script Planning",
     "confirmPlan": "Confirm & Generate",
     "cancelPlan": "Dismiss",
@@ -66,6 +69,9 @@
     "planMatched": "Matched",
     "planSelectChar": "Select existing character",
     "planNewChar": "+ Create new character",
+    "planImportChar": "Import character from other projects",
+    "planExistingChars": "Current project characters",
+    "planImportedChars": "Imported characters",
     "planExtraInstructions": "Extra Instructions",
     "planExtraPlaceholder": "Optional: additional notes or requirements...",
     "aiModeTitle": "AI Smart Generate",
@@ -93,7 +99,8 @@
     "confirmDelete": "Deleting a character will unassign related script lines. Are you sure?",
     "import": "Import Characters",
     "importEmpty": "No characters from other projects to import",
-    "importSelected": "Import {{count}} characters"
+    "importSelected": "Import {{count}} characters",
+    "importSuccess": "Imported {{count}} characters"
   },
   "export": {
     "title": "Export Audiobook",

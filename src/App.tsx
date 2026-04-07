@@ -29,7 +29,16 @@ function App() {
         }
         useProjectStore.setState({ currentProject: null });
         useCharacterStore.setState({ characters: [] });
-        useScriptStore.setState({ lines: [], isDirty: false, streamingText: '' });
+        useScriptStore.setState({
+            lines: [],
+            isDirty: false,
+            streamingText: '',
+            thinkingText: '',
+            agentPlan: null,
+            workflow: null,
+            isGenerating: false,
+            isAnalyzing: false,
+        });
         setActiveTab('editor');
     };
 

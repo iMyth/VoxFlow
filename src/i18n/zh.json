@@ -56,6 +56,9 @@
     "instructionsPlaceholder": "导演指令，如：语速较快、带有悲伤情绪",
     "analyze": "分析大纲",
     "analyzing": "分析中...",
+    "cancelAnalyze": "取消分析",
+    "thinking": "AI 思考中",
+    "enableThinking": "深度思考",
     "planTitle": "剧本规划",
     "confirmPlan": "确认生成",
     "cancelPlan": "取消",
@@ -66,6 +69,9 @@
     "planMatched": "已匹配",
     "planSelectChar": "选择已有角色",
     "planNewChar": "+ 创建新角色",
+    "planImportChar": "从其他项目导入角色",
+    "planExistingChars": "当前项目角色",
+    "planImportedChars": "已导入角色",
     "planExtraInstructions": "额外指令",
     "planExtraPlaceholder": "可选：补充说明或要求...",
     "aiModeTitle": "AI 智能生成",
@@ -93,7 +99,8 @@
     "confirmDelete": "删除角色后，关联的剧本行将变为未分配状态。确定删除？",
     "import": "导入角色",
     "importEmpty": "没有其他项目的角色可导入",
-    "importSelected": "导入 {{count}} 个角色"
+    "importSelected": "导入 {{count}} 个角色",
+    "importSuccess": "已导入 {{count}} 个角色"
   },
   "export": {
     "title": "导出有声书",

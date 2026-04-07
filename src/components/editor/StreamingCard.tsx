@@ -1,14 +1,16 @@
-import { Loader2 } from 'lucide-react';
+import { Loader2, Square } from 'lucide-react';
 import { Card, CardContent } from '../ui/card';
+import { Button } from '../ui/button';
 
 interface StreamingCardProps {
     color: 'blue' | 'purple';
     label: string;
     text: string;
     isAnalyzing?: boolean;
+    onCancel?: () => void;
 }
 
-export default function StreamingCard({ color, label, text, isAnalyzing }: StreamingCardProps) {
+export default function StreamingCard({ color, label, text, isAnalyzing, onCancel }: StreamingCardProps) {
     const colors = {
         blue: {
             border: 'border-blue-200 dark:border-blue-800',
@@ -32,7 +34,13 @@ export default function StreamingCard({ color, label, text, isAnalyzing }: Strea
             <Card className={`border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20`}>
                 <CardContent className="flex items-center gap-3 py-4">
                     <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-                    <p className="text-sm text-blue-700 dark:text-blue-300">{label}</p>
+                    <p className="text-sm text-blue-700 dark:text-blue-300 flex-1">{label}</p>
+                    {onCancel && (
+                        <Button variant="destructive" size="sm" onClick={onCancel} className="h-7 text-xs">
+                            <Square className="h-3 w-3 mr-1" />
+                            取消
+                        </Button>
+                    )}
                 </CardContent>
             </Card>
         );
@@ -41,15 +49,23 @@ export default function StreamingCard({ color, label, text, isAnalyzing }: Strea
     return (
         <Card className={`${c.border} ${c.bg}`}>
             <CardContent>
-                {isAnalyzing && (
-                    <div className="flex items-center gap-2 mb-2">
-                        <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                <div className="flex items-center justify-between mb-2">
+                    {isAnalyzing && (
+                        <div className="flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                            <p className={`text-sm font-medium ${c.text}`}>{label}</p>
+                        </div>
+                    )}
+                    {!isAnalyzing && (
                         <p className={`text-sm font-medium ${c.text}`}>{label}</p>
-                    </div>
-                )}
-                {!isAnalyzing && (
-                    <p className={`text-sm font-medium mb-2 ${c.text}`}>{label}</p>
-                )}
+                    )}
+                    {onCancel && (
+                        <Button variant="destructive" size="sm" onClick={onCancel} className="h-7 text-xs shrink-0">
+                            <Square className="h-3 w-3 mr-1" />
+                            取消
+                        </Button>
+                    )}
+                </div>
                 <pre className={`text-sm whitespace-pre-wrap ${c.textLight}`}>
                     {text}
                     <span className="animate-pulse">▌</span>

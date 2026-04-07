@@ -38,7 +38,7 @@ export default function CharacterPanel() {
 
     // Import state
     const [showImport, setShowImport] = useState(false);
-    const [importProjects, setImportProjects] = useState<[string, Character[]][]>([]);
+    const [importProjects, setImportProjects] = useState<[string, string, Character[]][]>([]);
     const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
 
     const startCreate = () => {
@@ -86,7 +86,7 @@ export default function CharacterPanel() {
                 currentProject.project.id,
                 Array.from(importSelected),
             );
-            useToastStore.getState().addToast(`已导入 ${importSelected.size} 个角色`);
+            useToastStore.getState().addToast(t('character.importSuccess', { count: importSelected.size }), 'success');
             await useCharacterStore.getState().fetchCharacters();
         } catch {
             useToastStore.getState().addToast('导入角色失败');
@@ -245,11 +245,11 @@ export default function CharacterPanel() {
                                 <p className="text-center text-muted-foreground py-8">{t('character.importEmpty')}</p>
                             ) : (
                                 <div className="space-y-4">
-                                    {importProjects.map(([projectId, chars]) => (
+                                    {importProjects.map(([projectId, projectName, chars]) => (
                                         <div key={projectId}>
-                                            <p className="text-sm font-medium mb-2 text-muted-foreground">
+                                            <p className="text-sm font-medium mb-2 text-foreground">
                                                 <Users className="h-3 w-3 inline mr-1" />
-                                                {projectId.slice(0, 8)}
+                                                {projectName}
                                             </p>
                                             <div className="space-y-1">
                                                 {chars.map((c) => (

@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use tauri::Manager;
 
+use crate::core::cancel_token::CancellationToken;
 use crate::core::db::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,6 +30,7 @@ pub fn run() {
 
             app.manage(Mutex::new(db));
             app.manage(commands::audio::AudioPlayer::new());
+            app.manage(CancellationToken::default());
 
             Ok(())
         })
@@ -46,6 +48,7 @@ pub fn run() {
             commands::import_characters,
             commands::generate_script,
             commands::analyze_outline,
+            commands::cancel_llm,
             commands::save_script,
             commands::load_script,
             commands::generate_tts,

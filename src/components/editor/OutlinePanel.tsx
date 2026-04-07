@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Sparkles, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { Sparkles, ChevronDown, ChevronUp, Square, BrainCircuit } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { Card, CardContent } from '../ui/card';
@@ -8,7 +8,10 @@ interface OutlinePanelProps {
     outline: string;
     onOutlineChange: (value: string) => void;
     isAnalyzing: boolean;
+    enableThinking: boolean;
+    onToggleThinking: (v: boolean) => void;
     onAnalyze: () => void;
+    onCancel: () => void;
     hasAgentPlan: boolean;
 }
 
@@ -16,7 +19,10 @@ export default function OutlinePanel({
     outline,
     onOutlineChange,
     isAnalyzing,
+    enableThinking,
+    onToggleThinking,
     onAnalyze,
+    onCancel,
     hasAgentPlan,
 }: OutlinePanelProps) {
     const { t } = useTranslation();
@@ -48,16 +54,38 @@ export default function OutlinePanel({
                             placeholder={t('editor.outlinePlaceholder')}
                             value={outline}
                             onChange={(e) => onOutlineChange(e.target.value)}
+                            disabled={isAnalyzing}
                         />
                         <div className="flex gap-2 flex-wrap items-center">
                             {!hasAgentPlan && (
-                                <Button onClick={onAnalyze} disabled={isAnalyzing || !outline.trim()}>
-                                    {isAnalyzing ? (
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                    ) : (
-                                        <Sparkles className="h-4 w-4" />
-                                    )}
-                                    {isAnalyzing ? t('editor.analyzing') : t('editor.analyze')}
+                                isAnalyzing ? (
+                                    <Button variant="destructive" onClick={onCancel}>
+                                        <Square className="h-4 w-4" />
+                                        {t('editor.cancelAnalyze')}
+                                    </Button>
+                                ) : (
+                                    <>
+                                        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                checked={enableThinking}
+                                                onChange={(e) => onToggleThinking(e.target.checked)}
+                                                className="rounded border-border"
+                                            />
+                                            <BrainCircuit className="h-3.5 w-3.5" />
+                                            {t('editor.enableThinking')}
+                                        </label>
+                                        <Button onClick={onAnalyze} disabled={!outline.trim()}>
+                                            <Sparkles className="h-4 w-4" />
+                                            {t('editor.analyze')}
+                                        </Button>
+                                    </>
+                                )
+                            )}
+                            {hasAgentPlan && onCancel && (
+                                <Button variant="destructive" size="sm" onClick={onCancel} className="h-7 text-xs">
+                                    <Square className="h-3 w-3 mr-1" />
+                                    {t('editor.cancelAnalyze')}
                                 </Button>
                             )}
                         </div>

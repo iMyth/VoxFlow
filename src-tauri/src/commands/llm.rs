@@ -6,6 +6,7 @@ use tauri::Emitter;
 use crate::core::agent::{
     AgentPlan, SuggestedCharacter,
 };
+use crate::core::cancel_token::CancellationToken;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 use crate::core::models::{Character, LlmScriptLine, LlmScriptResponse, ScriptLine};
@@ -160,50 +161,62 @@ fn resolve_character(name: &Option<String>, characters: &[Character]) -> Option<
 #[tauri::command]
 pub async fn analyze_outline(
     app: tauri::AppHandle,
+    cancel_token: tauri::State<'_, CancellationToken>,
     outline: String,
     api_endpoint: String,
     api_key: String,
     model: String,
     characters: Vec<Character>,
+    enable_thinking: bool,
 ) -> Result<AgentPlan, AppError> {
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
     use serde_json::json;
 
+    cancel_token.reset();
+
     let url = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
 
     let existing_char_names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
-    let existing_chars_json = if existing_char_names.is_empty() {
-        "[]".to_string()
+
+    let system_prompt = if existing_char_names.is_empty() {
+        "你是有声书剧本分析助手。分析用户提供的大纲，返回结构化规划方案。\n\n\
+        要求：\n\
+        1. 识别章节/场景（chapters），每章估计台词数、涉及角色、情绪氛围\n\
+        2. 提取所有角色（suggested_characters），说明角色定位（主角/配角/旁白等）\n\
+        3. 判断是否匹配现有项目角色\n\
+        4. 总结整体风格（overall_style）\n\
+        5. 给出角色配置建议（character_notes）\n\n\
+        返回 JSON 格式：\n\
+        {\"chapters\":[{\"title\":\"章节名\",\"estimated_lines\":10,\"characters\":[\"角色名\"],\"mood\":\"情绪描述\"}],\
+        \"suggested_characters\":[{\"name\":\"角色名\",\"role\":\"定位\",\"matched_existing\":false,\"existing_id\":null}],\
+        \"overall_style\":\"风格描述\",\"character_notes\":\"配置建议\"}"
+            .to_string()
     } else {
-        serde_json::to_string(&existing_char_names).unwrap_or_default()
+        format!(
+            "你是有声书剧本分析助手。分析用户提供的大纲，返回结构化规划方案。\n\n\
+            要求：\n\
+            1. 识别章节/场景（chapters），每章估计台词数、涉及角色、情绪氛围\n\
+            2. 提取所有角色（suggested_characters），说明角色定位（主角/配角/旁白等）\n\
+            3. 判断是否匹配现有项目角色\n\
+            4. 总结整体风格（overall_style）\n\
+            5. 给出角色配置建议（character_notes）\n\n\
+            项目已有角色: {}\n\n\
+            返回 JSON 格式：\n\
+            {{\"chapters\":[{{\"title\":\"章节名\",\"estimated_lines\":10,\"characters\":[\"角色名\"],\"mood\":\"情绪描述\"}}],\
+            \"suggested_characters\":[{{\"name\":\"角色名\",\"role\":\"定位\",\"matched_existing\":false,\"existing_id\":null}}],\
+            \"overall_style\":\"风格描述\",\"character_notes\":\"配置建议\"}}",
+            existing_char_names.join(", ")
+        )
     };
 
     let body = json!({
         "model": model,
         "messages": [
-            {
-                "role": "system",
-                "content": "你是一个有声书剧本分析助手。请分析用户提供的大纲，返回结构化的规划方案。\n\n\
-                    要求：\n\
-                    1. 从大纲中识别章节/场景（chapters），每章估计台词数量、用到的角色、整体情绪氛围\n\
-                    2. 提取大纲中提到的所有角色（suggested_characters），说明每个角色的定位（主角/配角/旁白等）\n\
-                    3. 判断每个建议角色是否匹配现有项目角色\n\
-                    4. 总结有声书的整体风格（overall_style）\n\
-                    5. 给出角色配置建议（character_notes）\n\n\
-                    项目已有角色（如果为空则数组为空）: {existing}\n\n\
-                    请严格返回 JSON 格式：\n\
-                    {{\n  \"chapters\":[{{\"title\":\"章节名\",\"estimated_lines\":10,\"characters\":[\"角色名\"],\"mood\":\"情绪描述\"}}],\n  \
-                    \"suggested_characters\":[{{\"name\":\"角色名\",\"role\":\"角色定位\",\"matched_existing\":false,\"existing_id\":null}}],\n  \
-                    \"overall_style\":\"整体风格描述\",\n  \
-                    \"character_notes\":\"角色配置建议\"\n\
-                    }}"
-            },
-            {
-                "role": "user",
-                "content": outline
-            }
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": outline }
         ],
-        "stream": true
+        "stream": true,
+        "enable_thinking": enable_thinking
     });
 
     let client = reqwest::Client::new();
@@ -232,6 +245,14 @@ pub async fn analyze_outline(
     let mut accumulated_text = String::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk_result) = stream.next().await {
+        // Check cancellation
+        if cancel_token.is_cancelled() {
+            let _ = app.emit("llm-complete", &());
+            let msg = "已取消";
+            let _ = app.emit("llm-cancel", &());
+            return Err(AppError::LlmService(msg.to_string()));
+        }
+
         let chunk = chunk_result.map_err(|e| {
             let msg = format!("读取 LLM 响应失败: {}", e);
             let _ = app.emit("llm-error", &msg);
@@ -246,6 +267,11 @@ pub async fn analyze_outline(
             }
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                    // Emit thinking/reasoning content
+                    if let Some(reasoning) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
+                        let _ = app.emit("llm-thinking", reasoning);
+                    }
+                    // Emit normal content
                     if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
                         accumulated_text.push_str(content);
                         let _ = app.emit("llm-token", content);
@@ -319,6 +345,7 @@ fn parse_agent_plan(text: &str) -> Result<AgentPlan, String> {
 pub async fn generate_script(
     app: tauri::AppHandle,
     db: tauri::State<'_, Mutex<Database>>,
+    cancel_token: tauri::State<'_, CancellationToken>,
     project_id: String,
     outline: String,
     api_endpoint: String,
@@ -326,51 +353,52 @@ pub async fn generate_script(
     model: String,
     characters: Vec<Character>,
     extra_instructions: Option<String>,
+    enable_thinking: bool,
 ) -> Result<(), AppError> {
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
     use serde_json::json;
 
+    cancel_token.reset();
+
     let url = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
 
-    // Build character list string for the prompt
-    let char_list: String = if characters.is_empty() {
-        String::from("\n⚠️ 本项目暂无角色，请先在\"角色管理\"中添加角色，或在大中指定角色名以自动创建")
+    let char_list = if characters.is_empty() {
+        "（本项目暂无角色，可直接使用角色名，系统会自动创建）".to_string()
     } else {
         let names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
-        format!("\n可用角色（必须在 character 字段中选择）: {}", names.join(", "))
+        format!("可用角色: {}", names.join("、"))
     };
 
     let extra = extra_instructions
         .filter(|s| !s.trim().is_empty())
-        .map(|s| format!("\n\n用户额外要求：{}", s))
+        .map(|s| format!("用户额外要求：{}\n", s))
         .unwrap_or_default();
+
+    let system_prompt = format!(
+        "你是有声书剧本编写助手。根据用户提供的大纲，生成或更新有声书剧本。\n\n\
+        {extra}{char_list}\n\n\
+        返回 JSON 格式：\n\
+        {{\"lines\":[\
+        {{\"text\":\"台词内容\",\"character\":\"角色名\",\"instructions\":\"情绪/语速指令或null\",\"gap_ms\":500}},...\
+        ]}}\n\n\
+        规则：\n\
+        1. character 字段必填，每行必须指定角色\n\
+        2. instructions 字段描述语音生成指令（情绪、语速、语调），如不确定用 null\n\
+        3. gap_ms 表示停顿毫秒数，推荐 500-2000，默认 500\n\
+        4. 每行一句台词\n\
+        5. 不要包含任何 markdown 代码块，只返回 JSON",
+        extra = extra,
+        char_list = char_list
+    );
 
     let body = json!({
         "model": model,
         "messages": [
-            {
-                "role": "system",
-                "content": format!(
-                    "你是一个有声书剧本编写助手。根据用户提供的大纲，生成或更新有声书剧本。\
-                    \n\n请严格返回 JSON 格式，不要包含任何 markdown 代码块或其他文本：\
-                    \n{{\"lines\":[{{\"text\":\"台词内容\",\"character\":\"角色名（必须）\",\"instructions\":\"导演指令或null\",\"gap_ms\":停顿毫秒数}},...]}}\
-                    \n- 每行一句台词\
-                    \n- character 字段是**必须**的，每行台词都必须指定一个角色名{char_list}\
-                    \n- 如果大纲中提到但不在上述列表中的角色，可以直接使用该角色名（系统会自动创建）\
-                    \n- instructions 字段用于描述这句台词的语音生成指令，如情绪（开心、悲伤、愤怒）、\
-                    语速（较快、缓慢）、语调（上扬、低沉）等。例如：\"语速较快，带有明显的上扬语调，适合介绍时尚产品。\"\
-                    \n- 如果不确定指令，使用 null\
-                    \n- gap_ms 字段表示该台词结束后的停顿时长（毫秒），推荐 500-2000。重要转折或场景切换后可用 1500-3000。对话密集处 300-500。默认 500{extra}",
-                    char_list = char_list,
-                    extra = extra
-                )
-            },
-            {
-                "role": "user",
-                "content": outline
-            }
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": outline }
         ],
-        "stream": true
+        "stream": true,
+        "enable_thinking": enable_thinking
     });
 
     let client = reqwest::Client::new();
@@ -399,6 +427,13 @@ pub async fn generate_script(
     let mut accumulated_text = String::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk_result) = stream.next().await {
+        // Check cancellation
+        if cancel_token.is_cancelled() {
+            let _ = app.emit("llm-complete", &());
+            let _ = app.emit("llm-cancel", &());
+            return Ok(());
+        }
+
         let chunk = chunk_result.map_err(|e| {
             let msg = format!("读取 LLM 响应失败: {}", e);
             let _ = app.emit("llm-error", &msg);
@@ -413,6 +448,11 @@ pub async fn generate_script(
             }
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                    // Emit thinking/reasoning content
+                    if let Some(reasoning) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
+                        let _ = app.emit("llm-thinking", reasoning);
+                    }
+                    // Emit normal content
                     if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
                         accumulated_text.push_str(content);
                         let _ = app.emit("llm-token", content);
@@ -486,6 +526,14 @@ fn parse_llm_json(text: &str) -> Result<LlmScriptResponse, String> {
 
     serde_json::from_str::<LlmScriptResponse>(&json_str)
         .map_err(|e| e.to_string())
+}
+
+/// Cancel an ongoing LLM request (analyze_outline or generate_script).
+#[tauri::command]
+pub fn cancel_llm(
+    cancel_token: tauri::State<'_, CancellationToken>,
+) {
+    cancel_token.cancel();
 }
 
 #[tauri::command]

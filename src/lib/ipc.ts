@@ -65,8 +65,8 @@ export async function listCharacters(projectId: string): Promise<Character[]> {
     return ipcCall<Character[]>('list_characters', { projectId });
 }
 
-export async function listAllProjectCharacters(): Promise<[string, Character[]][]> {
-    return ipcCall<[string, Character[]][]>('list_all_project_characters');
+export async function listAllProjectCharacters(): Promise<[string, string, Character[]][]> {
+    return ipcCall<[string, string, Character[]][]>('list_all_project_characters');
 }
 
 export async function importCharacters(
@@ -84,6 +84,7 @@ export async function generateScript(
     config: LlmConfig,
     characters: Character[],
     extraInstructions?: string,
+    enableThinking: boolean = false,
 ): Promise<void> {
     return ipcCall<void>('generate_script', {
         projectId,
@@ -93,6 +94,7 @@ export async function generateScript(
         model: config.model,
         characters,
         extraInstructions: extraInstructions || undefined,
+        enableThinking,
     });
 }
 
@@ -102,6 +104,7 @@ export async function analyzeOutline(
     outline: string,
     config: LlmConfig,
     characters: Character[],
+    enableThinking: boolean,
 ): Promise<AgentPlan> {
     return ipcCall<AgentPlan>('analyze_outline', {
         outline,
@@ -109,6 +112,7 @@ export async function analyzeOutline(
         apiKey: config.api_key,
         model: config.model,
         characters,
+        enableThinking,
     });
 }
 
@@ -137,12 +141,24 @@ export function onLlmToken(callback: (token: string) => void): Promise<UnlistenF
     return listen<string>('llm-token', (event) => callback(event.payload));
 }
 
+export function onLlmThinking(callback: (token: string) => void): Promise<UnlistenFn> {
+    return listen<string>('llm-thinking', (event) => callback(event.payload));
+}
+
+export function onLlmCancel(callback: () => void): Promise<UnlistenFn> {
+    return listen('llm-cancel', () => callback());
+}
+
 export function onLlmComplete(callback: () => void): Promise<UnlistenFn> {
     return listen('llm-complete', () => callback());
 }
 
 export function onLlmError(callback: (error: string) => void): Promise<UnlistenFn> {
     return listen<string>('llm-error', (event) => callback(event.payload));
+}
+
+export async function cancelLlm(): Promise<void> {
+    return ipcCall<void>('cancel_llm');
 }
 
 // ---- Script Operations ----

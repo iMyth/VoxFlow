@@ -1,4 +1,5 @@
-import { Check, X, Plus, Loader2, Pencil } from 'lucide-react';
+import { Check, X, Plus, Loader2, Pencil, Download, Users } from 'lucide-react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { Card, CardContent } from '../ui/card';
@@ -12,13 +13,17 @@ import {
     SelectItem,
     SelectTrigger,
     SelectValue,
+    SelectGroup,
+    SelectLabel,
 } from '../ui/select';
+import * as ipc from '../../lib/ipc';
 import type { AgentPlan } from '../../lib/ipc';
 import type { Character } from '../../types';
 
 interface PlanCardProps {
     plan: AgentPlan;
     existingCharacters: Character[];
+    currentProjectId: string;
     onDismiss: () => void;
     onConfirmGenerate: () => void;
     onManualMode: () => void;
@@ -37,6 +42,7 @@ interface PlanCardProps {
 export default function PlanCard({
     plan,
     existingCharacters,
+    currentProjectId,
     onDismiss,
     onConfirmGenerate,
     onManualMode,
@@ -52,6 +58,31 @@ export default function PlanCard({
     isGenerating,
 }: PlanCardProps) {
     const { t } = useTranslation();
+
+    const [showImport, setShowImport] = useState(false);
+    const [importProjects, setImportProjects] = useState<[string, string, Character[]][]>([]);
+    const [importedChars, setImportedChars] = useState<Character[]>([]);
+
+    const handleImportOpen = async () => {
+        try {
+            const all = await ipc.listAllProjectCharacters();
+            const filtered = all.filter(([_pid, _pname, chars]) => chars.length > 0 && _pid !== currentProjectId);
+            setImportProjects(filtered);
+            setShowImport(true);
+        } catch {
+            // silent
+        }
+    };
+
+    const handleImportChar = (char: Character) => {
+        setImportedChars((prev) => {
+            if (prev.find((c) => c.id === char.id)) return prev;
+            return [...prev, char];
+        });
+        setShowImport(false);
+    };
+
+
 
     const totalLines = plan.chapters.reduce((sum, c) => sum + c.estimated_lines, 0);
     const allMapped = plan.suggested_characters.every(
@@ -122,16 +153,39 @@ export default function PlanCard({
                                     )}
                                     <Select
                                         value={characterMapping[ch.name] || undefined}
-                                        onValueChange={(v) => onCharacterMapping(ch.name, v)}
+                                        onValueChange={(v) => {
+                                            if (v === '__import__') {
+                                                handleImportOpen();
+                                            } else {
+                                                onCharacterMapping(ch.name, v);
+                                            }
+                                        }}
                                     >
                                         <SelectTrigger className="min-w-[140px] h-8 text-xs" size="sm">
                                             <SelectValue placeholder={t('editor.planSelectChar')} />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {existingCharacters.map((ec) => (
-                                                <SelectItem key={ec.id} value={ec.name}>{ec.name}</SelectItem>
-                                            ))}
+                                            {existingCharacters.length > 0 && (
+                                                <SelectGroup>
+                                                    <SelectLabel>{t('editor.planExistingChars')}</SelectLabel>
+                                                    {existingCharacters.map((ec) => (
+                                                        <SelectItem key={ec.id} value={ec.name}>{ec.name}</SelectItem>
+                                                    ))}
+                                                </SelectGroup>
+                                            )}
+                                            {importedChars.length > 0 && (
+                                                <SelectGroup>
+                                                    <SelectLabel>{t('editor.planImportedChars')}</SelectLabel>
+                                                    {importedChars.map((ic) => (
+                                                        <SelectItem key={ic.id} value={ic.name}>{ic.name}</SelectItem>
+                                                    ))}
+                                                </SelectGroup>
+                                            )}
                                             <SelectItem value="__new__">{t('editor.planNewChar')}</SelectItem>
+                                            <SelectItem value="__import__" className="text-blue-600 dark:text-blue-400">
+                                                <Download className="h-3 w-3 inline mr-1" />
+                                                {t('editor.planImportChar')}
+                                            </SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -236,6 +290,52 @@ export default function PlanCard({
                         {isGenerating ? t('editor.generating') : t('editor.confirmPlan')}
                     </Button>
                 </div>
+
+                {/* Import characters dialog */}
+                {showImport && (
+                    <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center">
+                        <div className="bg-background rounded-xl border shadow-xl max-w-lg w-full mx-4 max-h-[80vh] flex flex-col">
+                            <div className="flex items-center justify-between px-6 py-4 border-b">
+                                <h3 className="text-lg font-semibold">{t('editor.planImportChar')}</h3>
+                                <Button variant="ghost" size="icon-sm" onClick={() => setShowImport(false)}>
+                                    <X className="h-4 w-4" />
+                                </Button>
+                            </div>
+                            <div className="flex-1 overflow-auto px-6 py-4">
+                                {importProjects.length === 0 ? (
+                                    <p className="text-center text-muted-foreground py-8">{t('character.importEmpty')}</p>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {importProjects.map(([projectId, projectName, chars]) => (
+                                            <div key={projectId}>
+                                                <p className="text-sm font-medium mb-2 text-foreground">
+                                                    <Users className="h-3 w-3 inline mr-1" />
+                                                    {projectName}
+                                                </p>
+                                                <div className="space-y-1">
+                                                    {chars.map((c) => (
+                                                        <div
+                                                            key={c.id}
+                                                            className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 cursor-pointer hover:bg-accent/50 transition"
+                                                            onClick={() => handleImportChar(c)}
+                                                        >
+                                                            <Badge variant="secondary" className="text-xs">
+                                                                {c.name}
+                                                            </Badge>
+                                                            <span className="text-xs text-muted-foreground">
+                                                                {c.voice_name} ({c.tts_model})
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
             </CardContent>
         </Card>
     );
