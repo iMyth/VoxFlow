@@ -83,6 +83,7 @@ export async function generateScript(
     outline: string,
     config: LlmConfig,
     characters: Character[],
+    extraInstructions?: string,
 ): Promise<void> {
     return ipcCall<void>('generate_script', {
         projectId,
@@ -91,7 +92,45 @@ export async function generateScript(
         apiKey: config.api_key,
         model: config.model,
         characters,
+        extraInstructions: extraInstructions || undefined,
     });
+}
+
+// ---- Agent: Outline Analysis (Phase 1) ----
+
+export async function analyzeOutline(
+    outline: string,
+    config: LlmConfig,
+    characters: Character[],
+): Promise<AgentPlan> {
+    return ipcCall<AgentPlan>('analyze_outline', {
+        outline,
+        apiEndpoint: config.api_endpoint,
+        apiKey: config.api_key,
+        model: config.model,
+        characters,
+    });
+}
+
+export interface AgentPlan {
+    chapters: ChapterPlan[];
+    suggested_characters: SuggestedCharacter[];
+    overall_style: string;
+    character_notes: string;
+}
+
+export interface ChapterPlan {
+    title: string;
+    estimated_lines: number;
+    characters: string[];
+    mood: string;
+}
+
+export interface SuggestedCharacter {
+    name: string;
+    role: string;
+    matched_existing: boolean;
+    existing_id: string | null;
 }
 
 export function onLlmToken(callback: (token: string) => void): Promise<UnlistenFn> {

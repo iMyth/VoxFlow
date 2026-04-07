@@ -1,7 +1,11 @@
 use std::sync::Mutex;
 
+use futures_util::StreamExt;
 use tauri::Emitter;
 
+use crate::core::agent::{
+    AgentPlan, SuggestedCharacter,
+};
 use crate::core::db::Database;
 use crate::core::error::AppError;
 use crate::core::models::{Character, LlmScriptLine, LlmScriptResponse, ScriptLine};
@@ -149,6 +153,168 @@ fn resolve_character(name: &Option<String>, characters: &[Character]) -> Option<
     })
 }
 
+/// Analyze outline and return a structured plan with chapters,
+/// suggested characters, and style — WITHOUT generating script lines yet.
+/// This is Phase 1 of the two-phase Agent workflow.
+/// Streams tokens back to the frontend for real-time feedback.
+#[tauri::command]
+pub async fn analyze_outline(
+    app: tauri::AppHandle,
+    outline: String,
+    api_endpoint: String,
+    api_key: String,
+    model: String,
+    characters: Vec<Character>,
+) -> Result<AgentPlan, AppError> {
+    use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+    use serde_json::json;
+
+    let url = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
+
+    let existing_char_names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
+    let existing_chars_json = if existing_char_names.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string(&existing_char_names).unwrap_or_default()
+    };
+
+    let body = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是一个有声书剧本分析助手。请分析用户提供的大纲，返回结构化的规划方案。\n\n\
+                    要求：\n\
+                    1. 从大纲中识别章节/场景（chapters），每章估计台词数量、用到的角色、整体情绪氛围\n\
+                    2. 提取大纲中提到的所有角色（suggested_characters），说明每个角色的定位（主角/配角/旁白等）\n\
+                    3. 判断每个建议角色是否匹配现有项目角色\n\
+                    4. 总结有声书的整体风格（overall_style）\n\
+                    5. 给出角色配置建议（character_notes）\n\n\
+                    项目已有角色（如果为空则数组为空）: {existing}\n\n\
+                    请严格返回 JSON 格式：\n\
+                    {{\n  \"chapters\":[{{\"title\":\"章节名\",\"estimated_lines\":10,\"characters\":[\"角色名\"],\"mood\":\"情绪描述\"}}],\n  \
+                    \"suggested_characters\":[{{\"name\":\"角色名\",\"role\":\"角色定位\",\"matched_existing\":false,\"existing_id\":null}}],\n  \
+                    \"overall_style\":\"整体风格描述\",\n  \
+                    \"character_notes\":\"角色配置建议\"\n\
+                    }}"
+            },
+            {
+                "role": "user",
+                "content": outline
+            }
+        ],
+        "stream": true
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&url)
+        .header(CONTENT_TYPE, "application/json")
+        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| {
+            let msg = format!("LLM 请求失败: {}", e);
+            let _ = app.emit("llm-error", &msg);
+            AppError::LlmService(msg)
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response.text().await.unwrap_or_default();
+        let msg = format!("LLM API 错误 {}: {}", status, body_text);
+        let _ = app.emit("llm-error", &msg);
+        return Err(AppError::LlmService(msg));
+    }
+
+    // Read SSE stream chunk by chunk for real-time streaming
+    let mut accumulated_text = String::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| {
+            let msg = format!("读取 LLM 响应失败: {}", e);
+            let _ = app.emit("llm-error", &msg);
+            AppError::LlmService(msg)
+        })?;
+
+        let body_str = String::from_utf8_lossy(&chunk);
+        for line in body_str.lines() {
+            let line = line.trim();
+            if line.is_empty() || line == "data: [DONE]" {
+                continue;
+            }
+            if let Some(data) = line.strip_prefix("data: ") {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                        accumulated_text.push_str(content);
+                        let _ = app.emit("llm-token", content);
+                    }
+                }
+            }
+        }
+    }
+
+    // Signal stream completion
+    let _ = app.emit("llm-complete", &());
+
+    let plan: AgentPlan = parse_agent_plan(&accumulated_text)
+        .map_err(|e| {
+            let msg = format!("解析规划结果失败: {}\n原始内容: {}", e, accumulated_text.chars().take(300).collect::<String>());
+            let _ = app.emit("llm-error", &msg);
+            AppError::LlmService(msg)
+        })?;
+
+    // Enrich: match suggested characters with existing project characters
+    let char_map: std::collections::HashMap<String, &Character> = characters
+        .iter()
+        .map(|c| (c.name.clone(), c))
+        .collect();
+
+    let enriched_chars: Vec<SuggestedCharacter> = plan
+        .suggested_characters
+        .into_iter()
+        .map(|mut sc| {
+            if let Some(existing) = char_map.get(&sc.name) {
+                sc.matched_existing = true;
+                sc.existing_id = Some(existing.id.clone());
+            }
+            sc
+        })
+        .collect();
+
+    Ok(AgentPlan {
+        chapters: plan.chapters,
+        suggested_characters: enriched_chars,
+        overall_style: plan.overall_style,
+        character_notes: plan.character_notes,
+    })
+}
+
+/// Parse LLM response into AgentPlan.
+fn parse_agent_plan(text: &str) -> Result<AgentPlan, String> {
+    let trimmed = text.trim();
+
+    let json_str = if trimmed.starts_with("```") {
+        if let Some(first_newline) = trimmed.find('\n') {
+            let after_fence = &trimmed[first_newline + 1..];
+            after_fence
+                .trim()
+                .strip_suffix("```")
+                .unwrap_or(after_fence.trim())
+                .to_string()
+        } else {
+            trimmed.trim().to_string()
+        }
+    } else {
+        trimmed.to_string()
+    };
+
+    serde_json::from_str::<AgentPlan>(&json_str).map_err(|e| e.to_string())
+}
+
+/// Generate script from a confirmed plan. This is Phase 2.
+/// Characters are now REQUIRED — the LLM must assign every line to an existing or new character.
 #[tauri::command]
 pub async fn generate_script(
     app: tauri::AppHandle,
@@ -159,6 +325,7 @@ pub async fn generate_script(
     api_key: String,
     model: String,
     characters: Vec<Character>,
+    extra_instructions: Option<String>,
 ) -> Result<(), AppError> {
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
     use serde_json::json;
@@ -167,11 +334,16 @@ pub async fn generate_script(
 
     // Build character list string for the prompt
     let char_list: String = if characters.is_empty() {
-        String::new()
+        String::from("\n⚠️ 本项目暂无角色，请先在\"角色管理\"中添加角色，或在大中指定角色名以自动创建")
     } else {
         let names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
-        format!("\n可选角色（请在 character 字段中选择）: {}", names.join(", "))
+        format!("\n可用角色（必须在 character 字段中选择）: {}", names.join(", "))
     };
+
+    let extra = extra_instructions
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("\n\n用户额外要求：{}", s))
+        .unwrap_or_default();
 
     let body = json!({
         "model": model,
@@ -181,15 +353,16 @@ pub async fn generate_script(
                 "content": format!(
                     "你是一个有声书剧本编写助手。根据用户提供的大纲，生成或更新有声书剧本。\
                     \n\n请严格返回 JSON 格式，不要包含任何 markdown 代码块或其他文本：\
-                    \n{{\"lines\":[{{\"text\":\"台词内容\",\"character\":\"角色名或null\",\"instructions\":\"导演指令或null\",\"gap_ms\":停顿毫秒数}},...]}}\
+                    \n{{\"lines\":[{{\"text\":\"台词内容\",\"character\":\"角色名（必须）\",\"instructions\":\"导演指令或null\",\"gap_ms\":停顿毫秒数}},...]}}\
                     \n- 每行一句台词\
-                    \n- character 字段可选，表示这句台词由哪个角色说{char_list}\
-                    \n- 如果不确定角色，使用 null\
+                    \n- character 字段是**必须**的，每行台词都必须指定一个角色名{char_list}\
+                    \n- 如果大纲中提到但不在上述列表中的角色，可以直接使用该角色名（系统会自动创建）\
                     \n- instructions 字段用于描述这句台词的语音生成指令，如情绪（开心、悲伤、愤怒）、\
                     语速（较快、缓慢）、语调（上扬、低沉）等。例如：\"语速较快，带有明显的上扬语调，适合介绍时尚产品。\"\
                     \n- 如果不确定指令，使用 null\
-                    \n- gap_ms 字段表示该台词结束后的停顿时长（毫秒），推荐 500-2000。重要转折或场景切换后可用 1500-3000。对话密集处 300-500。默认 500",
-                    char_list = char_list
+                    \n- gap_ms 字段表示该台词结束后的停顿时长（毫秒），推荐 500-2000。重要转折或场景切换后可用 1500-3000。对话密集处 300-500。默认 500{extra}",
+                    char_list = char_list,
+                    extra = extra
                 )
             },
             {
@@ -222,26 +395,28 @@ pub async fn generate_script(
         return Err(AppError::LlmService(msg));
     }
 
-    // Read SSE stream and accumulate text
+    // Read SSE stream chunk by chunk for real-time streaming
     let mut accumulated_text = String::new();
-    let bytes = response.bytes().await.map_err(|e| {
-        let msg = format!("读取 LLM 响应失败: {}", e);
-        let _ = app.emit("llm-error", &msg);
-        AppError::LlmService(msg)
-    })?;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| {
+            let msg = format!("读取 LLM 响应失败: {}", e);
+            let _ = app.emit("llm-error", &msg);
+            AppError::LlmService(msg)
+        })?;
 
-    let body_str = String::from_utf8_lossy(&bytes);
-
-    for line in body_str.lines() {
-        let line = line.trim();
-        if line.is_empty() || line == "data: [DONE]" {
-            continue;
-        }
-        if let Some(data) = line.strip_prefix("data: ") {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                    accumulated_text.push_str(content);
-                    let _ = app.emit("llm-token", content);
+        let body_str = String::from_utf8_lossy(&chunk);
+        for line in body_str.lines() {
+            let line = line.trim();
+            if line.is_empty() || line == "data: [DONE]" {
+                continue;
+            }
+            if let Some(data) = line.strip_prefix("data: ") {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                        accumulated_text.push_str(content);
+                        let _ = app.emit("llm-token", content);
+                    }
                 }
             }
         }

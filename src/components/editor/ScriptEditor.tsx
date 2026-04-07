@@ -1,60 +1,57 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, Save, Plus, Volume2, Loader2, ChevronDown, ChevronUp, Undo2, Redo2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useScriptStore } from '../../store/scriptStore';
 import { useProjectStore } from '../../store/projectStore';
-import ScriptLineComponent from './ScriptLine';
-import { Button } from '../ui/button';
-import { Card, CardContent } from '../ui/card';
-import { Label } from '../ui/label';
-import { Progress } from '../ui/progress';
+import { useCharacterStore } from '../../store/characterStore';
+import { useToastStore } from '../../store/toastStore';
+import { useSettingsStore } from '../../store/settingsStore';
+import ModeSelector from './ModeSelector';
+import OutlinePanel from './OutlinePanel';
+import PlanCard from './PlanCard';
+import ScriptLines from './ScriptLines';
+import StreamingCard from './StreamingCard';
+import ActionBar from './ActionBar';
 import ConfirmDialog from '../ui/confirm-dialog';
 
 export default function ScriptEditor() {
     const { t } = useTranslation();
     const {
-        lines, isGenerating, isDirty, streamingText,
-        generateScript, saveScript, addLine,
-        isBatchTtsRunning, batchTtsProgress, generateAllTts,
+        lines, isGenerating, isAnalyzing, isDirty, streamingText,
+        agentPlan, workflow, setWorkflow, analyzeOutline, setAgentPlan, generateScript,
+        saveScript, generateAllTts,
+        isBatchTtsRunning, batchTtsProgress,
     } = useScriptStore();
     const currentProject = useProjectStore((s) => s.currentProject);
+    const existingCharacters = useCharacterStore((s) => s.characters);
     const [outline, setOutline] = useState('');
-    const [outlineCollapsed, setOutlineCollapsed] = useState(false);
     const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
+    const [showAnalyzeConfirm, setShowAnalyzeConfirm] = useState(false);
     const [confirmData, setConfirmData] = useState({ textCount: 0, audioCount: 0 });
+    const [extraInstructions, setExtraInstructions] = useState('');
+    const [characterMapping, setCharacterMapping] = useState<Record<string, string>>({});
+    const [creatingChars, setCreatingChars] = useState<Record<string, boolean>>({});
+    const [newCharForms, setNewCharForms] = useState<Record<string, { name: string; voice: string; speed: number; pitch: number }>>({});
     const outlineRef = useRef(outline);
 
-    // Sync outline from project data
+    // Sync outline from project data and restore workflow on re-entry
     useEffect(() => {
         const projectOutline = currentProject?.project.outline ?? '';
         setOutline(projectOutline);
-    }, [currentProject?.project.id, currentProject?.project.outline]);
+
+        if (currentProject?.project.id) {
+            const { workflow: currentWorkflow } = useScriptStore.getState();
+            if (currentWorkflow === null) {
+                // Restore based on project state: outline present → AI, existing lines → manual
+                if (projectOutline) {
+                    useScriptStore.getState().setWorkflow('ai');
+                } else if (useScriptStore.getState().lines.length > 0) {
+                    useScriptStore.getState().setWorkflow('manual');
+                }
+            }
+        }
+    }, [currentProject?.project.id]);
 
     outlineRef.current = outline;
-
-    // ---- Keyboard shortcuts for undo/redo ----
-    const handleUndo = useCallback(() => {
-        useScriptStore.temporal.getState().undo();
-    }, []);
-
-    const handleRedo = useCallback(() => {
-        useScriptStore.temporal.getState().redo();
-    }, []);
-
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
-                e.preventDefault();
-                handleUndo();
-            }
-            if ((e.metaKey || e.ctrlKey) && ((e.key === 'z' && e.shiftKey) || e.key === 'y')) {
-                e.preventDefault();
-                handleRedo();
-            }
-        };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [handleUndo, handleRedo]);
 
     // ---- Auto-save outline: debounce 3 seconds ----
     const outlineSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,155 +101,231 @@ export default function ScriptEditor() {
         (l) => l.text.trim() && !coveredLineIds.has(l.id),
     ).length;
 
-    const handleGenerate = () => {
-        if (!outline.trim() || isGenerating) return;
+    // ---- Mode selection ----
+    const handleAiModeSelect = () => {
+        setWorkflow('ai');
+    };
 
-        // Strong warning if there's existing script content
+    const handleManualModeSelect = () => {
+        setWorkflow('manual');
+    };
+
+    // ---- Outline actions ----
+    const handleAnalyze = () => {
+        if (!outline.trim() || isAnalyzing || isGenerating) return;
+
         const existingText = lines.filter((l) => l.text.trim()).length;
-        const existingAudio = coveredLineIds.size;
-
-        if (existingText > 0 || existingAudio > 0) {
-            setConfirmData({ textCount: existingText, audioCount: existingAudio });
-            setShowOverwriteConfirm(true);
+        if (existingText > 0) {
+            setShowAnalyzeConfirm(true);
             return;
         }
 
-        generateScript(outline.trim());
+        analyzeOutline(outline.trim());
     };
+
+    // ---- Plan actions ----
+    const handleCharacterMapping = (suggestedName: string, targetId: string) => {
+        setCharacterMapping((prev) => ({ ...prev, [suggestedName]: targetId }));
+        if (targetId === '__new__') {
+            setCreatingChars((prev) => ({ ...prev, [suggestedName]: true }));
+            setNewCharForms((prev) => {
+                if (prev[suggestedName]) return prev;
+                const defaults = useSettingsStore.getState();
+                return { ...prev, [suggestedName]: { name: suggestedName, voice: defaults.defaultVoiceName, speed: defaults.defaultSpeed, pitch: defaults.defaultPitch } };
+            });
+        } else {
+            setCreatingChars((prev) => ({ ...prev, [suggestedName]: false }));
+        }
+    };
+
+    const handleFormChange = (name: string, field: string, value: string | number) => {
+        setNewCharForms((prev) => ({
+            ...prev,
+            [name]: { ...prev[name], [field]: value },
+        }));
+    };
+
+    const handleCreateNewChar = async (suggestedName: string) => {
+        const form = newCharForms[suggestedName];
+        if (!form || !form.name.trim()) {
+            useToastStore.getState().addToast('角色名称不能为空');
+            return;
+        }
+        await useCharacterStore.getState().createCharacter({
+            name: form.name.trim(),
+            tts_model: '',
+            voice_name: form.voice,
+            speed: form.speed,
+            pitch: form.pitch,
+        });
+        await useCharacterStore.getState().fetchCharacters();
+        setCharacterMapping((prev) => ({ ...prev, [suggestedName]: form.name.trim() }));
+        setCreatingChars((prev) => ({ ...prev, [suggestedName]: false }));
+        useToastStore.getState().addToast(`角色 "${form.name}" 已创建`);
+    };
+
+    const handleCancelNewChar = (suggestedName: string) => {
+        setCreatingChars((prev) => ({ ...prev, [suggestedName]: false }));
+        setCharacterMapping((prev) => ({ ...prev, [suggestedName]: '' }));
+    };
+
+    const handleConfirmGenerate = () => {
+        if (!agentPlan) return;
+        const unmapped = agentPlan.suggested_characters.filter(
+            (c) => !characterMapping[c.name],
+        );
+        if (unmapped.length > 0) {
+            useToastStore.getState().addToast(`请为所有角色指定已有角色或创建新角色`);
+            return;
+        }
+        const pendingCreate = agentPlan.suggested_characters.filter(
+            (c) => creatingChars[c.name],
+        );
+        if (pendingCreate.length > 0) {
+            useToastStore.getState().addToast(`请先完成创建角色: ${pendingCreate.map(c => c.name).join(', ')}`);
+            return;
+        }
+
+        const mappingText = Object.entries(characterMapping)
+            .map(([suggested, target]) => `  "${suggested}" -> "${target}"`)
+            .join('\n');
+        const fullInstructions = [
+            extraInstructions.trim(),
+            `\n角色映射：\n${mappingText}`,
+        ].filter(Boolean).join('\n');
+
+        const confirmedCharNames = Object.values(characterMapping);
+
+        const existingText = lines.filter((l) => l.text.trim()).length;
+        const existingAudio = coveredLineIds.size;
+        if (existingText > 0 || existingAudio > 0) {
+            setConfirmData({ textCount: existingText, audioCount: existingAudio });
+            setShowOverwriteConfirm(true);
+            const w = window as Window & { _pendingExtraInstructions?: string; _pendingCharNames?: string[] };
+            w._pendingExtraInstructions = fullInstructions;
+            w._pendingCharNames = confirmedCharNames;
+            return;
+        }
+
+        generateScript(outline.trim(), fullInstructions, confirmedCharNames);
+        setAgentPlan(null);
+    };
+
+    const handlePlanManualMode = () => {
+        setAgentPlan(null);
+        setWorkflow('manual');
+    };
+
+    const isAiMode = workflow === 'ai';
+    const isManualMode = workflow === 'manual';
+    const hasNoWorkflow = !workflow;
+    const hasLines = lines.length > 0;
 
     return (
         <div className="mx-auto max-w-4xl px-6 py-6 space-y-4 relative">
+            {/* Mode selection - shown on project entry */}
+            {hasNoWorkflow && !hasLines && (
+                <div className="card p-6 space-y-4">
+                    <h2 className="text-lg font-semibold text-center">{t('editor.chooseMode')}</h2>
+                    <ModeSelector
+                        onSelectAi={handleAiModeSelect}
+                        onSelectManual={handleManualModeSelect}
+                    />
+                </div>
+            )}
+
+            {/* Switch mode button */}
+            {workflow && (
+                <div className="flex justify-end">
+                    <button
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        onClick={() => {
+                            setWorkflow(null);
+                            setAgentPlan(null);
+                        }}
+                    >
+                        {t('editor.switchMode')}
+                    </button>
+                </div>
+            )}
+
             {/* Blocking overlay during generation */}
             {isGenerating && (
                 <div className="absolute inset-0 z-50 bg-background/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
                     <div className="flex flex-col items-center gap-3">
-                        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                        <div className="h-10 w-10 animate-spin text-primary">
+                            <svg className="h-10 w-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M21 12a9 9 0 1 1-6.219-8.56" strokeLinecap="round" />
+                            </svg>
+                        </div>
                         <p className="text-sm font-medium text-muted-foreground">{t('editor.generating')}</p>
                         <p className="text-xs text-muted-foreground">{t('editor.generatingHint')}</p>
                     </div>
                 </div>
             )}
-            <Card>
-                <CardContent className="space-y-3">
-                    <div className="flex items-center justify-between">
-                        <Label>{t('editor.outlineLabel')}</Label>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => setOutlineCollapsed(!outlineCollapsed)}
-                        >
-                            {outlineCollapsed ? (
-                                <ChevronDown className="h-3 w-3 mr-1" />
-                            ) : (
-                                <ChevronUp className="h-3 w-3 mr-1" />
-                            )}
-                            {outlineCollapsed ? t('editor.outlineExpand') : t('editor.outlineCollapse')}
-                        </Button>
-                    </div>
-                    {!outlineCollapsed && (
-                        <>
-                            <textarea
-                                className="w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none resize-y min-h-[80px] dark:bg-input/30"
-                                placeholder={t('editor.outlinePlaceholder')}
-                                value={outline}
-                                onChange={(e) => setOutline(e.target.value)}
-                                disabled={isGenerating}
-                            />
-                            <div className="flex gap-2 flex-wrap items-center">
-                                <Button onClick={handleGenerate} disabled={isGenerating || !outline.trim()}>
-                                    <Sparkles className="h-4 w-4" />
-                                    {isGenerating ? t('editor.generating') : t('editor.generate')}
-                                </Button>
-                                {isDirty && (
-                                    <Button variant="outline" onClick={() => saveScript()}>
-                                        <Save className="h-4 w-4" /> {t('editor.save')}
-                                    </Button>
-                                )}
-                                {missingTtsCount > 0 && (
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => generateAllTts()}
-                                        disabled={isBatchTtsRunning}
-                                    >
-                                        <Volume2 className="h-4 w-4" />
-                                        {isBatchTtsRunning
-                                            ? t('editor.batchTtsRunning', { current: batchTtsProgress?.current ?? 0, total: batchTtsProgress?.total ?? missingTtsCount })
-                                            : t('editor.generateAllTts', { count: missingTtsCount })}
-                                    </Button>
-                                )}
-                                {isBatchTtsRunning && batchTtsProgress && (
-                                    <div className="flex-1 min-w-[120px] space-y-1">
-                                        <Progress
-                                            value={(batchTtsProgress.current / batchTtsProgress.total) * 100}
-                                            className="h-2"
-                                        />
-                                        <p className="text-xs text-muted-foreground">
-                                            {batchTtsProgress.current} / {batchTtsProgress.total}
-                                        </p>
-                                    </div>
-                                )}
-                            </div>
-                        </>
-                    )}
-                </CardContent>
-            </Card>
 
-            {isGenerating && streamingText && (
-                <Card className="border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20">
-                    <CardContent>
-                        <p className="text-sm text-purple-700 dark:text-purple-300 font-medium mb-2">{t('editor.aiGenerating')}</p>
-                        <pre className="text-sm whitespace-pre-wrap">{streamingText}<span className="animate-pulse">▌</span></pre>
-                    </CardContent>
-                </Card>
+            {/* Outline section - AI mode only */}
+            {isAiMode && (
+                <OutlinePanel
+                    outline={outline}
+                    onOutlineChange={setOutline}
+                    isAnalyzing={isAnalyzing}
+                    onAnalyze={handleAnalyze}
+                    hasAgentPlan={!!agentPlan}
+                />
             )}
 
-            {lines.length > 0 && (
-                <>
-                    <div className="border-t border-dashed border-border pt-2" />
-                    <div className="flex items-center gap-1 mb-1">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 w-6 p-0"
-                            onClick={() => useScriptStore.temporal.getState().undo()}
-                            title={`${t('editor.undo')} (⌘Z)`}
-                        >
-                            <Undo2 className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 w-6 p-0"
-                            onClick={() => useScriptStore.temporal.getState().redo()}
-                            title={`${t('editor.redo')} (⇧⌘Z)`}
-                        >
-                            <Redo2 className="h-3.5 w-3.5" />
-                        </Button>
-                    </div>
-                    <div className="space-y-2">
-                    {lines.map((line, index) => (
-                        <ScriptLineComponent key={line.id} line={line} index={index} />
-                    ))}
-                    <Button variant="outline" className="w-full border-dashed" onClick={() => addLine(lines.length - 1)}>
-                        <Plus className="h-4 w-4" /> {t('editor.addLine')}
-                    </Button>
-                </div>
-                </>
+            {/* Action bar - manual mode */}
+            {isManualMode && (
+                <ActionBar
+                    isDirty={isDirty}
+                    isBatchTtsRunning={isBatchTtsRunning}
+                    batchTtsProgress={batchTtsProgress}
+                    missingTtsCount={missingTtsCount}
+                    onSave={saveScript}
+                    onGenerateAllTts={generateAllTts}
+                />
             )}
 
-            {lines.length === 0 && !isGenerating && (
-                <p className="text-center text-muted-foreground py-16">{t('editor.emptyHint')}</p>
+            {/* Analyzing streaming */}
+            {isAnalyzing && (
+                <StreamingCard
+                    color="blue"
+                    label={t('editor.analyzing')}
+                    text={streamingText}
+                />
             )}
 
-            {lines.length === 0 && !isGenerating && (
-                <div className="flex justify-center">
-                    <Button variant="outline" className="border-dashed" onClick={() => addLine(-1)}>
-                        <Plus className="h-4 w-4" /> {t('editor.addFirstLine')}
-                    </Button>
-                </div>
+            {/* Plan card - AI mode only */}
+            {isAiMode && agentPlan && (
+                <PlanCard
+                    plan={agentPlan}
+                    existingCharacters={existingCharacters}
+                    onDismiss={() => setAgentPlan(null)}
+                    onConfirmGenerate={handleConfirmGenerate}
+                    onManualMode={handlePlanManualMode}
+                    onCharacterMapping={handleCharacterMapping}
+                    onNewChar={handleCreateNewChar}
+                    onCancelNewChar={handleCancelNewChar}
+                    creatingChars={creatingChars}
+                    newCharForms={newCharForms}
+                    onFormChange={handleFormChange}
+                    characterMapping={characterMapping}
+                    extraInstructions={extraInstructions}
+                    onExtraChange={setExtraInstructions}
+                    isGenerating={isGenerating}
+                />
             )}
 
+            {/* Script lines */}
+            <ScriptLines
+                lines={lines}
+                emptyHint={t('editor.emptyHint')}
+                emptyActionLabel={t('editor.addFirstLine')}
+                onEmptyAction={() => useScriptStore.getState().addLine(-1)}
+            />
+
+            {/* Confirm dialogs */}
             <ConfirmDialog
                 open={showOverwriteConfirm}
                 onOpenChange={setShowOverwriteConfirm}
@@ -264,7 +337,27 @@ export default function ScriptEditor() {
                 confirmText={t('editor.confirmOverwriteBtn')}
                 cancelText={t('editor.cancel')}
                 irreversibleWarning={t('editor.irreversibleWarning')}
-                onConfirm={() => generateScript(outline.trim())}
+                onConfirm={() => {
+                    const w = window as Window & { _pendingExtraInstructions?: string; _pendingCharNames?: string[] };
+                    if (w._pendingExtraInstructions) {
+                        generateScript(outline.trim(), w._pendingExtraInstructions, w._pendingCharNames);
+                        setAgentPlan(null);
+                        delete w._pendingExtraInstructions;
+                        delete w._pendingCharNames;
+                    } else {
+                        generateScript(outline.trim());
+                    }
+                }}
+            />
+
+            <ConfirmDialog
+                open={showAnalyzeConfirm}
+                onOpenChange={setShowAnalyzeConfirm}
+                title={t('editor.confirmAnalyzeTitle')}
+                description={t('editor.confirmAnalyze', { textCount: lines.filter((l) => l.text.trim()).length })}
+                confirmText={t('editor.confirmAnalyzeBtn')}
+                cancelText={t('editor.cancel')}
+                onConfirm={() => analyzeOutline(outline.trim())}
             />
         </div>
     );

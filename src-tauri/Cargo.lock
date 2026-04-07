@@ -5442,6 +5442,7 @@ dependencies = [
  "chrono",
  "cpal",
  "env_logger",
+ "futures-util",
  "log",
  "proptest",
  "reqwest 0.12.28",

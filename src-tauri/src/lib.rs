@@ -45,6 +45,7 @@ pub fn run() {
             commands::list_all_project_characters,
             commands::import_characters,
             commands::generate_script,
+            commands::analyze_outline,
             commands::save_script,
             commands::load_script,
             commands::generate_tts,

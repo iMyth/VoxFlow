@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Settings } from 'lucide-react';
+import { Settings, ChevronLeft } from 'lucide-react';
 import type { ProjectDetail } from '../../types';
 import { Button } from '../ui/button';
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
@@ -32,12 +32,12 @@ export default function AppHeader({
     };
 
     return (
-        <header className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-3">
-            <div className="flex items-center gap-4">
-                <Button variant="link" size="sm" onClick={onBack}>
-                    {t('app.backToProjects')}
+        <header className="flex items-center justify-between border-b border-border px-6 py-3">
+            <div className="flex items-center gap-1">
+                <Button variant="ghost" size="icon" onClick={onBack} className="h-9 w-9 shrink-0" title={t('app.backToProjects')}>
+                    <ChevronLeft className="h-5 w-5" />
                 </Button>
-                <h1 className="text-lg font-semibold">{project.project.name}</h1>
+                <h1 className="text-sm font-semibold truncate max-w-[200px]">{project.project.name}</h1>
             </div>
             <div className="flex items-center gap-2">
                 <Tabs value={activeTab} onValueChange={(v) => onTabChange(v as Tab)}>

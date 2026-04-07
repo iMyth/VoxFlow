@@ -9,11 +9,17 @@ import type { ScriptLine } from '../types';
 interface ScriptStore {
     lines: ScriptLine[];
     isGenerating: boolean;
+    isAnalyzing: boolean;
     isDirty: boolean;
     streamingText: string;
     isBatchTtsRunning: boolean;
     batchTtsProgress: { current: number; total: number } | null;
-    generateScript: (outline: string) => Promise<void>;
+    agentPlan: ipc.AgentPlan | null;
+    workflow: 'ai' | 'manual' | null;
+    setWorkflow: (mode: 'ai' | 'manual' | null) => void;
+    analyzeOutline: (outline: string) => Promise<void>;
+    generateScript: (outline: string, extraInstructions?: string, confirmedCharNames?: string[]) => Promise<void>;
+    setAgentPlan: (plan: ipc.AgentPlan | null) => void;
     updateLine: (lineId: string, text: string) => void;
     assignCharacter: (lineId: string, characterId: string) => void;
     addLine: (afterIndex: number) => void;
@@ -38,12 +44,19 @@ export const useScriptStore = create<ScriptStore>()(
         (set, get) => ({
             lines: [],
             isGenerating: false,
+            isAnalyzing: false,
             isDirty: false,
             streamingText: '',
             isBatchTtsRunning: false,
             batchTtsProgress: null,
+            agentPlan: null,
+            workflow: null,
 
-            generateScript: async (outline: string) => {
+            setWorkflow: (mode: 'ai' | 'manual' | null) => {
+                set({ workflow: mode });
+            },
+
+            analyzeOutline: async (outline: string) => {
                 const { useSettingsStore } = await import('./settingsStore');
                 const project = useProjectStore.getState().currentProject;
                 if (!project) return;
@@ -51,6 +64,52 @@ export const useScriptStore = create<ScriptStore>()(
                 const settings = useSettingsStore.getState();
                 const apiKey = await ipc.loadApiKey('dashscope');
                 const characters = useCharacterStore.getState().characters;
+
+                set({ isAnalyzing: true, streamingText: '' });
+
+                const unlistenToken = await ipc.onLlmToken((token) => {
+                    set((state) => ({ streamingText: state.streamingText + token }));
+                });
+
+                const unlistenError = await ipc.onLlmError((_error) => {
+                    useToastStore.getState().addToast('分析大纲失败');
+                    set({ isAnalyzing: false, streamingText: '' });
+                });
+
+                try {
+                    const plan = await ipc.analyzeOutline(outline, {
+                        api_endpoint: settings.llmEndpoint,
+                        api_key: apiKey ?? '',
+                        model: settings.llmModel,
+                    }, characters);
+                    set({ agentPlan: plan, isAnalyzing: false, streamingText: '' });
+                } catch (e) {
+                    useToastStore.getState().addToast('分析大纲失败');
+                    set({ isAnalyzing: false, streamingText: '' });
+                } finally {
+                    unlistenToken();
+                    unlistenError();
+                }
+            },
+
+            setAgentPlan: (plan: ipc.AgentPlan | null) => {
+                set({ agentPlan: plan });
+            },
+
+            generateScript: async (outline: string, extraInstructions?: string, confirmedCharNames?: string[]) => {
+                const { useSettingsStore } = await import('./settingsStore');
+                const project = useProjectStore.getState().currentProject;
+                if (!project) return;
+
+                const settings = useSettingsStore.getState();
+                const apiKey = await ipc.loadApiKey('dashscope');
+                const allCharacters = useCharacterStore.getState().characters;
+
+                // If confirmed character names are provided, only use those.
+                // Otherwise fall back to all characters (for direct generate without plan).
+                const characters = confirmedCharNames
+                    ? allCharacters.filter((c) => confirmedCharNames.includes(c.name))
+                    : allCharacters;
 
                 // Preserve old lines in case generation fails
                 const oldLines = get().lines;
@@ -77,7 +136,7 @@ export const useScriptStore = create<ScriptStore>()(
                         api_endpoint: settings.llmEndpoint,
                         api_key: apiKey ?? '',
                         model: settings.llmModel,
-                    }, characters);
+                    }, characters, extraInstructions);
                 } catch (e) {
                     useToastStore.getState().addToast('生成剧本失败');
                     set({ lines: oldLines, isGenerating: false, streamingText: '' });
