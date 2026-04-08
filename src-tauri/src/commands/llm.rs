@@ -178,26 +178,56 @@ pub async fn analyze_outline(
     })
 }
 
+/// Extract the first JSON object from text that may contain surrounding prose.
+/// Finds the first `{` and the matching last `}` to extract the JSON body.
+fn extract_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end > start {
+        Some(&text[start..=end])
+    } else {
+        None
+    }
+}
+
 /// Parse LLM response into AgentPlan.
+/// Handles markdown fences, surrounding prose text, and thinking-mode artifacts.
 fn parse_agent_plan(text: &str) -> Result<AgentPlan, String> {
     let trimmed = text.trim();
 
-    let json_str = if trimmed.starts_with("```") {
+    // Strip markdown code block: ```json ... ``` or ``` ... ```
+    let stripped = if trimmed.starts_with("```") {
         if let Some(first_newline) = trimmed.find('\n') {
             let after_fence = &trimmed[first_newline + 1..];
             after_fence
                 .trim()
                 .strip_suffix("```")
                 .unwrap_or(after_fence.trim())
-                .to_string()
         } else {
-            trimmed.trim().to_string()
+            trimmed
         }
     } else {
-        trimmed.to_string()
+        trimmed
     };
 
-    serde_json::from_str::<AgentPlan>(&json_str).map_err(|e| e.to_string())
+    // Try direct parse first
+    if let Ok(plan) = serde_json::from_str::<AgentPlan>(stripped) {
+        return Ok(plan);
+    }
+
+    // Extract JSON object from surrounding prose (common in thinking mode)
+    if let Some(json_str) = extract_json_object(stripped) {
+        if let Ok(plan) = serde_json::from_str::<AgentPlan>(json_str) {
+            return Ok(plan);
+        }
+        // Try auto-completing truncated JSON
+        let completed = auto_complete_json(json_str);
+        if let Ok(plan) = serde_json::from_str::<AgentPlan>(&completed) {
+            return Ok(plan);
+        }
+    }
+
+    Err(format!("Cannot parse AgentPlan from: {}", stripped.chars().take(300).collect::<String>()))
 }
 
 /// Generate script from a confirmed plan. This is Phase 2.
@@ -489,71 +519,62 @@ fn parse_llm_json(text: &str) -> Result<LlmScriptResponse, String> {
     let trimmed = text.trim();
 
     // Strip markdown code block: ```json ... ``` or ``` ... ```
-    let json_str = if trimmed.starts_with("```") {
+    let stripped = if trimmed.starts_with("```") {
         if let Some(first_newline) = trimmed.find('\n') {
             let after_fence = &trimmed[first_newline + 1..];
             after_fence
                 .trim()
                 .strip_suffix("```")
                 .unwrap_or(after_fence.trim())
-                .to_string()
         } else {
             trimmed
                 .trim()
                 .strip_prefix("```")
                 .and_then(|s| s.strip_suffix("```"))
                 .unwrap_or(trimmed)
-                .to_string()
         }
     } else {
-        trimmed.to_string()
+        trimmed
     };
 
+    // Extract JSON object from surrounding prose (common in thinking mode)
+    let json_str = extract_json_object(stripped).unwrap_or(stripped);
+
     // Try new sections format first
-    if let Ok(resp) = serde_json::from_str::<LlmScriptResponse>(&json_str) {
+    if let Ok(resp) = serde_json::from_str::<LlmScriptResponse>(json_str) {
         return Ok(resp);
     }
 
     // Try auto-completing truncated JSON
-    let completed = auto_complete_json(&json_str);
+    let completed = auto_complete_json(json_str);
     if let Ok(resp) = serde_json::from_str::<LlmScriptResponse>(&completed) {
         return Ok(resp);
     }
 
     // Fallback: try old lines format and wrap in default section
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
-        if let Some(lines_array) = value.get("lines").and_then(|v| v.as_array()) {
-            let lines: Vec<LlmScriptLine> = lines_array
-                .iter()
-                .filter_map(|l| serde_json::from_value::<LlmScriptLine>(l.clone()).ok())
-                .collect();
-            if !lines.is_empty() {
-                return Ok(LlmScriptResponse {
-                    sections: vec![LlmSection {
-                        title: "正文".to_string(),
-                        lines,
-                    }],
-                });
-            }
+    let try_old_format = |s: &str| -> Option<LlmScriptResponse> {
+        let value = serde_json::from_str::<serde_json::Value>(s).ok()?;
+        let lines_array = value.get("lines")?.as_array()?;
+        let lines: Vec<LlmScriptLine> = lines_array
+            .iter()
+            .filter_map(|l| serde_json::from_value::<LlmScriptLine>(l.clone()).ok())
+            .collect();
+        if lines.is_empty() {
+            return None;
         }
-    }
+        Some(LlmScriptResponse {
+            sections: vec![LlmSection {
+                title: "Main".to_string(),
+                lines,
+            }],
+        })
+    };
 
-    // Try old lines format with auto-completed JSON
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&completed) {
-        if let Some(lines_array) = value.get("lines").and_then(|v| v.as_array()) {
-            let lines: Vec<LlmScriptLine> = lines_array
-                .iter()
-                .filter_map(|l| serde_json::from_value::<LlmScriptLine>(l.clone()).ok())
-                .collect();
-            if !lines.is_empty() {
-                return Ok(LlmScriptResponse {
-                    sections: vec![LlmSection {
-                        title: "正文".to_string(),
-                        lines,
-                    }],
-                });
-            }
-        }
+    if let Some(resp) = try_old_format(json_str) {
+        return Ok(resp);
+    }
+    if let Some(resp) = try_old_format(&completed) {
+        return Ok(resp);
     }
 
     Err(format!("Cannot parse as sections or lines format, raw: {}", json_str.chars().take(500).collect::<String>()))
@@ -629,11 +650,11 @@ mod tests {
 
     #[test]
     fn test_parse_llm_json_old_format_fallback() {
-        // Old format without sections should be wrapped in a default "正文" section
+        // Old format without sections should be wrapped in a default "Main" section
         let text = r#"{"lines":[{"text":"台词1","character":null},{"text":"台词2","character":"Alice"}]}"#;
         let resp = parse_llm_json(text).unwrap();
         assert_eq!(resp.sections.len(), 1);
-        assert_eq!(resp.sections[0].title, "正文");
+        assert_eq!(resp.sections[0].title, "Main");
         assert_eq!(resp.sections[0].lines.len(), 2);
         assert_eq!(resp.sections[0].lines[0].text, "台词1");
     }
@@ -668,5 +689,23 @@ mod tests {
     fn test_resolve_character_none() {
         let chars = vec![make_char("id-1", "Alice")];
         assert_eq!(resolve_character(&None, &chars), None);
+    }
+
+    #[test]
+    fn test_parse_llm_json_with_surrounding_prose() {
+        // Thinking mode: LLM wraps JSON in explanatory text
+        let text = "Here is the generated script:\n\n{\"sections\":[{\"title\":\"Act 1\",\"lines\":[{\"text\":\"Hello\",\"character\":\"Alice\"}]}]}\n\nI hope this helps!";
+        let resp = parse_llm_json(text).unwrap();
+        assert_eq!(resp.sections.len(), 1);
+        assert_eq!(resp.sections[0].lines[0].text, "Hello");
+    }
+
+    #[test]
+    fn test_parse_agent_plan_with_surrounding_prose() {
+        let text = "Let me analyze this outline.\n\n{\"chapters\":[{\"title\":\"Ch1\",\"estimated_lines\":10,\"characters\":[\"Alice\"],\"mood\":\"happy\"}],\"suggested_characters\":[{\"name\":\"Alice\",\"role\":\"protagonist\",\"matched_existing\":false,\"existing_id\":null}],\"overall_style\":\"casual\",\"character_notes\":\"none\"}\n\nDone!";
+        let plan = parse_agent_plan(text).unwrap();
+        assert_eq!(plan.chapters.len(), 1);
+        assert_eq!(plan.chapters[0].title, "Ch1");
+        assert_eq!(plan.suggested_characters[0].name, "Alice");
     }
 }
