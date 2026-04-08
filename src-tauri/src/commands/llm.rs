@@ -45,36 +45,30 @@ pub async fn analyze_outline(
 
     let existing_char_names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
 
-    let system_prompt = if existing_char_names.is_empty() {
-        "你是有声书剧本分析助手。分析用户提供的大纲，返回结构化规划方案。\n\n\
-        要求：\n\
-        1. 识别章节/场景（chapters），每章估计台词数、涉及角色、情绪氛围\n\
-        2. 提取所有角色（suggested_characters），说明角色定位（主角/配角/旁白等）\n\
-        3. 判断是否匹配现有项目角色\n\
-        4. 总结整体风格（overall_style）\n\
-        5. 给出角色配置建议（character_notes）\n\n\
-        返回 JSON 格式：\n\
-        {\"chapters\":[{\"title\":\"章节名\",\"estimated_lines\":10,\"characters\":[\"角色名\"],\"mood\":\"情绪描述\"}],\
-        \"suggested_characters\":[{\"name\":\"角色名\",\"role\":\"定位\",\"matched_existing\":false,\"existing_id\":null}],\
-        \"overall_style\":\"风格描述\",\"character_notes\":\"配置建议\"}"
-            .to_string()
+    let existing_chars_section = if existing_char_names.is_empty() {
+        String::new()
     } else {
-        format!(
-            "你是有声书剧本分析助手。分析用户提供的大纲，返回结构化规划方案。\n\n\
-            要求：\n\
-            1. 识别章节/场景（chapters），每章估计台词数、涉及角色、情绪氛围\n\
-            2. 提取所有角色（suggested_characters），说明角色定位（主角/配角/旁白等）\n\
-            3. 判断是否匹配现有项目角色\n\
-            4. 总结整体风格（overall_style）\n\
-            5. 给出角色配置建议（character_notes）\n\n\
-            项目已有角色: {}\n\n\
-            返回 JSON 格式：\n\
-            {{\"chapters\":[{{\"title\":\"章节名\",\"estimated_lines\":10,\"characters\":[\"角色名\"],\"mood\":\"情绪描述\"}}],\
-            \"suggested_characters\":[{{\"name\":\"角色名\",\"role\":\"定位\",\"matched_existing\":false,\"existing_id\":null}}],\
-            \"overall_style\":\"风格描述\",\"character_notes\":\"配置建议\"}}",
-            existing_char_names.join(", ")
-        )
+        format!("\nExisting project characters: {}\nTry to match suggested characters to these existing ones when possible.\n", existing_char_names.join(", "))
     };
+
+    let system_prompt = format!(
+        "You are an audiobook script planning assistant. Analyze the user's outline and return a structured plan.\n\n\
+        CRITICAL LANGUAGE RULE: You MUST detect the language of the user's outline and respond entirely in that SAME language. \
+        If the outline is in English, ALL content (titles, descriptions, notes) must be in English. \
+        If the outline is in Chinese, respond in Chinese. Match the user's language exactly.\n\n\
+        {existing_chars}\
+        Requirements:\n\
+        1. Identify chapters/scenes, estimate line count per chapter (be generous — aim for 15-30+ lines per chapter for rich dialogue), list involved characters, describe mood\n\
+        2. Extract all characters with their roles (protagonist, antagonist, narrator, etc.)\n\
+        3. Check if characters match existing project characters\n\
+        4. Summarize overall style\n\
+        5. Provide character configuration notes\n\n\
+        Return ONLY valid JSON (no markdown fences):\n\
+        {{\"chapters\":[{{\"title\":\"...\",\"estimated_lines\":20,\"characters\":[\"...\"],\"mood\":\"...\"}}],\
+        \"suggested_characters\":[{{\"name\":\"...\",\"role\":\"...\",\"matched_existing\":false,\"existing_id\":null}}],\
+        \"overall_style\":\"...\",\"character_notes\":\"...\"}}",
+        existing_chars = existing_chars_section
+    );
 
     let body = json!({
         "model": model,
@@ -83,6 +77,7 @@ pub async fn analyze_outline(
             { "role": "user", "content": outline }
         ],
         "stream": true,
+        "max_tokens": 8192,
         "enable_thinking": enable_thinking
     });
 
@@ -95,7 +90,7 @@ pub async fn analyze_outline(
         .send()
         .await
         .map_err(|e| {
-            let msg = format!("LLM 请求失败: {}", e);
+            let msg = format!("LLM request failed: {}", e);
             let _ = app.emit("llm-error", &msg);
             AppError::LlmService(msg)
         })?;
@@ -103,7 +98,7 @@ pub async fn analyze_outline(
     if !response.status().is_success() {
         let status = response.status();
         let body_text = response.text().await.unwrap_or_default();
-        let msg = format!("LLM API 错误 {}: {}", status, body_text);
+        let msg = format!("LLM API error {}: {}", status, body_text);
         let _ = app.emit("llm-error", &msg);
         return Err(AppError::LlmService(msg));
     }
@@ -115,13 +110,12 @@ pub async fn analyze_outline(
         // Check cancellation
         if cancel_token.is_cancelled() {
             let _ = app.emit("llm-complete", &());
-            let msg = "已取消";
             let _ = app.emit("llm-cancel", &());
-            return Err(AppError::LlmService(msg.to_string()));
+            return Err(AppError::LlmService("Cancelled".to_string()));
         }
 
         let chunk = chunk_result.map_err(|e| {
-            let msg = format!("读取 LLM 响应失败: {}", e);
+            let msg = format!("Failed to read LLM response: {}", e);
             let _ = app.emit("llm-error", &msg);
             AppError::LlmService(msg)
         })?;
@@ -153,7 +147,7 @@ pub async fn analyze_outline(
 
     let plan: AgentPlan = parse_agent_plan(&accumulated_text)
         .map_err(|e| {
-            let msg = format!("解析规划结果失败: {}\n原始内容: {}", e, accumulated_text.chars().take(300).collect::<String>());
+            let msg = format!("Failed to parse plan: {}\nRaw: {}", e, accumulated_text.chars().take(300).collect::<String>());
             let _ = app.emit("llm-error", &msg);
             AppError::LlmService(msg)
         })?;
@@ -231,54 +225,66 @@ pub async fn generate_script(
     let url = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
 
     let char_list = if characters.is_empty() {
-        "（本项目暂无角色，可直接使用角色名，系统会自动创建）".to_string()
+        "(No characters defined yet — use character names freely, the system will create them automatically)".to_string()
     } else {
         let names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
-        format!("可用角色: {}", names.join("、"))
+        format!("Available characters: {}", names.join(", "))
     };
 
     // Build chapter reference info from the plan (as guidance, not hard requirement)
     let chapter_info = agent_plan.as_ref().map(|p| {
         let ch_descs: Vec<String> = p.chapters.iter().map(|ch| {
             format!(
-                "「{}」约{}行台词，情绪氛围：{}，涉及角色：{}",
+                "- \"{}\" ~{} lines, mood: {}, characters: {}",
                 ch.title,
                 ch.estimated_lines,
                 ch.mood,
-                if ch.characters.is_empty() { "无特定角色".to_string() } else { ch.characters.join("、") }
+                if ch.characters.is_empty() { "unspecified".to_string() } else { ch.characters.join(", ") }
             )
         }).collect();
+        let total_estimated: u32 = p.chapters.iter().map(|ch| ch.estimated_lines).sum();
         format!(
-            "【章节规划参考】\n{}\n\n注意：以上章节结构仅供参考，请根据大纲内容自然展开剧情，每个章节的台词数量可以根据剧情需要自由调整，关键是内容充实、剧情完整。避免用省略号或重复内容填充行数，每句台词都应该推动故事发展。",
-            ch_descs.join("\n")
+            "CHAPTER PLAN (reference — adapt freely based on story needs):\n{}\nTotal estimated lines: {}\n\
+            IMPORTANT: Generate AT LEAST this many lines total. Each chapter should have rich, detailed dialogue. \
+            Do NOT cut short or summarize — fully develop every scene with natural conversation flow.",
+            ch_descs.join("\n"),
+            total_estimated
         )
     }).unwrap_or_default();
 
     let extra = extra_instructions
         .filter(|s| !s.trim().is_empty())
-        .map(|s| format!("用户额外要求：{}\n", s))
+        .map(|s| format!("ADDITIONAL USER INSTRUCTIONS: {}\n", s))
         .unwrap_or_default();
 
     let system_prompt = format!(
-        "你是有声书剧本编写助手。根据用户提供的大纲，生成或更新有声书剧本。\n\n\
-        {extra}{char_list}\n\n\
+        "You are an audiobook script writer. Generate a complete, detailed audiobook script from the user's outline.\n\n\
+        CRITICAL LANGUAGE RULE: You MUST detect the language of the user's outline and write ALL dialogue/content in that SAME language. \
+        If the outline is in English, write English dialogue. If in Chinese, write Chinese dialogue. \
+        Only the JSON keys remain in English.\n\n\
+        {extra}\
+        {char_list}\n\n\
         {chapter_info}\n\n\
-        按段落/场景分组返回剧本（如「片头」「第一幕」「第二幕」「片尾」等），\
-        如果大纲没有明确的段落划分，可自动分为 3-5 个场景。\n\n\
-        返回 JSON 格式：\n\
+        OUTPUT FORMAT — return ONLY valid JSON (no markdown fences, no extra text):\n\
         {{\"sections\":[\
-        {{\"title\":\"段落标题\",\"lines\":[\
-        {{\"text\":\"台词内容\",\"character\":\"角色名\",\"instructions\":\"情绪/语速指令或null\",\"gap_ms\":500}},...\
-        ]}},...\
+        {{\"title\":\"Section Title\",\"lines\":[\
+        {{\"text\":\"dialogue content\",\"character\":\"character name\",\"instructions\":\"emotion/pace direction or null\",\"gap_ms\":500}},\
+        ...\
+        ]}},\
+        ...\
         ]}}\n\n\
-        规则：\n\
-        1. character 字段必填，每行必须指定角色\n\
-        2. instructions 字段描述语音生成指令（情绪、语速、语调），如不确定用 null\n\
-        3. gap_ms 表示停顿毫秒数，推荐 500-2000，默认 500\n\
-        4. 每行一句完整的台词，有实际内容\n\
-        5. 避免过度使用省略号（……）、占位符（略）或重复内容来凑字数。省略号可用于语气停顿，但不应作为填充手段\n\
-        6. 每个场景需要充分展开剧情，角色对话应推动情节发展或揭示角色性格\n\
-        7. 不要包含任何 markdown 代码块，只返回 JSON",
+        RULES:\n\
+        1. \"character\" is REQUIRED for every line — assign a character to each line\n\
+        2. \"instructions\" describes voice direction (emotion, pace, tone). Use null if unsure\n\
+        3. \"gap_ms\" is pause duration in ms after the line (500-2000, default 500)\n\
+        4. Each line must be a complete, meaningful sentence that advances the story\n\
+        5. DO NOT use ellipsis (\"...\"/\"……\") as filler or padding\n\
+        6. DO NOT use placeholders like \"(omitted)\" or \"(continues)\"\n\
+        7. DO NOT summarize or abbreviate — write out every line of dialogue fully\n\
+        8. Generate RICH, DETAILED scripts — aim for at least 15-30 lines per section\n\
+        9. Develop each scene thoroughly: include greetings, reactions, transitions, emotional beats\n\
+        10. If the outline describes a long story, generate proportionally more content\n\
+        11. Organize into 3-5 sections (e.g. \"Intro\", \"Act 1\", \"Act 2\", \"Climax\", \"Outro\" or localized equivalents)",
         extra = extra,
         char_list = char_list,
         chapter_info = chapter_info
@@ -291,6 +297,7 @@ pub async fn generate_script(
             { "role": "user", "content": outline }
         ],
         "stream": true,
+        "max_tokens": 16384,
         "enable_thinking": enable_thinking
     });
 
@@ -303,7 +310,7 @@ pub async fn generate_script(
         .send()
         .await
         .map_err(|e| {
-            let msg = format!("LLM 请求失败: {}", e);
+            let msg = format!("LLM request failed: {}", e);
             let _ = app.emit("llm-error", &msg);
             AppError::LlmService(msg)
         })?;
@@ -311,7 +318,7 @@ pub async fn generate_script(
     if !response.status().is_success() {
         let status = response.status();
         let body_text = response.text().await.unwrap_or_default();
-        let msg = format!("LLM API 返回错误 {}: {}", status, body_text);
+        let msg = format!("LLM API error {}: {}", status, body_text);
         let _ = app.emit("llm-error", &msg);
         return Err(AppError::LlmService(msg));
     }
@@ -328,7 +335,7 @@ pub async fn generate_script(
         }
 
         let chunk = chunk_result.map_err(|e| {
-            let msg = format!("读取 LLM 响应失败: {}", e);
+            let msg = format!("Failed to read LLM response: {}", e);
             let _ = app.emit("llm-error", &msg);
             AppError::LlmService(msg)
         })?;
@@ -360,19 +367,19 @@ pub async fn generate_script(
 
     // Parse JSON response from LLM
     let llm_response = parse_llm_json(&accumulated_text).map_err(|e| {
-        let msg = format!("解析 LLM JSON 响应失败: {}，原始内容: {}", e, accumulated_text.chars().take(200).collect::<String>());
+        let msg = format!("Failed to parse LLM JSON: {}, raw: {}", e, accumulated_text.chars().take(200).collect::<String>());
         let _ = app.emit("llm-error", &msg);
         AppError::LlmService(msg)
     })?;
 
     // Delete old sections and lines, save fresh LLM output directly
     let db = db.lock().map_err(|e| {
-        let msg = format!("数据库锁获取失败: {}", e);
+        let msg = format!("Database lock failed: {}", e);
         let _ = app.emit("llm-error", &msg);
         AppError::Database(msg)
     })?;
     db.delete_sections(&project_id).map_err(|e| {
-        let msg = format!("删除旧章节失败: {}", e);
+        let msg = format!("Failed to delete old sections: {}", e);
         let _ = app.emit("llm-error", &msg);
         AppError::Database(msg)
     })?;
@@ -410,14 +417,14 @@ pub async fn generate_script(
     if llm_response.sections.is_empty() {
         let flat_lines: Vec<ScriptLine> = Vec::new();
         db.save_script(&project_id, &flat_lines, &[]).map_err(|e| {
-            let msg = format!("保存剧本失败: {}", e);
+            let msg = format!("Failed to save script: {}", e);
             let _ = app.emit("llm-error", &msg);
             e
         })?;
     }
 
     db.save_script(&project_id, &lines, &sections).map_err(|e| {
-        let msg = format!("保存剧本失败: {}", e);
+        let msg = format!("Failed to save script: {}", e);
         let _ = app.emit("llm-error", &msg);
         e
     })?;
@@ -549,7 +556,7 @@ fn parse_llm_json(text: &str) -> Result<LlmScriptResponse, String> {
         }
     }
 
-    Err(format!("无法解析为 sections 或 lines 格式，原始内容: {}", json_str.chars().take(500).collect::<String>()))
+    Err(format!("Cannot parse as sections or lines format, raw: {}", json_str.chars().take(500).collect::<String>()))
 }
 
 /// Cancel an ongoing LLM request (analyze_outline or generate_script).
