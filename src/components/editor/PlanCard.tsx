@@ -1,5 +1,5 @@
-import { Check, X, Plus, Loader2, Pencil, Download, Users } from 'lucide-react';
-import { useState } from 'react';
+import { Check, X, Plus, Loader2, Pencil, Download } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { Card, CardContent } from '../ui/card';
@@ -59,27 +59,40 @@ export default function PlanCard({
 }: PlanCardProps) {
     const { t } = useTranslation();
 
-    const [showImport, setShowImport] = useState(false);
-    const [importProjects, setImportProjects] = useState<[string, string, Character[]][]>([]);
-    const [importedChars, setImportedChars] = useState<Character[]>([]);
+    const [importGroups, setImportGroups] = useState<[string, string, Character[]][]>([]);
 
-    const handleImportOpen = async () => {
-        try {
-            const all = await ipc.listAllProjectCharacters();
+    // Load characters from other projects once
+    useEffect(() => {
+        let cancelled = false;
+        ipc.listAllProjectCharacters().then((all) => {
+            if (cancelled) return;
             const filtered = all.filter(([_pid, _pname, chars]) => chars.length > 0 && _pid !== currentProjectId);
-            setImportProjects(filtered);
-            setShowImport(true);
-        } catch {
+            setImportGroups(filtered);
+        }).catch(() => {
             // silent
-        }
-    };
-
-    const handleImportChar = (char: Character) => {
-        setImportedChars((prev) => {
-            if (prev.find((c) => c.id === char.id)) return prev;
-            return [...prev, char];
         });
-        setShowImport(false);
+        return () => { cancelled = true; };
+    }, [currentProjectId]);
+
+    const handleImportChar = async (char: Character) => {
+        // Create the character in the current project in the background
+        const { useCharacterStore } = await import('../../store/characterStore');
+        const { useToastStore } = await import('../../store/toastStore');
+        try {
+            const existing = useCharacterStore.getState().characters;
+            if (!existing.find((c) => c.name === char.name)) {
+                await useCharacterStore.getState().createCharacter({
+                    name: char.name,
+                    tts_model: char.tts_model ?? '',
+                    voice_name: char.voice_name ?? '',
+                    speed: char.speed ?? 1.0,
+                    pitch: char.pitch ?? 0.0,
+                });
+                await useCharacterStore.getState().fetchCharacters();
+            }
+        } catch {
+            useToastStore.getState().addToast('character.importFailed');
+        }
     };
 
 
@@ -154,8 +167,18 @@ export default function PlanCard({
                                     <Select
                                         value={characterMapping[ch.name] || undefined}
                                         onValueChange={(v) => {
-                                            if (v === '__import__') {
-                                                handleImportOpen();
+                                            if (v.startsWith('__import:')) {
+                                                // value is "__import:<projectIndex>:<charIndex>"
+                                                const parts = v.split(':');
+                                                const pi = parseInt(parts[1]);
+                                                const ci = parseInt(parts[2]);
+                                                const char = importGroups[pi]?.[2]?.[ci];
+                                                if (char) {
+                                                    // Set mapping immediately (sync) so confirm button enables
+                                                    onCharacterMapping(ch.name, char.name);
+                                                    // Create character in current project in background
+                                                    handleImportChar(char);
+                                                }
                                             } else {
                                                 onCharacterMapping(ch.name, v);
                                             }
@@ -173,19 +196,25 @@ export default function PlanCard({
                                                     ))}
                                                 </SelectGroup>
                                             )}
-                                            {importedChars.length > 0 && (
+                                            {importGroups.length > 0 && (
                                                 <SelectGroup>
-                                                    <SelectLabel>{t('editor.planImportedChars')}</SelectLabel>
-                                                    {importedChars.map((ic) => (
-                                                        <SelectItem key={ic.id} value={ic.name}>{ic.name}</SelectItem>
-                                                    ))}
+                                                    <SelectLabel className="flex items-center gap-1">
+                                                        <Download className="h-3 w-3" />
+                                                        {t('editor.planImportChars')}
+                                                    </SelectLabel>
+                                                    {importGroups.map(([_projectId, projectName, chars], pi) =>
+                                                        chars.map((c, ci) => (
+                                                            <SelectItem
+                                                                key={c.id}
+                                                                value={`__import:${pi}:${ci}`}
+                                                            >
+                                                                {c.name} ({projectName})
+                                                            </SelectItem>
+                                                        )),
+                                                    )}
                                                 </SelectGroup>
                                             )}
                                             <SelectItem value="__new__">{t('editor.planNewChar')}</SelectItem>
-                                            <SelectItem value="__import__" className="text-blue-600 dark:text-blue-400">
-                                                <Download className="h-3 w-3 inline mr-1" />
-                                                {t('editor.planImportChar')}
-                                            </SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -290,52 +319,6 @@ export default function PlanCard({
                         {isGenerating ? t('editor.generating') : t('editor.confirmPlan')}
                     </Button>
                 </div>
-
-                {/* Import characters dialog */}
-                {showImport && (
-                    <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center">
-                        <div className="bg-background rounded-xl border shadow-xl max-w-lg w-full mx-4 max-h-[80vh] flex flex-col">
-                            <div className="flex items-center justify-between px-6 py-4 border-b">
-                                <h3 className="text-lg font-semibold">{t('editor.planImportChar')}</h3>
-                                <Button variant="ghost" size="icon-sm" onClick={() => setShowImport(false)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
-                            <div className="flex-1 overflow-auto px-6 py-4">
-                                {importProjects.length === 0 ? (
-                                    <p className="text-center text-muted-foreground py-8">{t('character.importEmpty')}</p>
-                                ) : (
-                                    <div className="space-y-4">
-                                        {importProjects.map(([projectId, projectName, chars]) => (
-                                            <div key={projectId}>
-                                                <p className="text-sm font-medium mb-2 text-foreground">
-                                                    <Users className="h-3 w-3 inline mr-1" />
-                                                    {projectName}
-                                                </p>
-                                                <div className="space-y-1">
-                                                    {chars.map((c) => (
-                                                        <div
-                                                            key={c.id}
-                                                            className="flex items-center gap-2 rounded-lg border border-border/60 px-3 py-2 cursor-pointer hover:bg-accent/50 transition"
-                                                            onClick={() => handleImportChar(c)}
-                                                        >
-                                                            <Badge variant="secondary" className="text-xs">
-                                                                {c.name}
-                                                            </Badge>
-                                                            <span className="text-xs text-muted-foreground">
-                                                                {c.voice_name} ({c.tts_model})
-                                                            </span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                )}
             </CardContent>
         </Card>
     );

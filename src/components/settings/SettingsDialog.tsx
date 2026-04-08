@@ -127,7 +127,7 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
                         <Input
                             value={localModel}
                             onChange={(e) => setLocalModel(e.target.value)}
-                            placeholder="qwen3.5-plus"
+                            placeholder="qwen3.6-plus"
                         />
                     </div>
                 </section>

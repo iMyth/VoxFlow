@@ -36,7 +36,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
         try {
             const project = await ipc.createProject(name);
             set((state) => ({
-                projects: [...state.projects, project],
+                projects: [project, ...state.projects],
                 loading: false,
             }));
         } catch (e) {

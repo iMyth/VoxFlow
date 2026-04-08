@@ -32,7 +32,7 @@ export default function AppHeader({
     };
 
     return (
-        <header className="flex items-center justify-between border-b border-border px-6 py-3">
+        <header className="sticky top-0 z-50 flex items-center justify-between border-b border-border bg-background px-6 py-3">
             <div className="flex items-center gap-1">
                 <Button variant="ghost" size="icon" onClick={onBack} className="h-9 w-9 shrink-0" title={t('app.backToProjects')}>
                     <ChevronLeft className="h-5 w-5" />

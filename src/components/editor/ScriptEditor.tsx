@@ -5,12 +5,10 @@ import { useProjectStore } from '../../store/projectStore';
 import { useCharacterStore } from '../../store/characterStore';
 import { useToastStore } from '../../store/toastStore';
 import { useSettingsStore } from '../../store/settingsStore';
-import ModeSelector from './ModeSelector';
 import OutlinePanel from './OutlinePanel';
 import PlanCard from './PlanCard';
 import ScriptLines from './ScriptLines';
 import StreamingCard from './StreamingCard';
-import ActionBar from './ActionBar';
 import ThinkingPanel from './ThinkingPanel';
 import ConfirmDialog from '../ui/confirm-dialog';
 
@@ -28,6 +26,7 @@ export default function ScriptEditor() {
     const [outline, setOutline] = useState('');
     const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
     const [showAnalyzeConfirm, setShowAnalyzeConfirm] = useState(false);
+    const [showOutlineDialog, setShowOutlineDialog] = useState(false);
     const [confirmData, setConfirmData] = useState({ textCount: 0, audioCount: 0 });
     const [extraInstructions, setExtraInstructions] = useState('');
     const [characterMapping, setCharacterMapping] = useState<Record<string, string>>({});
@@ -61,11 +60,11 @@ export default function ScriptEditor() {
         if (currentProject?.project.id) {
             const { workflow: currentWorkflow } = useScriptStore.getState();
             if (currentWorkflow === null) {
-                // Restore based on project state: outline present → AI, existing lines → manual
-                if (projectOutline) {
-                    useScriptStore.getState().setWorkflow('ai');
-                } else if (useScriptStore.getState().lines.length > 0) {
+                // New project with no existing lines: default to AI mode
+                if (useScriptStore.getState().lines.length > 0) {
                     useScriptStore.getState().setWorkflow('manual');
+                } else {
+                    useScriptStore.getState().setWorkflow('ai');
                 }
             }
         }
@@ -238,22 +237,9 @@ export default function ScriptEditor() {
     };
 
     const isAiMode = workflow === 'ai';
-    const hasNoWorkflow = !workflow;
-    const hasLines = lines.length > 0;
 
     return (
-        <div className="mx-auto max-w-4xl px-6 py-6 space-y-4 relative">
-            {/* Mode selection - shown on project entry */}
-            {hasNoWorkflow && !hasLines && (
-                <div className="card p-6 space-y-4">
-                    <h2 className="text-lg font-semibold text-center">{t('editor.chooseMode')}</h2>
-                    <ModeSelector
-                        onSelectAi={handleAiModeSelect}
-                        onSelectManual={handleManualModeSelect}
-                    />
-                </div>
-            )}
-
+        <div className="mx-auto max-w-4xl px-6 py-4 space-y-4 relative">
             {/* Batch TTS blocking overlay */}
             {isBatchTtsRunning && (
                 <div className="fixed z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm pointer-events-auto" style={{ top: 0, right: 0, bottom: 0, left: 0, width: '100vw', height: '100vh' }}>
@@ -275,46 +261,19 @@ export default function ScriptEditor() {
                 </div>
             )}
 
-            {/* Switch mode button */}
-            {workflow && (
-                <div className="flex justify-end">
-                    <button
-                        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        onClick={() => {
-                            setWorkflow(null);
-                            setAgentPlan(null);
-                        }}
-                    >
-                        {t('editor.switchMode')}
-                    </button>
-                </div>
-            )}
-
-            {/* Outline section - AI mode only */}
-            {isAiMode && (
-                <OutlinePanel
-                    outline={outline}
-                    onOutlineChange={setOutline}
-                    isAnalyzing={isAnalyzing}
-                    enableThinking={enableThinking}
-                    onToggleThinking={setEnableThinking}
-                    onAnalyze={handleAnalyze}
-                    onCancel={cancelLlm}
-                    hasAgentPlan={!!agentPlan}
-                />
-            )}
-
-            {/* Action bar - shown when lines exist and no active plan */}
-            {workflow && hasLines && !agentPlan && (
-                <ActionBar
-                    isDirty={isDirty}
-                    isBatchTtsRunning={isBatchTtsRunning}
-                    batchTtsProgress={batchTtsProgress}
-                    missingTtsCount={missingTtsCount}
-                    onSave={saveScript}
-                    onGenerateAllTts={generateAllTts}
-                />
-            )}
+            {/* Outline dialog */}
+            <OutlinePanel
+                outline={outline}
+                onOutlineChange={setOutline}
+                isAnalyzing={isAnalyzing}
+                enableThinking={enableThinking}
+                onToggleThinking={setEnableThinking}
+                onAnalyze={handleAnalyze}
+                onCancel={cancelLlm}
+                hasAgentPlan={!!agentPlan}
+                open={showOutlineDialog}
+                onOpenChange={setShowOutlineDialog}
+            />
 
             {/* Analyzing streaming */}
             {isAnalyzing && (
@@ -371,8 +330,17 @@ export default function ScriptEditor() {
                 lines={lines}
                 sections={sections}
                 emptyHint={t('editor.emptyHint')}
-                emptyActionLabel={t('editor.addFirstLine')}
-                onEmptyAction={() => useScriptStore.getState().addLine(-1)}
+                showOutlineBtn={workflow !== 'manual'}
+                onEditOutline={() => setShowOutlineDialog(true)}
+                workflow={workflow}
+                onSelectAi={handleAiModeSelect}
+                onSelectManual={handleManualModeSelect}
+                isDirty={isDirty}
+                isBatchTtsRunning={isBatchTtsRunning}
+                batchTtsProgress={batchTtsProgress}
+                missingTtsCount={missingTtsCount}
+                onSave={saveScript}
+                onGenerateAllTts={generateAllTts}
             />
 
             {/* Confirm dialogs */}

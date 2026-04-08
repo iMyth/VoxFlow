@@ -290,8 +290,18 @@ export const useScriptStore = create<ScriptStore>()(
                         instructions: '',
                         section_id: sectionId ?? state.lines[afterIndex]?.section_id ?? null,
                     };
+
+                    // If afterIndex is -1 and sectionId is given, append to end of that section
+                    let insertIndex = afterIndex + 1;
+                    if (afterIndex < 0 && sectionId) {
+                        const lastInSection = state.lines
+                            .filter((l) => l.section_id === sectionId)
+                            .reduce((max, l) => Math.max(max, l.line_order), -1);
+                        insertIndex = lastInSection >= 0 ? lastInSection + 1 : 0;
+                    }
+
                     const newLines = [...state.lines];
-                    newLines.splice(afterIndex + 1, 0, newLine);
+                    newLines.splice(insertIndex, 0, newLine);
                     return {
                         lines: newLines.map((l, i) => ({ ...l, line_order: i })),
                         isDirty: true,
