@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import { Plus, Trash2, GripVertical } from 'lucide-react';
+import { useState } from 'react';
+import { Plus, Trash2, GripVertical, ChevronDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -26,7 +26,7 @@ export default function SectionGroup({
     const { deleteSection, renameSection, reorderSections } = useScriptStore();
     const [editing, setEditing] = useState(false);
     const [title, setTitle] = useState(section.title);
-    const draggingFromGrip = useRef(false);
+    const [collapsed, setCollapsed] = useState(false);
 
     const handleTitleBlur = () => {
         setEditing(false);
@@ -46,48 +46,66 @@ export default function SectionGroup({
     const canDelete = lines.every((l) => !l.text.trim());
 
     const handleGripDragStart = (e: React.DragEvent) => {
-        if (!draggingFromGrip.current) {
-            e.preventDefault();
-            return;
-        }
-        draggingFromGrip.current = false;
         e.dataTransfer.setData('section-index', String(index));
         e.dataTransfer.effectAllowed = 'move';
     };
 
-    const handleContainerDragOver = (e: React.DragEvent) => {
-        const sectionIndex = e.dataTransfer.getData('section-index');
-        if (sectionIndex !== undefined && sectionIndex !== '') {
+    const handleSectionDragOver = (e: React.DragEvent) => {
+        // Only accept section drags, let line drags pass through
+        if (e.dataTransfer.getData('section-index') !== '') {
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
         }
     };
 
-    const handleContainerDrop = (e: React.DragEvent) => {
+    const handleSectionDrop = (e: React.DragEvent) => {
         const fromIndex = parseInt(e.dataTransfer.getData('section-index'), 10);
         if (!isNaN(fromIndex) && fromIndex !== index) {
             reorderSections(fromIndex, index);
         }
     };
 
+    const handleLineDragOver = (e: React.DragEvent) => {
+        // Stop section drags from reaching this container (line drags handled by children)
+        if (e.dataTransfer.getData('section-index') !== '') {
+            e.stopPropagation();
+            e.preventDefault();
+        }
+    };
+
+    const handleLineDrop = (e: React.DragEvent) => {
+        // Prevent section drops on line cards
+        if (e.dataTransfer.getData('section-index') !== '') {
+            e.stopPropagation();
+        }
+    };
+
     return (
         <div
             className="group/section space-y-2"
-            draggable
-            onDragStart={handleGripDragStart}
-            onDragEnd={() => { draggingFromGrip.current = false; }}
-            onDragOver={handleContainerDragOver}
-            onDrop={handleContainerDrop}
+            onDragOver={handleSectionDragOver}
+            onDrop={handleSectionDrop}
         >
             {/* Section header */}
             <div className="flex items-center gap-2 px-1">
                 <div
-                    className="cursor-grab text-muted-foreground hover:text-foreground shrink-0"
-                    data-drag-handle
-                    onMouseDown={() => { draggingFromGrip.current = true; }}
+                    className="cursor-grab select-none text-muted-foreground hover:text-foreground shrink-0"
+                    draggable
+                    onDragStart={handleGripDragStart}
                 >
                     <GripVertical className="h-4 w-4" />
                 </div>
+
+                <button
+                    className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                    onClick={() => setCollapsed(!collapsed)}
+                >
+                    {collapsed ? (
+                        <ChevronRight className="h-4 w-4" />
+                    ) : (
+                        <ChevronDown className="h-4 w-4" />
+                    )}
+                </button>
 
                 {editing ? (
                     <Input
@@ -123,19 +141,20 @@ export default function SectionGroup({
             </div>
 
             {/* Lines */}
-            <div
-                className="space-y-2"
-                onDragStart={(e) => e.stopPropagation()}
-                onDragOver={(e) => e.stopPropagation()}
-                onDrop={(e) => e.stopPropagation()}
-            >
-                {lines.map((line, lineIndex) => (
-                    <ScriptLineComponent key={line.id} line={line} index={lineIndex} />
-                ))}
-                <Button variant="outline" className="w-full border-dashed" onClick={onAddLine}>
-                    <Plus className="h-4 w-4" /> {t('editor.addLine')}
-                </Button>
-            </div>
+            {!collapsed && (
+                <div
+                    className="space-y-2"
+                    onDragOver={handleLineDragOver}
+                    onDrop={handleLineDrop}
+                >
+                    {lines.map((line, lineIndex) => (
+                        <ScriptLineComponent key={line.id} line={line} index={lineIndex} />
+                    ))}
+                    <Button variant="outline" className="w-full border-dashed" onClick={onAddLine}>
+                        <Plus className="h-4 w-4" /> {t('editor.addLine')}
+                    </Button>
+                </div>
+            )}
         </div>
     );
 }

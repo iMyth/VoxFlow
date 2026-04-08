@@ -66,6 +66,7 @@ interface ScriptStore {
     reorderLines: (fromIndex: number, toIndex: number) => void;
     setGap: (lineId: string, gapMs: number) => void;
     setInstructions: (lineId: string, instructions: string) => void;
+    setAllInstructions: (instructions: string) => void;
     addSection: () => void;
     deleteSection: (sectionId: string) => void;
     renameSection: (sectionId: string, title: string) => void;
@@ -334,6 +335,13 @@ export const useScriptStore = create<ScriptStore>()(
                     lines: state.lines.map((l) =>
                         l.id === lineId ? { ...l, instructions } : l,
                     ),
+                    isDirty: true,
+                }));
+            },
+
+            setAllInstructions: (instructions: string) => {
+                set((state) => ({
+                    lines: state.lines.map((l) => ({ ...l, instructions })),
                     isDirty: true,
                 }));
             },

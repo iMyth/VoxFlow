@@ -56,6 +56,7 @@
     "batchTtsRunning": "生成中 ({{current}}/{{total}})",
     "batchTtsHint": "正在批量生成语音，请勿关闭页面",
     "instructionsPlaceholder": "导演指令，如：语速较快、带有悲伤情绪",
+    "setAllInstructions": "批量设置指令",
     "analyze": "分析大纲",
     "analyzing": "分析中...",
     "cancelAnalyze": "取消分析",

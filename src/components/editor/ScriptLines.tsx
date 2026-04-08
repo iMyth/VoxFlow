@@ -1,6 +1,8 @@
-import { Plus, Undo2, Redo2 } from 'lucide-react';
+import { Plus, Undo2, Redo2, Wand2, X } from 'lucide-react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 import { Separator } from '../ui/separator';
 import ScriptLineComponent from './ScriptLine';
 import SectionGroup from './SectionGroup';
@@ -23,7 +25,85 @@ export default function ScriptLines({
     onEmptyAction,
 }: ScriptLinesProps) {
     const { t } = useTranslation();
-    const { addLine, addSection } = useScriptStore();
+    const { addLine, addSection, setAllInstructions } = useScriptStore();
+    const [batchInstructionsOpen, setBatchInstructionsOpen] = useState(false);
+    const [batchInstructionsValue, setBatchInstructionsValue] = useState('');
+
+    const handleBatchInstructions = () => {
+        if (batchInstructionsValue.trim()) {
+            setAllInstructions(batchInstructionsValue.trim());
+            setBatchInstructionsOpen(false);
+            setBatchInstructionsValue('');
+        }
+    };
+
+    const handleBatchKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') {
+            handleBatchInstructions();
+        } else if (e.key === 'Escape') {
+            setBatchInstructionsOpen(false);
+            setBatchInstructionsValue('');
+        }
+    };
+
+    const Toolbar = (
+        <div className="flex items-center gap-1 mb-1">
+            <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={() => useScriptStore.temporal.getState().undo()}
+                title={`${t('editor.undo')} (⌘Z)`}
+            >
+                <Undo2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={() => useScriptStore.temporal.getState().redo()}
+                title={`${t('editor.redo')} (⇧⌘Z)`}
+            >
+                <Redo2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+                variant="ghost"
+                size="sm"
+                className={`h-6 w-6 p-0 ${batchInstructionsOpen ? 'text-purple-500' : ''}`}
+                onClick={() => {
+                    if (batchInstructionsOpen) {
+                        setBatchInstructionsOpen(false);
+                        setBatchInstructionsValue('');
+                    } else {
+                        setBatchInstructionsOpen(true);
+                    }
+                }}
+                title={t('editor.setAllInstructions')}
+            >
+                {batchInstructionsOpen ? <X className="h-3.5 w-3.5" /> : <Wand2 className="h-3.5 w-3.5" />}
+            </Button>
+            {batchInstructionsOpen && (
+                <div className="flex items-center gap-2 flex-1 ml-2">
+                    <Input
+                        value={batchInstructionsValue}
+                        onChange={(e) => setBatchInstructionsValue(e.target.value)}
+                        onKeyDown={handleBatchKeyDown}
+                        className="h-7 text-xs flex-1 border-purple-300/50 focus-visible:border-purple-500"
+                        placeholder={t('editor.instructionsPlaceholder')}
+                        autoFocus
+                    />
+                    <Button
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={handleBatchInstructions}
+                        disabled={!batchInstructionsValue.trim()}
+                    >
+                        {t('editor.setAllInstructions')}
+                    </Button>
+                </div>
+            )}
+        </div>
+    );
 
     if (lines.length === 0) {
         return (
@@ -57,26 +137,7 @@ export default function ScriptLines({
         return (
             <>
                 <Separator className="border-dashed" />
-                <div className="flex items-center gap-1 mb-1">
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={() => useScriptStore.temporal.getState().undo()}
-                        title={`${t('editor.undo')} (⌘Z)`}
-                    >
-                        <Undo2 className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={() => useScriptStore.temporal.getState().redo()}
-                        title={`${t('editor.redo')} (⇧⌘Z)`}
-                    >
-                        <Redo2 className="h-3.5 w-3.5" />
-                    </Button>
-                </div>
+                {Toolbar}
                 <div className="space-y-4">
                     {sortedSections.map((section, index) => (
                         <SectionGroup
@@ -108,26 +169,7 @@ export default function ScriptLines({
     return (
         <>
             <Separator className="border-dashed" />
-            <div className="flex items-center gap-1 mb-1">
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0"
-                    onClick={() => useScriptStore.temporal.getState().undo()}
-                    title={`${t('editor.undo')} (⌘Z)`}
-                >
-                    <Undo2 className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0"
-                    onClick={() => useScriptStore.temporal.getState().redo()}
-                    title={`${t('editor.redo')} (⇧⌘Z)`}
-                >
-                    <Redo2 className="h-3.5 w-3.5" />
-                </Button>
-            </div>
+            {Toolbar}
             <div className="space-y-2">
                 {lines.map((line, index) => (
                     <ScriptLineComponent key={line.id} line={line} index={index} />

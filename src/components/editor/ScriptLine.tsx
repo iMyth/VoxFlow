@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { GripVertical, Trash2, Volume2, Loader2, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useScriptStore } from '../../store/scriptStore';
@@ -92,24 +92,21 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
         }
     };
 
-    const draggingFromGrip = useRef(false);
-
     const handleDragStart = (e: React.DragEvent) => {
-        if (!draggingFromGrip.current) {
-            e.preventDefault();
-            return;
-        }
-        draggingFromGrip.current = false;
         e.dataTransfer.setData('text/plain', String(index));
         e.dataTransfer.effectAllowed = 'move';
     };
 
     const handleDragOver = (e: React.DragEvent) => {
+        // Only accept line drags, ignore section drags
+        if (e.dataTransfer.getData('section-index') !== '') return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
     };
 
     const handleDrop = (e: React.DragEvent) => {
+        // Ignore section drags
+        if (e.dataTransfer.getData('section-index') !== '') return;
         e.preventDefault();
         const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
         if (!isNaN(fromIndex) && fromIndex !== index) {
@@ -123,16 +120,13 @@ export default function ScriptLineComponent({ line, index }: ScriptLineProps) {
     return (
         <Card
             className="flex-row items-start gap-2 p-3 group"
-            draggable
-            onDragStart={handleDragStart}
-            onDragEnd={() => { draggingFromGrip.current = false; }}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
         >
             <div
                 className="cursor-grab select-none pt-2 text-muted-foreground hover:text-foreground"
-                data-drag-handle
-                onMouseDown={() => { draggingFromGrip.current = true; }}
+                draggable
+                onDragStart={handleDragStart}
             >
                 <GripVertical className="h-4 w-4" />
             </div>

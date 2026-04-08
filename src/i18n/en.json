@@ -56,6 +56,7 @@
     "batchTtsRunning": "Generating ({{current}}/{{total}})",
     "batchTtsHint": "Batch generating TTS, please do not close this page",
     "instructionsPlaceholder": "Director instructions, e.g. faster pace, with sadness",
+    "setAllInstructions": "Set All Instructions",
     "analyze": "Analyze Outline",
     "analyzing": "Analyzing...",
     "cancelAnalyze": "Cancel Analysis",
