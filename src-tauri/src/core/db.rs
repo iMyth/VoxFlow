@@ -576,6 +576,26 @@ impl Database {
         Ok(())
     }
 
+    /// Delete all audio fragments for a given project and return their file paths.
+    pub fn clear_audio_fragments(&self, project_id: &str) -> Result<Vec<String>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT file_path FROM audio_fragments WHERE project_id = ?1")
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let paths: Vec<String> = stmt
+            .query_map(rusqlite::params![project_id], |row| row.get(0))
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+        self.conn
+            .execute(
+                "DELETE FROM audio_fragments WHERE project_id = ?1",
+                rusqlite::params![project_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(paths)
+    }
+
     /// List all audio fragments for a given project.
     pub fn list_audio_fragments(&self, project_id: &str) -> Result<Vec<AudioFragment>, AppError> {
         let mut stmt = self

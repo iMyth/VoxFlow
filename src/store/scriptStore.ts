@@ -74,6 +74,7 @@ interface ScriptStore {
     moveLineToSection: (lineId: string, sectionId: string | null) => void;
     saveScript: () => Promise<void>;
     generateAllTts: () => Promise<void>;
+    regenerateAllTts: () => Promise<void>;
 }
 
 // Only track undo history for `lines` changes, not for UI states
@@ -455,6 +456,23 @@ export const useScriptStore = create<ScriptStore>()(
                     unlisten();
                     set({ isBatchTtsRunning: false });
                 }
+            },
+
+            regenerateAllTts: async () => {
+                const project = useProjectStore.getState().currentProject;
+                if (!project) return;
+
+                try {
+                    await ipc.clearAudioFragments(project.project.id);
+                    // Reload project to clear audio_fragments in store
+                    await useProjectStore.getState().loadProject(project.project.id);
+                } catch (e) {
+                    useToastStore.getState().addToast('editor.clearAudioFailed');
+                    return;
+                }
+
+                // Now run generateAllTts which will see all lines as missing
+                await get().generateAllTts();
             },
         }),
         {

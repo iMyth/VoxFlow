@@ -53,6 +53,7 @@ pub fn run() {
             commands::load_script,
             commands::generate_tts,
             commands::generate_all_tts,
+            commands::clear_audio_fragments,
             commands::export_audio_mix,
             commands::import_bgm,
             commands::play_audio,

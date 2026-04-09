@@ -18,7 +18,7 @@ export default function ScriptEditor() {
         lines, sections, isGenerating, isAnalyzing, isDirty, streamingText, thinkingText,
         enableThinking, setEnableThinking,
         agentPlan, workflow, setWorkflow, analyzeOutline, setAgentPlan, generateScript,
-        cancelLlm, saveScript, generateAllTts,
+        cancelLlm, saveScript, generateAllTts, regenerateAllTts,
         isBatchTtsRunning, batchTtsProgress,
     } = useScriptStore();
     const currentProject = useProjectStore((s) => s.currentProject);
@@ -26,6 +26,7 @@ export default function ScriptEditor() {
     const [outline, setOutline] = useState('');
     const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
     const [showAnalyzeConfirm, setShowAnalyzeConfirm] = useState(false);
+    const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
     const [showOutlineDialog, setShowOutlineDialog] = useState(false);
     const [confirmData, setConfirmData] = useState({ textCount: 0, audioCount: 0 });
     const [extraInstructions, setExtraInstructions] = useState('');
@@ -339,8 +340,10 @@ export default function ScriptEditor() {
                 isBatchTtsRunning={isBatchTtsRunning}
                 batchTtsProgress={batchTtsProgress}
                 missingTtsCount={missingTtsCount}
+                hasAudioCount={coveredLineIds.size}
                 onSave={saveScript}
                 onGenerateAllTts={generateAllTts}
+                onRegenerateAllTts={() => setShowRegenerateConfirm(true)}
             />
 
             {/* Confirm dialogs */}
@@ -376,6 +379,17 @@ export default function ScriptEditor() {
                 confirmText={t('editor.confirmAnalyzeBtn')}
                 cancelText={t('editor.cancel')}
                 onConfirm={() => analyzeOutline(outline.trim())}
+            />
+
+            <ConfirmDialog
+                open={showRegenerateConfirm}
+                onOpenChange={setShowRegenerateConfirm}
+                title={t('editor.confirmRegenerateTitle')}
+                description={t('editor.confirmRegenerate', { count: coveredLineIds.size })}
+                confirmText={t('editor.confirmRegenerateBtn')}
+                cancelText={t('editor.cancel')}
+                irreversibleWarning={t('editor.irreversibleWarning')}
+                onConfirm={regenerateAllTts}
             />
         </div>
     );

@@ -204,6 +204,10 @@ export async function generateAllTts(
     });
 }
 
+export async function clearAudioFragments(projectId: string): Promise<void> {
+    return ipcCall<void>('clear_audio_fragments', { projectId });
+}
+
 export function onTtsBatchProgress(callback: (progress: TtsBatchProgress) => void): Promise<UnlistenFn> {
     return listen<TtsBatchProgress>('tts-batch-progress', (event) => callback(event.payload));
 }

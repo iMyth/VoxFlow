@@ -6,10 +6,11 @@ use tauri::Manager;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 use crate::core::models::{AudioFragment, TtsBatchProgress, VoiceConfig};
-use log::debug;
+use futures_util::{SinkExt, StreamExt};
+use log::{debug, error, info, warn};
+use tokio_tungstenite::tungstenite::Message;
 
 /// Build the audio file path for a given project and line.
-/// Returns `{app_data_dir}/projects/{project_id}/audio/{line_id}.mp3`
 pub fn build_audio_path(
     app_data_dir: &std::path::Path,
     project_id: &str,
@@ -22,6 +23,369 @@ pub fn build_audio_path(
         .join(format!("{}.mp3", line_id))
 }
 
+// ---------------------------------------------------------------------------
+// WebSocket CosyVoice TTS
+// ---------------------------------------------------------------------------
+// Uses wss://dashscope.aliyuncs.com/api-ws/v1/inference
+// Protocol: run-task → task-started → continue-task(s) → finish-task → audio → task-finished
+//
+// Advantages over the old HTTP approach:
+// 1. Audio is streamed directly over WebSocket — no OSS download that can timeout
+// 2. Multiple continue-task messages in one session maintain tonal context
+// 3. Connection reuse: after task-finished, send new run-task on same connection
+// ---------------------------------------------------------------------------
+
+/// Connect to the DashScope WebSocket TTS endpoint.
+async fn ws_connect(
+    api_key: &str,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    AppError,
+> {
+    let url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
+    let request = http::Request::builder()
+        .uri(url)
+        .header("Authorization", format!("bearer {}", api_key))
+        .header("X-DashScope-DataInspection", "enable")
+        .header("Host", "dashscope.aliyuncs.com")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+        .map_err(|e| AppError::TtsService(format!("WS request build error: {}", e)))?;
+
+    let (ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|e| AppError::TtsService(format!("WS connect failed: {}", e)))?;
+
+    info!("[TTS][ws] Connected");
+    Ok(ws)
+}
+
+/// Run a single TTS task on an existing WebSocket connection.
+/// Sends run-task → continue-task(texts) → finish-task, collects binary audio.
+/// After task-finished, the connection can be reused for another task.
+async fn ws_run_task<S>(
+    ws: &mut S,
+    texts: &[&str],
+    voice_config: &VoiceConfig,
+    instructions: Option<&str>,
+    model: &str,
+) -> Result<Vec<u8>, AppError>
+where
+    S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    use serde_json::json;
+
+    let task_id = uuid::Uuid::new_v4().to_string();
+
+    let has_instr = instructions.map(|i| !i.trim().is_empty()).unwrap_or(false);
+
+    let mut params = serde_json::Map::new();
+    params.insert("text_type".into(), json!("PlainText"));
+    params.insert("voice".into(), json!(voice_config.voice_name));
+    params.insert("format".into(), json!("mp3"));
+    params.insert("sample_rate".into(), json!(22050));
+    params.insert("volume".into(), json!(50));
+    params.insert("rate".into(), json!(voice_config.speed));
+    params.insert("pitch".into(), json!(voice_config.pitch));
+    if has_instr {
+        params.insert("instruction".into(), json!(instructions.unwrap()));
+    }
+
+    let run_task = json!({
+        "header": { "action": "run-task", "task_id": task_id, "streaming": "duplex" },
+        "payload": {
+            "task_group": "audio",
+            "task": "tts",
+            "function": "SpeechSynthesizer",
+            "model": model,
+            "parameters": params,
+            "input": {}
+        }
+    });
+
+    debug!("[TTS][ws] run-task: model={}, voice={}, texts={}", model, voice_config.voice_name, texts.len());
+    ws.send(Message::Text(run_task.to_string()))
+        .await
+        .map_err(|e| AppError::TtsService(format!("send run-task: {}", e)))?;
+
+    let mut audio = Vec::<u8>::new();
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(120);
+
+    loop {
+        let msg = tokio::time::timeout_at(deadline, ws.next()).await;
+        match msg {
+            Err(_) => return Err(AppError::TtsService("WS task timed out (120s)".into())),
+            Ok(None) => return Err(AppError::TtsService("WS closed unexpectedly".into())),
+            Ok(Some(Err(e))) => return Err(AppError::TtsService(format!("WS error: {}", e))),
+            Ok(Some(Ok(Message::Binary(data)))) => {
+                audio.extend_from_slice(&data);
+            }
+            Ok(Some(Ok(Message::Text(t)))) => {
+                if let Ok(evt) = serde_json::from_str::<serde_json::Value>(&t) {
+                    let event = evt["header"]["event"].as_str().unwrap_or("");
+                    match event {
+                        "task-started" => {
+                            // Send all texts
+                            for text in texts {
+                                let ct = json!({
+                                    "header": { "action": "continue-task", "task_id": task_id, "streaming": "duplex" },
+                                    "payload": { "input": { "text": text } }
+                                });
+                                ws.send(Message::Text(ct.to_string()))
+                                    .await
+                                    .map_err(|e| AppError::TtsService(format!("send continue-task: {}", e)))?;
+                            }
+                            // Send finish-task
+                            let ft = json!({
+                                "header": { "action": "finish-task", "task_id": task_id, "streaming": "duplex" },
+                                "payload": { "input": {} }
+                            });
+                            ws.send(Message::Text(ft.to_string()))
+                                .await
+                                .map_err(|e| AppError::TtsService(format!("send finish-task: {}", e)))?;
+                        }
+                        "task-finished" => {
+                            info!("[TTS][ws] task-finished: {} bytes", audio.len());
+                            break;
+                        }
+                        "task-failed" => {
+                            let code = evt["header"]["error_code"].as_str().unwrap_or("");
+                            let msg = evt["header"]["error_message"].as_str().unwrap_or("");
+                            error!("[TTS][ws] task-failed: {} - {}", code, msg);
+                            return Err(AppError::TtsService(format!("TTS failed: {} - {}", code, msg)));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Some(Ok(_))) => {} // ping/pong
+        }
+    }
+
+    if audio.is_empty() {
+        return Err(AppError::TtsService("No audio received".into()));
+    }
+    Ok(audio)
+}
+
+/// Re-encode audio with FFmpeg to fix VBR headers.
+fn reencode_with_ffmpeg(audio_path: &std::path::Path, label: &str) {
+    let tmp = audio_path.with_extension("tmp.mp3");
+    let r = std::process::Command::new("ffmpeg")
+        .args(["-y", "-i", &audio_path.to_string_lossy(), "-codec:a", "libmp3lame", "-b:a", "192k", &tmp.to_string_lossy()])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .output();
+    match r {
+        Ok(o) if o.status.success() => { let _ = std::fs::rename(&tmp, audio_path); }
+        _ => { let _ = std::fs::remove_file(&tmp); warn!("[TTS] FFmpeg failed for {}", label); }
+    }
+}
+
+/// Get audio duration in ms via FFprobe, fallback to rodio.
+fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
+    if let Ok(o) = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", &path.to_string_lossy()])
+        .output()
+    {
+        if o.status.success() {
+            if let Ok(s) = String::from_utf8(o.stdout) {
+                if let Ok(secs) = s.trim().parse::<f64>() {
+                    return Some((secs * 1000.0).round() as i64);
+                }
+            }
+        }
+    }
+    if let Ok(f) = std::fs::File::open(path) {
+        use rodio::Source;
+        if let Ok(d) = rodio::Decoder::new(std::io::BufReader::new(f)) {
+            let sr = d.sample_rate() as f64;
+            let n = d.count();
+            if sr > 0.0 { return Some((n as f64 / sr * 1000.0).round() as i64); }
+        }
+    }
+    None
+}
+
+/// Determine model name. For CosyVoice WS, use the model from config.
+fn resolve_model(voice_config: &VoiceConfig, has_instructions: bool) -> String {
+    if has_instructions {
+        if voice_config.tts_model.starts_with("qwen") {
+            return "qwen3-tts-instruct-flash".to_string();
+        }
+    }
+    if voice_config.tts_model.is_empty() {
+        "cosyvoice-v3-flash".to_string()
+    } else {
+        voice_config.tts_model.clone()
+    }
+}
+
+/// Returns true if the model should use the HTTP REST API (qwen-tts series),
+/// false if it should use the CosyVoice WebSocket endpoint.
+fn is_http_model(model: &str) -> bool {
+    model.starts_with("qwen")
+}
+
+// ---------------------------------------------------------------------------
+// HTTP REST API for Qwen-TTS models
+// ---------------------------------------------------------------------------
+// POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+// These models don't work on the CosyVoice WS endpoint.
+// ---------------------------------------------------------------------------
+
+async fn call_http_tts(
+    text: &str,
+    voice_config: &VoiceConfig,
+    instructions: Option<&str>,
+    api_key: &str,
+    model: &str,
+) -> Result<Vec<u8>, AppError> {
+    use reqwest::header::CONTENT_TYPE;
+    use serde_json::json;
+
+    let has_instr = instructions.map(|i| !i.trim().is_empty()).unwrap_or(false);
+
+    info!("[TTS][http] model={}, voice={}, text_len={}, has_instr={}", model, voice_config.voice_name, text.len(), has_instr);
+
+    let mut input = serde_json::Map::new();
+    input.insert("text".to_string(), json!(text));
+    input.insert("voice".to_string(), json!(voice_config.voice_name));
+    if has_instr {
+        input.insert("instructions".to_string(), json!(instructions.unwrap()));
+        input.insert("optimize_instructions".to_string(), json!(true));
+    }
+
+    let body = json!({ "model": model, "input": input });
+    debug!("[TTS][http] Request body:\n{}", serde_json::to_string_pretty(&body).unwrap_or_default());
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| AppError::TtsService(format!("HTTP client error: {}", e)))?;
+
+    let response = client
+        .post("https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
+        .header(CONTENT_TYPE, "application/json")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| AppError::TtsService(format!("百炼 TTS 请求失败: {}", e)))?;
+
+    let status = response.status();
+    info!("[TTS][http] Response status: {}", status);
+    if !status.is_success() {
+        let body_text = response.text().await.unwrap_or_default();
+        error!("[TTS][http] API error {}: {}", status, body_text);
+        return Err(AppError::TtsService(format!("百炼 TTS API 错误 {}: {}", status, body_text)));
+    }
+
+    let resp_body: serde_json::Value = response.json().await
+        .map_err(|e| AppError::TtsService(format!("解析响应失败: {}", e)))?;
+
+    debug!("[TTS][http] Response:\n{}", serde_json::to_string_pretty(&resp_body).unwrap_or_default());
+
+    // Try audio URL first
+    if let Some(url) = resp_body["output"]["audio"]["url"].as_str() {
+        let url = url.replacen("http://", "https://", 1);
+        info!("[TTS][http] Downloading audio from: {}", url);
+
+        // Retry download up to 3 times (OSS can be flaky)
+        let mut last_err = String::new();
+        for attempt in 1..=3 {
+            let dl_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| AppError::TtsService(format!("DL client error: {}", e)))?;
+
+            match dl_client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.bytes().await {
+                        Ok(b) => {
+                            info!("[TTS][http] Downloaded {} bytes (attempt {})", b.len(), attempt);
+                            return Ok(b.to_vec());
+                        }
+                        Err(e) => { last_err = format!("读取音频失败: {}", e); }
+                    }
+                }
+                Ok(resp) => { last_err = format!("下载状态 {}", resp.status()); }
+                Err(e) => { last_err = format!("下载失败: {}", e); }
+            }
+            if attempt < 3 {
+                warn!("[TTS][http] Download attempt {} failed: {}, retrying...", attempt, last_err);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+        return Err(AppError::TtsService(format!("下载百炼 TTS 音频失败 (3次重试): {}", last_err)));
+    }
+
+    // Fallback: base64
+    if let Some(data) = resp_body["output"]["audio"]["data"].as_str() {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data)
+            .map_err(|e| AppError::TtsService(format!("解码音频失败: {}", e)))?;
+        info!("[TTS][http] Decoded base64 audio: {} bytes", bytes.len());
+        return Ok(bytes);
+    }
+
+    Err(AppError::TtsService(format!("响应中未找到音频: {}", resp_body)))
+}
+
+/// Unified TTS call: routes to HTTP or WebSocket based on model.
+async fn call_tts(
+    text: &str,
+    voice_config: &VoiceConfig,
+    instructions: Option<&str>,
+    api_key: &str,
+    model: &str,
+) -> Result<Vec<u8>, AppError> {
+    if is_http_model(model) {
+        call_http_tts(text, voice_config, instructions, api_key, model).await
+    } else {
+        let mut ws = ws_connect(api_key).await?;
+        ws_run_task(&mut ws, &[text], voice_config, instructions, model).await
+    }
+}
+
+/// Unified batch TTS: for WS models reuses connection, for HTTP models calls sequentially.
+enum BatchConn {
+    Ws(tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>),
+    Http,
+}
+
+async fn batch_tts_one(
+    conn: &mut BatchConn,
+    text: &str,
+    vc: &VoiceConfig,
+    instr: Option<&str>,
+    model: &str,
+    api_key: &str,
+) -> Result<Vec<u8>, AppError> {
+    match conn {
+        BatchConn::Http => {
+            call_http_tts(text, vc, instr, api_key, model).await
+        }
+        BatchConn::Ws(ws) => {
+            ws_run_task(ws, &[text], vc, instr, model).await
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
 #[tauri::command]
 pub async fn generate_tts(
     app: tauri::AppHandle,
@@ -33,208 +397,45 @@ pub async fn generate_tts(
     instructions: Option<String>,
     api_key: String,
 ) -> Result<AudioFragment, AppError> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+    info!("[TTS] generate_tts: project={}, line={}, voice={}", project_id, line_id, voice_config.voice_name);
+
+    let app_data_dir = app.path().app_data_dir()
         .map_err(|e| AppError::FileSystem(e.to_string()))?;
-
     let audio_path = build_audio_path(&app_data_dir, &project_id, &line_id);
-
-    if let Some(parent) = audio_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            AppError::FileSystem(format!("Failed to create audio directory: {}", e))
-        })?;
+    if let Some(p) = audio_path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| AppError::FileSystem(format!("mkdir: {}", e)))?;
     }
 
-    let audio_bytes =
-        call_dashscope_tts(&text, &voice_config, instructions.as_deref(), &api_key).await?;
+    let has_instr = instructions.as_ref().map(|i| !i.trim().is_empty()).unwrap_or(false);
+    let model = resolve_model(&voice_config, has_instr);
 
-    std::fs::write(&audio_path, &audio_bytes).map_err(|e| {
-        AppError::FileSystem(format!("Failed to write audio file: {}", e))
-    })?;
+    let audio_bytes = call_tts(
+        &text,
+        &voice_config,
+        instructions.as_deref(),
+        &api_key,
+        &model,
+    ).await?;
 
-    // Re-encode with FFmpeg to fix VBR headers and ensure valid MP3 format.
-    // TTS services may return WAV disguised as .mp3 or VBR MP3 with bad headers.
-    let tmp_path = audio_path.with_extension("tmp.mp3");
-    let ffmpeg_result = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-i", &audio_path.to_string_lossy(),
-            "-codec:a", "libmp3lame",
-            "-b:a", "192k",
-            &tmp_path.to_string_lossy(),
-        ])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .output();
+    info!("[TTS] Got {} bytes for line={}", audio_bytes.len(), line_id);
 
-    match ffmpeg_result {
-        Ok(output) if output.status.success() => {
-            // Replace original with re-encoded file
-            std::fs::rename(&tmp_path, &audio_path).map_err(|e| {
-                AppError::FileSystem(format!("Failed to replace audio file: {}", e))
-            })?;
-        }
-        _ => {
-            // FFmpeg failed or not found — keep original file, clean up tmp
-            let _ = std::fs::remove_file(&tmp_path);
-        }
-    }
+    std::fs::write(&audio_path, &audio_bytes)
+        .map_err(|e| AppError::FileSystem(format!("write: {}", e)))?;
+    reencode_with_ffmpeg(&audio_path, &line_id);
 
-    let file_path = audio_path.to_string_lossy().to_string();
     let duration_ms = get_audio_duration(&audio_path);
     let fragment = AudioFragment {
         id: uuid::Uuid::new_v4().to_string(),
         project_id: project_id.clone(),
         line_id: line_id.clone(),
-        file_path,
+        file_path: audio_path.to_string_lossy().to_string(),
         duration_ms,
     };
 
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
     db.upsert_audio_fragment(&fragment)?;
-
+    info!("[TTS] generate_tts done: line={}", line_id);
     Ok(fragment)
-}
-
-/// Get audio duration in milliseconds using FFprobe or rodio.
-/// Returns None if duration cannot be determined.
-fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
-    // Try FFprobe first (most reliable)
-    if let Ok(output) = std::process::Command::new("ffprobe")
-        .args([
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            &path.to_string_lossy(),
-        ])
-        .output()
-    {
-        if output.status.success() {
-            if let Ok(duration_str) = String::from_utf8(output.stdout) {
-                if let Ok(seconds) = duration_str.trim().parse::<f64>() {
-                    return Some((seconds * 1000.0).round() as i64);
-                }
-            }
-        }
-    }
-
-    // Fallback: try rodio decoder
-    if let Ok(file) = std::fs::File::open(path) {
-        let reader = std::io::BufReader::new(file);
-        use rodio::Source;
-        if let Ok(decoder) = rodio::Decoder::new(reader) {
-            let sample_rate = decoder.sample_rate() as f64;
-            let total_samples = decoder.count();
-            if sample_rate > 0.0 {
-                return Some((total_samples as f64 / sample_rate * 1000.0).round() as i64);
-            }
-        }
-    }
-
-    None
-}
-
-/// 调用阿里百炼 (DashScope) Qwen-TTS / CosyVoice 服务生成音频。
-///
-/// API 端点（北京地域）：
-/// POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
-///
-/// voice_config.tts_model 指定模型名（如 "qwen3-tts-flash"、"cosyvoice-v3-flash"）
-/// voice_config.voice_name 指定音色（如 "Cherry"、"longanyang"）
-/// instructions 可选的导演指令，用于控制情绪、语速、语调等。如果提供，会自动切换到
-/// qwen3-tts-instruct-flash 模型。
-async fn call_dashscope_tts(
-    text: &str,
-    voice_config: &VoiceConfig,
-    instructions: Option<&str>,
-    api_key: &str,
-) -> Result<Vec<u8>, AppError> {
-    use reqwest::header::CONTENT_TYPE;
-    use serde_json::json;
-
-    let has_instructions = instructions.map(|i| !i.trim().is_empty()).unwrap_or(false);
-
-    let model = if has_instructions {
-        "qwen3-tts-instruct-flash"
-    } else if voice_config.tts_model.is_empty() {
-        "qwen3-tts-flash"
-    } else {
-        &voice_config.tts_model
-    };
-
-    let mut input = serde_json::Map::new();
-    input.insert("text".to_string(), json!(text));
-    input.insert("voice".to_string(), json!(voice_config.voice_name));
-    if has_instructions {
-        input.insert("instructions".to_string(), json!(instructions.unwrap()));
-        input.insert("optimize_instructions".to_string(), json!(true));
-    }
-
-    let body = json!({
-        "model": model,
-        "input": input
-    });
-
-    // 使用 debug! 宏，只有在设置 RUST_LOG=debug 时才会显示，避免生产环境日志过多
-    debug!("🚀 正在构造 TTS 请求:");
-    // serde_json::to_string_pretty 可以格式化输出 JSON，方便阅读
-    debug!("{}", serde_json::to_string_pretty(&body).unwrap()); 
-    
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post("https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
-        .header(CONTENT_TYPE, "application/json")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| AppError::TtsService(format!("百炼 TTS 请求失败: {}", e)))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body_text = response.text().await.unwrap_or_default();
-        return Err(AppError::TtsService(format!(
-            "百炼 TTS API 错误 {}: {}",
-            status, body_text
-        )));
-    }
-
-    let resp_body: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::TtsService(format!("解析百炼 TTS 响应失败: {}", e)))?;
-
-    // Non-streaming: response contains audio URL in output.audio.url
-    if let Some(url) = resp_body["output"]["audio"]["url"].as_str() {
-        // OSS may return http:// URL; upgrade to https:// for proxy compatibility
-        let url = url.replacen("http://", "https://", 1);
-        let audio_response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::TtsService(format!("下载百炼 TTS 音频失败: {}", e)))?;
-
-        return audio_response
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| AppError::TtsService(format!("读取百炼 TTS 音频失败: {}", e)));
-    }
-
-    // Fallback: base64-encoded audio data
-    if let Some(data) = resp_body["output"]["audio"]["data"].as_str() {
-        use base64::Engine;
-        return base64::engine::general_purpose::STANDARD
-            .decode(data)
-            .map_err(|e| AppError::TtsService(format!("解码百炼 TTS 音频失败: {}", e)));
-    }
-
-    Err(AppError::TtsService(format!(
-        "百炼 TTS 响应中未找到音频数据: {}",
-        resp_body
-    )))
 }
 
 #[tauri::command]
@@ -244,194 +445,228 @@ pub async fn generate_all_tts(
     project_id: String,
     api_key: String,
 ) -> Result<usize, AppError> {
+    info!("[TTS] generate_all_tts: project={}", project_id);
+
     let (script_lines, fragments, characters) = {
         let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         let lines = db.load_script(&project_id)?;
         let frags = db.list_audio_fragments(&project_id)?;
         let chars = db.list_characters(&project_id)?;
+        info!("[TTS] {} lines, {} existing, {} chars", lines.len(), frags.len(), chars.len());
         (lines, frags, chars)
     };
 
-    let existing_line_ids: std::collections::HashSet<String> =
+    let existing: std::collections::HashSet<String> =
         fragments.iter().map(|f| f.line_id.clone()).collect();
 
-    // Build character lookup map
     let char_map: std::collections::HashMap<String, VoiceConfig> = characters
         .iter()
-        .map(|c| {
-            (
-                c.id.clone(),
-                VoiceConfig {
-                    voice_name: c.voice_name.clone(),
-                    tts_model: c.tts_model.clone(),
-                    speed: c.speed,
-                    pitch: c.pitch,
-                },
-            )
+        .map(|c| (c.id.clone(), VoiceConfig {
+            voice_name: c.voice_name.clone(),
+            tts_model: c.tts_model.clone(),
+            speed: c.speed,
+            pitch: c.pitch,
+        }))
+        .collect();
+
+    let default_vc = VoiceConfig { voice_name: String::new(), tts_model: String::new(), speed: 1.0, pitch: 1.0 };
+
+    struct LineInfo { id: String, text: String, instructions: String, vc: VoiceConfig }
+
+    let missing: Vec<LineInfo> = script_lines.iter()
+        .filter(|l| !existing.contains(&l.id) && !l.text.trim().is_empty())
+        .map(|l| {
+            let vc = l.character_id.as_ref()
+                .and_then(|cid| char_map.get(cid))
+                .cloned()
+                .unwrap_or_else(|| default_vc.clone());
+            LineInfo { id: l.id.clone(), text: l.text.clone(), instructions: l.instructions.clone(), vc }
         })
         .collect();
 
-    let missing: Vec<(String, String, Option<String>, String)> = script_lines
-        .iter()
-        .filter(|l| !existing_line_ids.contains(&l.id) && !l.text.trim().is_empty())
-        .map(|l| (l.id.clone(), l.text.clone(), l.character_id.clone(), l.instructions.clone()))
-        .collect();
-
     if missing.is_empty() {
+        info!("[TTS] Nothing to generate");
         return Ok(0);
     }
 
     let total = missing.len();
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+    info!("[TTS] {} lines to generate", total);
+
+    let app_data_dir = app.path().app_data_dir()
         .map_err(|e| AppError::FileSystem(e.to_string()))?;
 
-    // Process with concurrency limit of 3 using futures::stream
-    const MAX_CONCURRENT: usize = 3;
+    // Group by voice config key so we can reuse WS connections per voice.
+    // Within each group, lines are processed sequentially on the same connection.
+    // The CosyVoice WS supports connection reuse: after task-finished, send new run-task.
+    use std::collections::BTreeMap;
+    type VKey = (String, String, i32, i32, String); // voice, model, speed*100, pitch*100, instructions
+
+    let mut groups: BTreeMap<VKey, Vec<usize>> = BTreeMap::new();
+    for (i, line) in missing.iter().enumerate() {
+        let key = (
+            line.vc.voice_name.clone(),
+            line.vc.tts_model.clone(),
+            (line.vc.speed * 100.0) as i32,
+            (line.vc.pitch * 100.0) as i32,
+            line.instructions.clone(),
+        );
+        groups.entry(key).or_default().push(i);
+    }
+
+    info!("[TTS] {} voice groups", groups.len());
+
     let mut success_count = 0usize;
     let mut completed = 0usize;
 
-    for chunk in missing.chunks(MAX_CONCURRENT) {
-        let mut handles = Vec::with_capacity(chunk.len());
+    for (_key, indices) in &groups {
+        // Open one WS connection per voice group
+        let first = &missing[indices[0]];
+        let has_instr = !first.instructions.is_empty();
+        let model = resolve_model(&first.vc, has_instr);
+        let instr: Option<&str> = if has_instr { Some(&first.instructions) } else { None };
 
-        for (line_id, text, character_id, instructions) in chunk {
-            let app_h = app.clone();
-            let proj_id = project_id.clone();
-            let key = api_key.clone();
-            let dir = app_data_dir.clone();
-            let id = line_id.clone();
-            let txt = text.clone();
-            let char_id = character_id.clone();
-            let instr = instructions.clone();
-            let cfg = char_id.and_then(|cid| char_map.get(&cid).cloned()).unwrap_or_else(|| VoiceConfig {
-                voice_name: String::new(),
-                tts_model: String::new(),
-                speed: 1.0,
-                pitch: 1.0,
-            });
+        info!("[TTS][group] voice={}, model={}, lines={}", first.vc.voice_name, model, indices.len());
 
-            let handle = tokio::spawn(async move {
-                let audio_path = build_audio_path(&dir, &proj_id, &id);
-                if let Some(parent) = audio_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+        let mut conn = if is_http_model(&model) {
+            BatchConn::Http
+        } else {
+            match ws_connect(&api_key).await {
+                Ok(ws) => BatchConn::Ws(ws),
+                Err(e) => {
+                    error!("[TTS][group] WS connect failed: {}", e);
+                    for &idx in indices {
+                        completed += 1;
+                        let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                            current: completed, total,
+                            line_id: missing[idx].id.clone(),
+                            success: false, error: Some(e.to_string()),
+                        });
+                    }
+                    continue;
                 }
+            }
+        };
 
-                let vc = VoiceConfig {
-                    voice_name: cfg.voice_name.clone(),
-                    tts_model: cfg.tts_model.clone(),
-                    speed: cfg.speed,
-                    pitch: cfg.pitch,
-                };
+        // Process each line as a separate task on the same connection.
+        // This reuses the connection (avoiding reconnect overhead) while
+        // producing individual audio files per line.
+        for &idx in indices {
+            let line = &missing[idx];
+            completed += 1;
 
-                // Wrap TTS call with timeout to prevent hanging on API issues
-                let tts_result = tokio::time::timeout(
-                    std::time::Duration::from_secs(60),
-                    call_dashscope_tts(&txt, &vc, if instr.is_empty() { None } else { Some(&instr) }, &key),
-                ).await;
+            let task_result = tokio::time::timeout(
+                std::time::Duration::from_secs(90),
+                batch_tts_one(&mut conn, &line.text, &line.vc, instr, &model, &api_key),
+            ).await;
 
-                let result = match tts_result {
-                    Ok(inner) => inner,
-                    Err(_) => Err(AppError::TtsService(format!("TTS request timed out for line {}", id))),
-                };
-
-                match result {
-                    Ok(audio_bytes) => {
-                        if let Err(e) = std::fs::write(&audio_path, &audio_bytes) {
-                            return (id, false, Some(format!("Write file failed: {}", e)));
-                        }
-
-                        // Re-encode with FFmpeg
-                        let tmp_path = audio_path.with_extension("tmp.mp3");
-                        let ffmpeg_result = std::process::Command::new("ffmpeg")
-                            .args([
-                                "-y",
-                                "-i", &audio_path.to_string_lossy(),
-                                "-codec:a", "libmp3lame",
-                                "-b:a", "192k",
-                                &tmp_path.to_string_lossy(),
-                            ])
-                            .stderr(std::process::Stdio::piped())
-                            .stdout(std::process::Stdio::piped())
-                            .output();
-
-                        if let Ok(output) = ffmpeg_result {
-                            if output.status.success() {
-                                let _ = std::fs::rename(&tmp_path, &audio_path);
-                            } else {
-                                let _ = std::fs::remove_file(&tmp_path);
-                            }
-                        }
-
-                        let duration_ms = get_audio_duration(&audio_path);
-                        let fragment = AudioFragment {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            project_id: proj_id.clone(),
-                            line_id: id.clone(),
-                            file_path: audio_path.to_string_lossy().to_string(),
-                            duration_ms,
-                        };
-
-                        // Save to DB
-                        let db_result = {
-                            let db_guard = app_h.state::<Mutex<Database>>();
-                            let result = match db_guard.lock() {
-                                Ok(d) => d.upsert_audio_fragment(&fragment),
-                                Err(e) => Err(AppError::Database(e.to_string())),
-                            };
-                            result
-                        };
-
-                        match db_result {
-                            Ok(()) => (id, true, None),
-                            Err(e) => (id, false, Some(format!("DB save failed: {}", e))),
+            let audio = match task_result {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(e)) => {
+                    error!("[TTS][batch] line {} failed: {}", line.id, e);
+                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                        current: completed, total,
+                        line_id: line.id.clone(),
+                        success: false, error: Some(e.to_string()),
+                    });
+                    // For WS: connection may be broken after task-failed, reconnect
+                    if let BatchConn::Ws(_) = &conn {
+                        if let Ok(new_ws) = ws_connect(&api_key).await {
+                            conn = BatchConn::Ws(new_ws);
                         }
                     }
-                    Err(e) => (id, false, Some(e.to_string())),
+                    continue;
                 }
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for this chunk to complete
-        for handle in handles {
-            match handle.await {
-                Ok((line_id, success, error)) => {
-                    completed += 1;
-                    if success {
-                        success_count += 1;
+                Err(_) => {
+                    error!("[TTS][batch] line {} timed out", line.id);
+                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                        current: completed, total,
+                        line_id: line.id.clone(),
+                        success: false, error: Some("Timeout".into()),
+                    });
+                    if let BatchConn::Ws(_) = &conn {
+                        if let Ok(new_ws) = ws_connect(&api_key).await {
+                            conn = BatchConn::Ws(new_ws);
+                        }
                     }
+                    continue;
+                }
+            };
 
-                    let _ = app.emit(
-                        "tts-batch-progress",
-                        TtsBatchProgress {
-                            current: completed,
-                            total,
-                            line_id,
-                            success,
-                            error,
-                        },
-                    );
+            let audio_path = build_audio_path(&app_data_dir, &project_id, &line.id);
+            if let Some(p) = audio_path.parent() { let _ = std::fs::create_dir_all(p); }
+
+            if let Err(e) = std::fs::write(&audio_path, &audio) {
+                error!("[TTS][batch] write failed {}: {}", line.id, e);
+                let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                    current: completed, total,
+                    line_id: line.id.clone(),
+                    success: false, error: Some(format!("Write: {}", e)),
+                });
+                continue;
+            }
+
+            reencode_with_ffmpeg(&audio_path, &line.id);
+            let duration_ms = get_audio_duration(&audio_path);
+
+            let fragment = AudioFragment {
+                id: uuid::Uuid::new_v4().to_string(),
+                project_id: project_id.clone(),
+                line_id: line.id.clone(),
+                file_path: audio_path.to_string_lossy().to_string(),
+                duration_ms,
+            };
+
+            let db_result = {
+                let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+                db.upsert_audio_fragment(&fragment)
+            };
+
+            match db_result {
+                Ok(()) => {
+                    success_count += 1;
+                    info!("[TTS][batch] line {} ok ({} bytes)", line.id, audio.len());
+                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                        current: completed, total,
+                        line_id: line.id.clone(),
+                        success: true, error: None,
+                    });
                 }
                 Err(e) => {
-                    completed += 1;
-                    let _ = app.emit(
-                        "tts-batch-progress",
-                        TtsBatchProgress {
-                            current: completed,
-                            total,
-                            line_id: String::new(),
-                            success: false,
-                            error: Some(format!("Task join failed: {}", e)),
-                        },
-                    );
+                    error!("[TTS][batch] DB error {}: {}", line.id, e);
+                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                        current: completed, total,
+                        line_id: line.id.clone(),
+                        success: false, error: Some(format!("DB: {}", e)),
+                    });
                 }
             }
         }
     }
 
+    info!("[TTS] generate_all_tts done: {}/{}", success_count, total);
     Ok(success_count)
+}
+
+#[tauri::command]
+pub async fn clear_audio_fragments(
+    _app: tauri::AppHandle,
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+) -> Result<(), AppError> {
+    info!("[TTS] clear_audio_fragments: project={}", project_id);
+    let paths = {
+        let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.clear_audio_fragments(&project_id)?
+    };
+    // Delete audio files from disk
+    for path in &paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            warn!("[TTS] Failed to delete audio file {}: {}", path, e);
+        }
+    }
+    info!("[TTS] Cleared {} audio fragments", paths.len());
+    // Reload project in frontend by re-fetching
+    Ok(())
 }
 
 #[cfg(test)]
@@ -440,23 +675,7 @@ mod tests {
 
     #[test]
     fn test_build_audio_path() {
-        let app_data = std::path::Path::new("/data");
-        let path = build_audio_path(app_data, "proj-1", "line-42");
-        assert_eq!(
-            path,
-            std::path::PathBuf::from("/data/projects/proj-1/audio/line-42.mp3")
-        );
-    }
-
-    #[test]
-    fn test_generate_all_tts_missing_lines() {
-        let lines = vec!["l1".to_string(), "l2".to_string(), "l3".to_string()];
-        let fragments = vec!["l1".to_string()];
-        let missing: Vec<String> = lines
-            .iter()
-            .filter(|id| !fragments.contains(*id))
-            .cloned()
-            .collect();
-        assert_eq!(missing, vec!["l2".to_string(), "l3".to_string()]);
+        let p = build_audio_path(std::path::Path::new("/data"), "proj-1", "line-42");
+        assert_eq!(p, std::path::PathBuf::from("/data/projects/proj-1/audio/line-42.mp3"));
     }
 }

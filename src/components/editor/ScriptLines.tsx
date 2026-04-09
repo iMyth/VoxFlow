@@ -5,6 +5,7 @@ import {
   Wand2,
   X,
   Volume2,
+  RefreshCw,
   Save,
   Sparkles,
 } from "lucide-react";
@@ -33,8 +34,10 @@ interface ScriptLinesProps {
   isBatchTtsRunning?: boolean;
   batchTtsProgress?: { current: number; total: number } | null;
   missingTtsCount?: number;
+  hasAudioCount?: number;
   onSave?: () => void;
   onGenerateAllTts?: () => void;
+  onRegenerateAllTts?: () => void;
 }
 
 export default function ScriptLines({
@@ -50,8 +53,10 @@ export default function ScriptLines({
   isBatchTtsRunning,
   batchTtsProgress,
   missingTtsCount,
+  hasAudioCount,
   onSave,
   onGenerateAllTts,
+  onRegenerateAllTts,
 }: ScriptLinesProps) {
   const { t } = useTranslation();
   const { addLine, addSection, setAllInstructions, reorderLines } = useScriptStore();
@@ -226,6 +231,23 @@ export default function ScriptLines({
                   total: batchTtsProgress?.total ?? missingTtsCount,
                 })
               : t("editor.generateAllTts", { count: missingTtsCount })}
+          </Button>
+        )}
+        {(missingTtsCount ?? 0) === 0 && (hasAudioCount ?? 0) > 0 && onRegenerateAllTts && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 px-2 text-xs gap-1 border-orange-300 dark:border-orange-700 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20"
+            onClick={onRegenerateAllTts}
+            disabled={isBatchTtsRunning}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            {isBatchTtsRunning
+              ? t("editor.batchTtsRunning", {
+                  current: batchTtsProgress?.current ?? 0,
+                  total: batchTtsProgress?.total ?? hasAudioCount,
+                })
+              : t("editor.regenerateAllTts", { count: hasAudioCount })}
           </Button>
         )}
         <ModeSelector
