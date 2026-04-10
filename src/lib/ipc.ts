@@ -251,3 +251,19 @@ export async function saveApiKey(service: string, key: string): Promise<void> {
 export async function loadApiKey(service: string): Promise<string | null> {
     return ipcCall<string | null>('load_api_key', { service });
 }
+
+// ---- Auto Update ----
+
+export interface UpdateInfo {
+    available: boolean;
+    version: string;
+    body: string | null;
+}
+
+export async function checkForUpdates(): Promise<UpdateInfo> {
+    return ipcCall<UpdateInfo>('check_for_updates');
+}
+
+export async function installUpdate(): Promise<void> {
+    return ipcCall<void>('install_update');
+}

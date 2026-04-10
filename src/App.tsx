@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useProjectStore } from './store/projectStore';
 import { useCharacterStore } from './store/characterStore';
 import { useScriptStore } from './store/scriptStore';
 import { useSettingsStore } from './store/settingsStore';
+import { useUpdateStore } from './store/updateStore';
 import CharacterPanel from './components/character/CharacterPanel';
 import ScriptEditor from './components/editor/ScriptEditor';
 import ExportPanel from './components/editor/ExportPanel';
@@ -15,15 +17,23 @@ import './App.css';
 type Tab = 'editor' | 'characters' | 'export';
 
 function App() {
+    const { t } = useTranslation();
     const { currentProject, loadProject } = useProjectStore();
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<Tab>('editor');
     const { isDirty } = useScriptStore();
+    const { updateAvailable, latestVersion, downloading, checkForUpdates, installUpdate } = useUpdateStore();
 
     // Load settings on app startup to restore persisted preferences
     useEffect(() => {
         useSettingsStore.getState().loadSettings();
     }, []);
+
+    // Check for updates on app startup (delayed to not block initial render)
+    useEffect(() => {
+        const timer = setTimeout(() => checkForUpdates(), 3000);
+        return () => clearTimeout(timer);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Sync enableThinking from settings to scriptStore when settings load
     const settingsEnableThinking = useSettingsStore((s) => s.enableThinking);
@@ -76,6 +86,22 @@ function App() {
     return (
         <div className="min-h-screen flex flex-col">
             <ToastContainer />
+
+            {/* Update Notification Banner */}
+            {updateAvailable && (
+                <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 flex items-center justify-between text-sm shrink-0">
+                    <span>
+                        {t('update.available')} <strong>{t('update.version', { version: latestVersion })}</strong>
+                    </span>
+                    <button
+                        onClick={() => installUpdate()}
+                        disabled={downloading}
+                        className="ml-3 px-3 py-1 bg-white text-blue-700 rounded-md text-xs font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors"
+                    >
+                        {downloading ? t('update.downloading') : t('update.installNow')}
+                    </button>
+                </div>
+            )}
 
             <AppHeader
                 project={currentProject}

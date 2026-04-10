@@ -173,5 +173,13 @@
     "saveFailed": "Failed to save settings",
     "saveApiKeyFailed": "Failed to save API key",
     "loadApiKeyFailed": "Failed to load API key"
+  },
+  "update": {
+    "available": "New version available",
+    "version": "V{{version}}",
+    "installNow": "Update Now",
+    "downloading": "Downloading...",
+    "installSuccess": "Update installed, app will restart automatically",
+    "installFailed": "Failed to install update"
   }
 }

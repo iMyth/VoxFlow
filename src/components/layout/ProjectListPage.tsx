@@ -6,6 +6,7 @@ import SettingsDialog from '../settings/SettingsDialog';
 import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import ToastContainer from './ToastContainer';
+import { useUpdateStore } from '../../store/updateStore';
 
 interface ProjectListPageProps {
     onSelectProject: (projectId: string) => void;
@@ -15,11 +16,26 @@ export default function ProjectListPage({ onSelectProject }: ProjectListPageProp
     const { t } = useTranslation();
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [showInput, setShowInput] = useState(false);
+    const { updateAvailable, latestVersion, downloading, installUpdate } = useUpdateStore();
 
     return (
         <TooltipProvider>
             <div className="min-h-screen">
                 <ToastContainer />
+                {updateAvailable && (
+                    <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 flex items-center justify-between text-sm shrink-0">
+                        <span>
+                            {t('update.available')} <strong>{t('update.version', { version: latestVersion })}</strong>
+                        </span>
+                        <button
+                            onClick={() => installUpdate()}
+                            disabled={downloading}
+                            className="ml-3 px-3 py-1 bg-white text-blue-700 rounded-md text-xs font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors"
+                        >
+                            {downloading ? t('update.downloading') : t('update.installNow')}
+                        </button>
+                    </div>
+                )}
                 <div className="fixed top-4 right-4 z-10 flex items-center gap-1">
                     <Tooltip>
                         <TooltipTrigger asChild>
