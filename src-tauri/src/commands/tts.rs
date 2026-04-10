@@ -153,6 +153,45 @@ fn split_sentence_with_boundaries(
 }
 
 /// Merge multiple MP3 files into one by inserting silence between chunks.
+/// Group TtsChunks into sessions that each stay under `limit` characters.
+/// Prefers splitting at paragraph boundaries (higher pause_ms) over sentence boundaries.
+fn group_chunks_into_sessions(chunks: &[TtsChunk], limit: usize) -> Vec<Vec<&TtsChunk>> {
+    if chunks.is_empty() {
+        return vec![];
+    }
+
+    let total_chars: usize = chunks.iter().map(|c| c.text.len()).sum();
+    if total_chars <= limit {
+        return vec![chunks.iter().collect()];
+    }
+
+    let mut sessions: Vec<Vec<&TtsChunk>> = Vec::new();
+    let mut current: Vec<&TtsChunk> = Vec::new();
+    let mut current_len: usize = 0;
+
+    for chunk in chunks {
+        if !current.is_empty() && current_len + chunk.text.len() > limit {
+            // Try to find a paragraph boundary (pause_ms >= 600) to split at
+            let split_at = current.iter().rposition(|c| c.pause_ms >= 600)
+                .map(|i| i + 1) // split after the paragraph-ending chunk
+                .unwrap_or(current.len()); // no paragraph boundary, flush all
+
+            let remainder: Vec<&TtsChunk> = current.split_off(split_at);
+            sessions.push(std::mem::take(&mut current));
+            current = remainder;
+            current_len = current.iter().map(|c| c.text.len()).sum();
+        }
+        current.push(chunk);
+        current_len += chunk.text.len();
+    }
+    if !current.is_empty() {
+        sessions.push(current);
+    }
+
+    sessions
+}
+
+/// Merge multiple audio files with silence gaps between them.
 /// Takes a list of (audio_path, pause_after_ms) pairs.
 /// The pause is inserted AFTER each chunk, before the next one.
 fn merge_audio_with_silence(
@@ -353,13 +392,35 @@ where
     // Step 4: collect audio deltas (audio arrives as base64 in text frames)
     let mut audio = Vec::<u8>::new();
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(600);
+    let mut finished_sending = true; // session.finish already sent above
+    let mut idle_deadline: Option<tokio::time::Instant> = None;
 
     loop {
-        let msg = tokio::time::timeout_at(deadline, ws.next()).await;
+        // Use a short idle timeout after response.done to detect completion
+        let effective_deadline = idle_deadline.unwrap_or(deadline);
+        let msg = tokio::time::timeout_at(effective_deadline, ws.next()).await;
         match msg {
+            Err(_) if idle_deadline.is_some() => {
+                // Idle timeout after last response.done — no more responses coming
+                info!("[TTS][ws-realtime] no more responses, finishing: {} bytes", audio.len());
+                break;
+            }
             Err(_) => return Err(AppError::TtsService("WS task timed out (600s)".into())),
-            Ok(None) => return Err(AppError::TtsService("WS closed unexpectedly".into())),
-            Ok(Some(Err(e))) => return Err(AppError::TtsService(format!("WS error: {}", e))),
+            Ok(None) => {
+                // Connection closed — if we have audio, treat as success
+                if !audio.is_empty() {
+                    info!("[TTS][ws-realtime] WS closed, returning {} bytes", audio.len());
+                    break;
+                }
+                return Err(AppError::TtsService("WS closed unexpectedly".into()));
+            }
+            Ok(Some(Err(e))) => {
+                if !audio.is_empty() {
+                    warn!("[TTS][ws-realtime] WS error after receiving audio: {}", e);
+                    break;
+                }
+                return Err(AppError::TtsService(format!("WS error: {}", e)));
+            }
             Ok(Some(Ok(Message::Text(t)))) => {
                 if let Ok(evt) = serde_json::from_str::<serde_json::Value>(&t) {
                     let event_type = evt["type"].as_str().unwrap_or("");
@@ -369,6 +430,10 @@ where
                         }
                         "session.updated" => {
                             debug!("[TTS][ws-realtime] session.updated");
+                        }
+                        "response.created" => {
+                            debug!("[TTS][ws-realtime] response.created");
+                            idle_deadline = None; // new response started, cancel idle timer
                         }
                         "response.audio.delta" => {
                             if let Some(delta) = evt["delta"].as_str() {
@@ -383,6 +448,10 @@ where
                         }
                         "response.done" => {
                             info!("[TTS][ws-realtime] response.done: {} bytes", audio.len());
+                            // Start idle timer — if no new response within 5s, we're done
+                            if finished_sending {
+                                idle_deadline = Some(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
+                            }
                         }
                         "session.finished" => {
                             info!("[TTS][ws-realtime] session.finished: {} bytes", audio.len());
@@ -628,11 +697,20 @@ async fn call_tts(
             let _ = std::fs::remove_file(&merged_path);
             Ok(audio)
         } else {
-            // WS (Qwen TTS Realtime): single session with all text chunks.
-            // The model maintains context and produces natural pauses.
-            let chunk_refs: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
-            let mut ws = ws_realtime_connect(api_key, model).await?;
-            ws_realtime_run_task(&mut ws, &chunk_refs, voice_config, instructions, model).await
+            // WS (Qwen TTS Realtime): split into sessions of ≤9500 chars to stay under 10000 limit.
+            // Prefer splitting at paragraph boundaries (higher pause_ms) for natural transitions.
+            let session_groups = group_chunks_into_sessions(&chunks, 9500);
+            info!("[TTS][split] {} sessions for {} chunks", session_groups.len(), chunks.len());
+
+            let mut all_audio = Vec::<u8>::new();
+            for (i, group) in session_groups.iter().enumerate() {
+                let refs: Vec<&str> = group.iter().map(|c| c.text.as_str()).collect();
+                let mut ws = ws_realtime_connect(api_key, model).await?;
+                let part = ws_realtime_run_task(&mut ws, &refs, voice_config, instructions, model).await?;
+                info!("[TTS][split] session {}/{}: {} bytes", i + 1, session_groups.len(), part.len());
+                all_audio.extend_from_slice(&part);
+            }
+            Ok(all_audio)
         }
     }
 }
@@ -680,10 +758,19 @@ async fn batch_tts_one(
             let _ = std::fs::remove_file(&merged_path);
             Ok(audio)
         } else {
-            // WS (Qwen TTS Realtime): single session for all chunks
-            let chunk_refs: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
-            let mut ws = ws_realtime_connect(api_key, model).await?;
-            ws_realtime_run_task(&mut ws, &chunk_refs, vc, instr, model).await
+            // WS (Qwen TTS Realtime): split into sessions of ≤9500 chars to stay under 10000 limit.
+            let session_groups = group_chunks_into_sessions(&chunks, 9500);
+            info!("[TTS][split][batch] {} sessions for {} chunks", session_groups.len(), chunks.len());
+
+            let mut all_audio = Vec::<u8>::new();
+            for (i, group) in session_groups.iter().enumerate() {
+                let refs: Vec<&str> = group.iter().map(|c| c.text.as_str()).collect();
+                let mut ws = ws_realtime_connect(api_key, model).await?;
+                let part = ws_realtime_run_task(&mut ws, &refs, vc, instr, model).await?;
+                info!("[TTS][split][batch] session {}/{}: {} bytes", i + 1, session_groups.len(), part.len());
+                all_audio.extend_from_slice(&part);
+            }
+            Ok(all_audio)
         }
     }
 }
