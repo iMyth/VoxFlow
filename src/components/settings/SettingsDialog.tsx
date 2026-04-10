@@ -145,8 +145,7 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
                                 <SelectContent>
                                     <SelectItem value="qwen3-tts-flash">Qwen3 TTS Flash</SelectItem>
                                     <SelectItem value="qwen3-tts-instruct-flash">Qwen3 TTS Instruct Flash</SelectItem>
-                                    <SelectItem value="cosyvoice-v3-flash">CosyVoice v3 Flash</SelectItem>
-                                    <SelectItem value="cosyvoice-v3-plus">CosyVoice v3 Plus</SelectItem>
+                                    <SelectItem value="qwen3-tts-instruct-flash-realtime">Qwen3 TTS Instruct Flash</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>

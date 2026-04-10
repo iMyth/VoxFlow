@@ -23,28 +23,251 @@ pub fn build_audio_path(
         .join(format!("{}.mp3", line_id))
 }
 
+/// Maximum characters per TTS chunk.
+/// The API limit for qwen3-tts-instruct-flash is 600 (likely byte-counted).
+/// Chinese chars are 3 bytes in UTF-8, so 600 bytes ≈ 200 Chinese chars.
+/// Use 200 as a safe threshold.
+const TTS_CHUNK_MAX_CHARS: usize = 200;
+
+/// Chunk with metadata about the pause to insert after it (in ms).
+struct TtsChunk {
+    text: String,
+    /// Pause duration in ms to insert AFTER this chunk, before the next one.
+    /// 0 for the last chunk.
+    pause_ms: u32,
+}
+
+/// Split text into TTS-friendly chunks (≤ max_len chars each).
+/// Returns TtsChunk vector with pause metadata.
+/// Priority: paragraph breaks → sentence boundaries → hard cut.
+fn split_text_for_tts(text: &str) -> Vec<TtsChunk> {
+    const SENTENCE_PAUSE: u32 = 200;  // Short pause between sentences
+    const PARAGRAPH_PAUSE: u32 = 600; // Longer pause between paragraphs
+
+    let text = text.trim();
+    if text.is_empty() {
+        return vec![];
+    }
+    let char_count = text.chars().count();
+    if char_count <= TTS_CHUNK_MAX_CHARS {
+        return vec![TtsChunk { text: text.to_string(), pause_ms: 0 }];
+    }
+
+    // Step 1: split by paragraph (newlines)
+    let paragraphs: Vec<&str> = text
+        .split(|c: char| c == '\n')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Track which chunks are paragraph boundaries vs sentence boundaries
+    let mut chunk_texts: Vec<String> = Vec::new();
+    let mut chunk_boundaries: Vec<u32> = Vec::new(); // pause_ms after each chunk
+    let mut buf = String::new();
+    let mut buf_chars = 0usize;
+
+    for para in &paragraphs {
+        let para_chars = para.chars().count();
+        // If single paragraph already exceeds max_len, split it by sentences
+        if para_chars > TTS_CHUNK_MAX_CHARS {
+            if !buf.is_empty() {
+                chunk_texts.push(std::mem::take(&mut buf));
+                chunk_boundaries.push(PARAGRAPH_PAUSE);
+                buf_chars = 0;
+            }
+            split_sentence_with_boundaries(para, SENTENCE_PAUSE, &mut chunk_texts, &mut chunk_boundaries);
+            // Mark the last sentence-chunk as paragraph boundary (unless it's the very last)
+            if let Some(last) = chunk_boundaries.last_mut() {
+                *last = PARAGRAPH_PAUSE;
+            }
+            continue;
+        }
+        // Check if adding this paragraph would exceed max_len
+        let sep = if buf.is_empty() { 0 } else { 1 };
+        if buf_chars + para_chars + sep > TTS_CHUNK_MAX_CHARS {
+            chunk_texts.push(std::mem::take(&mut buf));
+            chunk_boundaries.push(PARAGRAPH_PAUSE);
+            buf_chars = 0;
+        }
+        if !buf.is_empty() {
+            buf.push('\n');  // Preserve paragraph boundary for TTS
+            buf_chars += 1;
+        }
+        buf.push_str(para);
+        buf_chars += para_chars;
+    }
+    if !buf.is_empty() {
+        chunk_texts.push(buf);
+        chunk_boundaries.push(0); // Last chunk: no pause
+    }
+
+    // Build TtsChunk vector
+    chunk_texts.into_iter().zip(chunk_boundaries.into_iter())
+        .map(|(text, pause_ms)| TtsChunk { text, pause_ms })
+        .collect()
+}
+
+/// Split a single paragraph by sentence boundaries, tracking pause durations.
+fn split_sentence_with_boundaries(
+    text: &str,
+    pause_ms: u32,
+    out: &mut Vec<String>,
+    boundaries: &mut Vec<u32>,
+) {
+    let boundary_chars: &[char] = &['.', '!', '?', '。', '！', '？', '；', ';'];
+
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len();
+    let mut start = 0;
+
+    while start < total {
+        let remaining = total - start;
+        if remaining <= TTS_CHUNK_MAX_CHARS {
+            out.push(chars[start..].iter().collect());
+            boundaries.push(0);
+            break;
+        }
+
+        // Search backwards from max_len for a sentence boundary
+        let search_end = (start + TTS_CHUNK_MAX_CHARS).min(total);
+        let mut found = None;
+        for i in (start..search_end).rev() {
+            if boundary_chars.contains(&chars[i]) {
+                found = Some(i + 1);
+                break;
+            }
+        }
+
+        if let Some(end) = found {
+            out.push(chars[start..end].iter().collect());
+            boundaries.push(pause_ms);
+            start = end;
+        } else {
+            // No boundary found — hard cut at max_len
+            let hard_end = (start + TTS_CHUNK_MAX_CHARS).min(total);
+            out.push(chars[start..hard_end].iter().collect());
+            boundaries.push(pause_ms);
+            start = hard_end;
+        }
+    }
+}
+
+/// Merge multiple MP3 files into one by inserting silence between chunks.
+/// Takes a list of (audio_path, pause_after_ms) pairs.
+/// The pause is inserted AFTER each chunk, before the next one.
+fn merge_audio_with_silence(
+    chunk_paths: &[(std::path::PathBuf, u32)],
+    output: &std::path::Path,
+) -> Result<(), String> {
+    if chunk_paths.is_empty() {
+        return Err("no audio chunks to merge".into());
+    }
+    if chunk_paths.len() == 1 {
+        std::fs::copy(&chunk_paths[0].0, output)
+            .map_err(|e| format!("copy single chunk: {}", e))?;
+        return Ok(());
+    }
+
+    let tmp_dir = std::env::temp_dir();
+
+    // Build a flat list: audio1, silence1, audio2, silence2, audio3, ...
+    let mut all_paths = Vec::new();
+    for (i, (audio_path, pause_ms)) in chunk_paths.iter().enumerate() {
+        all_paths.push(audio_path.clone());
+        // Insert silence after this chunk (except for the last one)
+        if i < chunk_paths.len() - 1 && *pause_ms > 0 {
+            let silence_path = tmp_dir.join(format!("tts_silence_{}.mp3", i));
+            generate_silence(&silence_path, *pause_ms)?;
+            all_paths.push(silence_path);
+        }
+    }
+
+    // Build concat list file
+    let concat_list = tmp_dir.join("tts_concat_list.txt");
+    let mut list_content = String::new();
+    for p in &all_paths {
+        let path_str = p.to_string_lossy().replace('\'', "'\\''");
+        list_content.push_str(&format!("file '{}'\n", path_str));
+    }
+    std::fs::write(&concat_list, &list_content)
+        .map_err(|e| format!("write concat list: {}", e))?;
+
+    let result = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", &concat_list.to_string_lossy(),
+            "-c", "copy",
+            &output.to_string_lossy(),
+        ])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .output();
+
+    // Cleanup temp files
+    let _ = std::fs::remove_file(&concat_list);
+    for p in &all_paths {
+        if p.to_string_lossy().contains("tts_silence_") {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    match result {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            Err(format!("ffmpeg concat failed: {}", stderr))
+        }
+        Err(e) => Err(format!("ffmpeg exec failed: {}", e)),
+    }
+}
+
+/// Generate a silence MP3 file of the given duration (in ms).
+fn generate_silence(path: &std::path::Path, duration_ms: u32) -> Result<(), String> {
+    let duration_sec = duration_ms as f64 / 1000.0;
+    let result = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f", "lavfi",
+            "-i", "anullsrc=r=22050:cl=mono",
+            "-t", &format!("{:.3}", duration_sec),
+            "-c:a", "libmp3lame",
+            "-b:a", "192k",
+            &path.to_string_lossy(),
+        ])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .output();
+
+    match result {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            Err(format!("generate silence failed: {}", stderr))
+        }
+        Err(e) => Err(format!("ffmpeg exec failed: {}", e)),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// WebSocket CosyVoice TTS
+// Qwen TTS Realtime WebSocket Protocol
 // ---------------------------------------------------------------------------
 // Uses wss://dashscope.aliyuncs.com/api-ws/v1/inference
-// Protocol: run-task → task-started → continue-task(s) → finish-task → audio → task-finished
-//
-// Advantages over the old HTTP approach:
-// 1. Audio is streamed directly over WebSocket — no OSS download that can timeout
-// 2. Multiple continue-task messages in one session maintain tonal context
-// 3. Connection reuse: after task-finished, send new run-task on same connection
+// Protocol: session.update → text.input(s) → text.complete → audio.delta(s) → audio.completed
 // ---------------------------------------------------------------------------
 
-/// Connect to the DashScope WebSocket TTS endpoint.
-async fn ws_connect(
+/// Connect to the DashScope WebSocket endpoint for Qwen TTS Realtime.
+async fn ws_realtime_connect(
     api_key: &str,
+    model: &str,
 ) -> Result<
     tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     AppError,
 > {
-    let url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
+    let url = format!("wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model={}", model);
     let request = http::Request::builder()
         .uri(url)
         .header("Authorization", format!("bearer {}", api_key))
@@ -64,14 +287,13 @@ async fn ws_connect(
         .await
         .map_err(|e| AppError::TtsService(format!("WS connect failed: {}", e)))?;
 
-    info!("[TTS][ws] Connected");
+    info!("[TTS][ws-realtime] Connected");
     Ok(ws)
 }
 
-/// Run a single TTS task on an existing WebSocket connection.
-/// Sends run-task → continue-task(texts) → finish-task, collects binary audio.
-/// After task-finished, the connection can be reused for another task.
-async fn ws_run_task<S>(
+/// Run TTS on a WebSocket connection using the Qwen Realtime protocol.
+/// Sends session.update → text.input(s) → text.complete, collects audio.
+async fn ws_realtime_run_task<S>(
     ws: &mut S,
     texts: &[&str],
     voice_config: &VoiceConfig,
@@ -85,39 +307,50 @@ where
 {
     use serde_json::json;
 
-    let task_id = uuid::Uuid::new_v4().to_string();
-
     let has_instr = instructions.map(|i| !i.trim().is_empty()).unwrap_or(false);
+    info!("[TTS][ws-realtime] model={}, voice={}, texts={}", model, voice_config.voice_name, texts.len());
 
-    let mut params = serde_json::Map::new();
-    params.insert("text_type".into(), json!("PlainText"));
-    params.insert("voice".into(), json!(voice_config.voice_name));
-    params.insert("format".into(), json!("mp3"));
-    params.insert("sample_rate".into(), json!(22050));
-    params.insert("volume".into(), json!(50));
-    params.insert("rate".into(), json!(voice_config.speed));
-    params.insert("pitch".into(), json!(voice_config.pitch));
+    // Step 1: session.update
+    let mut session_obj = serde_json::Map::new();
+    session_obj.insert("mode".into(), json!("server_commit"));
+    session_obj.insert("model".into(), json!(model));
+    session_obj.insert("voice".into(), json!(voice_config.voice_name));
+    session_obj.insert("response_format".into(), json!("mp3"));
+    session_obj.insert("sample_rate".into(), json!(24000));
     if has_instr {
-        params.insert("instruction".into(), json!(instructions.unwrap()));
+        session_obj.insert("instructions".into(), json!(instructions.unwrap()));
     }
 
-    let run_task = json!({
-        "header": { "action": "run-task", "task_id": task_id, "streaming": "duplex" },
-        "payload": {
-            "task_group": "audio",
-            "task": "tts",
-            "function": "SpeechSynthesizer",
-            "model": model,
-            "parameters": params,
-            "input": {}
-        }
+    let session_update = json!({
+        "type": "session.update",
+        "session": session_obj,
     });
 
-    debug!("[TTS][ws] run-task: model={}, voice={}, texts={}", model, voice_config.voice_name, texts.len());
-    ws.send(Message::Text(run_task.to_string()))
+    debug!("[TTS][ws-realtime] session.update:{}", serde_json::to_string(&session_update).unwrap_or_default());
+    ws.send(Message::Text(session_update.to_string()))
         .await
-        .map_err(|e| AppError::TtsService(format!("send run-task: {}", e)))?;
+        .map_err(|e| AppError::TtsService(format!("send session.update: {}", e)))?;
 
+    // Step 2: input_text_buffer.append for each text chunk
+    for text in texts {
+        let text_input = json!({
+            "type": "input_text_buffer.append",
+            "text": text,
+        });
+        ws.send(Message::Text(text_input.to_string()))
+            .await
+            .map_err(|e| AppError::TtsService(format!("send input_text_buffer.append: {}", e)))?;
+    }
+
+    // Step 3: session.finish to signal no more text input
+    let session_finish = json!({
+        "type": "session.finish",
+    });
+    ws.send(Message::Text(session_finish.to_string()))
+        .await
+        .map_err(|e| AppError::TtsService(format!("send session.finish: {}", e)))?;
+
+    // Step 4: collect audio deltas (audio arrives as base64 in text frames)
     let mut audio = Vec::<u8>::new();
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(120);
 
@@ -127,48 +360,47 @@ where
             Err(_) => return Err(AppError::TtsService("WS task timed out (120s)".into())),
             Ok(None) => return Err(AppError::TtsService("WS closed unexpectedly".into())),
             Ok(Some(Err(e))) => return Err(AppError::TtsService(format!("WS error: {}", e))),
-            Ok(Some(Ok(Message::Binary(data)))) => {
-                audio.extend_from_slice(&data);
-            }
             Ok(Some(Ok(Message::Text(t)))) => {
                 if let Ok(evt) = serde_json::from_str::<serde_json::Value>(&t) {
-                    let event = evt["header"]["event"].as_str().unwrap_or("");
-                    match event {
-                        "task-started" => {
-                            // Send all texts
-                            for text in texts {
-                                let ct = json!({
-                                    "header": { "action": "continue-task", "task_id": task_id, "streaming": "duplex" },
-                                    "payload": { "input": { "text": text } }
-                                });
-                                ws.send(Message::Text(ct.to_string()))
-                                    .await
-                                    .map_err(|e| AppError::TtsService(format!("send continue-task: {}", e)))?;
-                            }
-                            // Send finish-task
-                            let ft = json!({
-                                "header": { "action": "finish-task", "task_id": task_id, "streaming": "duplex" },
-                                "payload": { "input": {} }
-                            });
-                            ws.send(Message::Text(ft.to_string()))
-                                .await
-                                .map_err(|e| AppError::TtsService(format!("send finish-task: {}", e)))?;
+                    let event_type = evt["type"].as_str().unwrap_or("");
+                    match event_type {
+                        "session.created" => {
+                            debug!("[TTS][ws-realtime] session.created");
                         }
-                        "task-finished" => {
-                            info!("[TTS][ws] task-finished: {} bytes", audio.len());
+                        "session.updated" => {
+                            debug!("[TTS][ws-realtime] session.updated");
+                        }
+                        "response.audio.delta" => {
+                            if let Some(delta) = evt["delta"].as_str() {
+                                use base64::Engine;
+                                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(delta) {
+                                    audio.extend_from_slice(&decoded);
+                                }
+                            }
+                        }
+                        "response.audio.done" => {
+                            debug!("[TTS][ws-realtime] response.audio.done");
+                        }
+                        "response.done" => {
+                            info!("[TTS][ws-realtime] response.done: {} bytes", audio.len());
+                        }
+                        "session.finished" => {
+                            info!("[TTS][ws-realtime] session.finished: {} bytes", audio.len());
                             break;
                         }
-                        "task-failed" => {
-                            let code = evt["header"]["error_code"].as_str().unwrap_or("");
-                            let msg = evt["header"]["error_message"].as_str().unwrap_or("");
-                            error!("[TTS][ws] task-failed: {} - {}", code, msg);
-                            return Err(AppError::TtsService(format!("TTS failed: {} - {}", code, msg)));
+                        "error" => {
+                            let code = evt["error"]["code"].as_str().unwrap_or("");
+                            let msg = evt["error"]["message"].as_str().unwrap_or("");
+                            error!("[TTS][ws-realtime] error: {} - {}", code, msg);
+                            return Err(AppError::TtsService(format!("TTS error: {} - {}", code, msg)));
                         }
-                        _ => {}
+                        _ => {
+                            debug!("[TTS][ws-realtime] event: {}", event_type);
+                        }
                     }
                 }
             }
-            Ok(Some(Ok(_))) => {} // ping/pong
+            Ok(Some(Ok(_))) => {} // binary/ping/pong
         }
     }
 
@@ -217,24 +449,33 @@ fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
     None
 }
 
-/// Determine model name. For CosyVoice WS, use the model from config.
+/// Determine model name. Default to Qwen TTS Realtime.
+/// All models use WebSocket streaming.
 fn resolve_model(voice_config: &VoiceConfig, has_instructions: bool) -> String {
-    if has_instructions {
-        if voice_config.tts_model.starts_with("qwen") {
-            return "qwen3-tts-instruct-flash".to_string();
+    let cfg = &voice_config.tts_model;
+
+    if has_instructions && cfg.starts_with("qwen") {
+        if cfg.ends_with("-realtime") {
+            return "qwen3-tts-instruct-flash-realtime".to_string();
         }
+        // Non-realtime instruct falls back to HTTP
+        return "qwen3-tts-instruct-flash".to_string();
     }
-    if voice_config.tts_model.is_empty() {
-        "cosyvoice-v3-flash".to_string()
-    } else {
-        voice_config.tts_model.clone()
+
+    if cfg.is_empty() || cfg.starts_with("cosyvoice") {
+        // Default to Qwen TTS Realtime (CosyVoice no longer supported)
+        return "qwen3-tts-instruct-flash-realtime".to_string();
     }
+
+    // If user configured a non-realtime qwen model, use it as-is
+    cfg.clone()
 }
 
-/// Returns true if the model should use the HTTP REST API (qwen-tts series),
-/// false if it should use the CosyVoice WebSocket endpoint.
+/// Returns true if the model should use the HTTP REST API
+/// (only non-realtime qwen models).
+/// All other models use WebSocket streaming (Qwen TTS Realtime).
 fn is_http_model(model: &str) -> bool {
-    model.starts_with("qwen")
+    model.starts_with("qwen") && !model.ends_with("-realtime")
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +584,9 @@ async fn call_http_tts(
 }
 
 /// Unified TTS call: routes to HTTP or WebSocket based on model.
+/// If text exceeds TTS_CHUNK_MAX_CHARS, it is split into chunks.
+/// For WS mode (Qwen TTS Realtime), all chunks are sent in a SINGLE session
+/// to preserve tonal consistency — the model handles natural pauses.
 async fn call_tts(
     text: &str,
     voice_config: &VoiceConfig,
@@ -350,34 +594,96 @@ async fn call_tts(
     api_key: &str,
     model: &str,
 ) -> Result<Vec<u8>, AppError> {
-    if is_http_model(model) {
-        call_http_tts(text, voice_config, instructions, api_key, model).await
+    let chunks = split_text_for_tts(text);
+    if chunks.len() <= 1 {
+        // Short text: direct call
+        if is_http_model(model) {
+            call_http_tts(text, voice_config, instructions, api_key, model).await
+        } else {
+            let mut ws = ws_realtime_connect(api_key, model).await?;
+            ws_realtime_run_task(&mut ws, &[text], voice_config, instructions, model).await
+        }
     } else {
-        let mut ws = ws_connect(api_key).await?;
-        ws_run_task(&mut ws, &[text], voice_config, instructions, model).await
+        info!("[TTS][split] Text split into {} chunks (total {} chars)", chunks.len(), text.len());
+
+        if is_http_model(model) {
+            // HTTP: each chunk separate, merge with silence gaps
+            let tmp_dir = std::env::temp_dir();
+            let mut merged: Vec<(std::path::PathBuf, u32)> = Vec::new();
+            for (i, chunk) in chunks.iter().enumerate() {
+                let audio = call_http_tts(&chunk.text, voice_config, instructions, api_key, model).await?;
+                let path = tmp_dir.join(format!("tts_chunk_{}.mp3", i));
+                std::fs::write(&path, &audio)
+                    .map_err(|e| AppError::FileSystem(format!("write chunk: {}", e)))?;
+                merged.push((path, chunk.pause_ms));
+            }
+            let merged_path = tmp_dir.join("tts_merged.mp3");
+            merge_audio_with_silence(&merged, &merged_path)
+                .map_err(|e| AppError::TtsService(format!("merge audio: {}", e)))?;
+            let audio = std::fs::read(&merged_path)
+                .map_err(|e| AppError::FileSystem(format!("read merged: {}", e)))?;
+            for (p, _) in &merged {
+                let _ = std::fs::remove_file(p);
+            }
+            let _ = std::fs::remove_file(&merged_path);
+            Ok(audio)
+        } else {
+            // WS (Qwen TTS Realtime): single session with all text chunks.
+            // The model maintains context and produces natural pauses.
+            let chunk_refs: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
+            let mut ws = ws_realtime_connect(api_key, model).await?;
+            ws_realtime_run_task(&mut ws, &chunk_refs, voice_config, instructions, model).await
+        }
     }
 }
 
-/// Unified batch TTS: for WS models reuses connection, for HTTP models calls sequentially.
-enum BatchConn {
-    Ws(tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>),
-    Http,
-}
-
+/// Process a single line of text for batch TTS.
+/// Creates a fresh WS connection per line for Qwen TTS Realtime.
 async fn batch_tts_one(
-    conn: &mut BatchConn,
     text: &str,
     vc: &VoiceConfig,
     instr: Option<&str>,
     model: &str,
     api_key: &str,
 ) -> Result<Vec<u8>, AppError> {
-    match conn {
-        BatchConn::Http => {
+    let chunks = split_text_for_tts(text);
+    if chunks.len() <= 1 {
+        // Short text: direct call
+        if is_http_model(model) {
             call_http_tts(text, vc, instr, api_key, model).await
+        } else {
+            let mut ws = ws_realtime_connect(api_key, model).await?;
+            ws_realtime_run_task(&mut ws, &[text], vc, instr, model).await
         }
-        BatchConn::Ws(ws) => {
-            ws_run_task(ws, &[text], vc, instr, model).await
+    } else {
+        info!("[TTS][split][batch] Text split into {} chunks (total {} chars)", chunks.len(), text.len());
+
+        if is_http_model(model) {
+            // HTTP: each chunk separate, merge with silence gaps
+            let tmp_dir = std::env::temp_dir();
+            let mut merged: Vec<(std::path::PathBuf, u32)> = Vec::new();
+            for (i, chunk) in chunks.iter().enumerate() {
+                let audio = call_http_tts(&chunk.text, vc, instr, api_key, model).await?;
+                let path = tmp_dir.join(format!("tts_chunk_{}.mp3", i));
+                std::fs::write(&path, &audio)
+                    .map_err(|e| AppError::FileSystem(format!("write chunk: {}", e)))?;
+                merged.push((path, chunk.pause_ms));
+            }
+            let merged_path = tmp_dir.join("tts_merged.mp3");
+            merge_audio_with_silence(&merged, &merged_path)
+                .map_err(|e| AppError::TtsService(format!("merge audio: {}", e)))?;
+            let audio = std::fs::read(&merged_path)
+                .map_err(|e| AppError::FileSystem(format!("read merged: {}", e)))?;
+            for (p, _) in &merged {
+                let _ = std::fs::remove_file(p);
+            }
+            let _ = std::fs::remove_file(&merged_path);
+            Ok(audio)
+        } else {
+            // WS (Qwen TTS Realtime): single session for all chunks
+            let chunk_refs: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
+            let mut ws = ws_realtime_connect(api_key, model).await?;
+            ws_realtime_run_task(&mut ws, &chunk_refs, vc, instr, model).await
         }
     }
 }
@@ -495,150 +801,92 @@ pub async fn generate_all_tts(
     let app_data_dir = app.path().app_data_dir()
         .map_err(|e| AppError::FileSystem(e.to_string()))?;
 
-    // Group by voice config key so we can reuse WS connections per voice.
-    // Within each group, lines are processed sequentially on the same connection.
-    // The CosyVoice WS supports connection reuse: after task-finished, send new run-task.
-    use std::collections::BTreeMap;
-    type VKey = (String, String, i32, i32, String); // voice, model, speed*100, pitch*100, instructions
-
-    let mut groups: BTreeMap<VKey, Vec<usize>> = BTreeMap::new();
-    for (i, line) in missing.iter().enumerate() {
-        let key = (
-            line.vc.voice_name.clone(),
-            line.vc.tts_model.clone(),
-            (line.vc.speed * 100.0) as i32,
-            (line.vc.pitch * 100.0) as i32,
-            line.instructions.clone(),
-        );
-        groups.entry(key).or_default().push(i);
-    }
-
-    info!("[TTS] {} voice groups", groups.len());
-
     let mut success_count = 0usize;
-    let mut completed = 0usize;
 
-    for (_key, indices) in &groups {
-        // Open one WS connection per voice group
-        let first = &missing[indices[0]];
-        let has_instr = !first.instructions.is_empty();
-        let model = resolve_model(&first.vc, has_instr);
-        let instr: Option<&str> = if has_instr { Some(&first.instructions) } else { None };
+    for line in &missing {
+        let has_instr = !line.instructions.is_empty();
+        let model = resolve_model(&line.vc, has_instr);
+        let instr: Option<&str> = if has_instr { Some(&line.instructions) } else { None };
 
-        info!("[TTS][group] voice={}, model={}, lines={}", first.vc.voice_name, model, indices.len());
+        info!("[TTS][batch] line={}, voice={}, model={}", line.id, line.vc.voice_name, model);
 
-        let mut conn = if is_http_model(&model) {
-            BatchConn::Http
-        } else {
-            match ws_connect(&api_key).await {
-                Ok(ws) => BatchConn::Ws(ws),
-                Err(e) => {
-                    error!("[TTS][group] WS connect failed: {}", e);
-                    for &idx in indices {
-                        completed += 1;
-                        let _ = app.emit("tts-batch-progress", TtsBatchProgress {
-                            current: completed, total,
-                            line_id: missing[idx].id.clone(),
-                            success: false, error: Some(e.to_string()),
-                        });
-                    }
-                    continue;
-                }
-            }
-        };
+        let task_result = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            batch_tts_one(&line.text, &line.vc, instr, &model, &api_key),
+        ).await;
 
-        // Process each line as a separate task on the same connection.
-        // This reuses the connection (avoiding reconnect overhead) while
-        // producing individual audio files per line.
-        for &idx in indices {
-            let line = &missing[idx];
-            completed += 1;
-
-            let task_result = tokio::time::timeout(
-                std::time::Duration::from_secs(90),
-                batch_tts_one(&mut conn, &line.text, &line.vc, instr, &model, &api_key),
-            ).await;
-
-            let audio = match task_result {
-                Ok(Ok(bytes)) => bytes,
-                Ok(Err(e)) => {
-                    error!("[TTS][batch] line {} failed: {}", line.id, e);
-                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
-                        current: completed, total,
-                        line_id: line.id.clone(),
-                        success: false, error: Some(e.to_string()),
-                    });
-                    // For WS: connection may be broken after task-failed, reconnect
-                    if let BatchConn::Ws(_) = &conn {
-                        if let Ok(new_ws) = ws_connect(&api_key).await {
-                            conn = BatchConn::Ws(new_ws);
-                        }
-                    }
-                    continue;
-                }
-                Err(_) => {
-                    error!("[TTS][batch] line {} timed out", line.id);
-                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
-                        current: completed, total,
-                        line_id: line.id.clone(),
-                        success: false, error: Some("Timeout".into()),
-                    });
-                    if let BatchConn::Ws(_) = &conn {
-                        if let Ok(new_ws) = ws_connect(&api_key).await {
-                            conn = BatchConn::Ws(new_ws);
-                        }
-                    }
-                    continue;
-                }
-            };
-
-            let audio_path = build_audio_path(&app_data_dir, &project_id, &line.id);
-            if let Some(p) = audio_path.parent() { let _ = std::fs::create_dir_all(p); }
-
-            if let Err(e) = std::fs::write(&audio_path, &audio) {
-                error!("[TTS][batch] write failed {}: {}", line.id, e);
+        let audio = match task_result {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(e)) => {
+                error!("[TTS][batch] line {} failed: {}", line.id, e);
                 let _ = app.emit("tts-batch-progress", TtsBatchProgress {
-                    current: completed, total,
+                    current: missing.iter().position(|l| l.id == line.id).unwrap_or(0) + 1,
+                    total,
                     line_id: line.id.clone(),
-                    success: false, error: Some(format!("Write: {}", e)),
+                    success: false, error: Some(e.to_string()),
                 });
                 continue;
             }
+            Err(_) => {
+                error!("[TTS][batch] line {} timed out", line.id);
+                let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                    current: missing.iter().position(|l| l.id == line.id).unwrap_or(0) + 1,
+                    total,
+                    line_id: line.id.clone(),
+                    success: false, error: Some("Timeout".into()),
+                });
+                continue;
+            }
+        };
 
-            reencode_with_ffmpeg(&audio_path, &line.id);
-            let duration_ms = get_audio_duration(&audio_path);
+        let audio_path = build_audio_path(&app_data_dir, &project_id, &line.id);
+        if let Some(p) = audio_path.parent() { let _ = std::fs::create_dir_all(p); }
 
-            let fragment = AudioFragment {
-                id: uuid::Uuid::new_v4().to_string(),
-                project_id: project_id.clone(),
+        if let Err(e) = std::fs::write(&audio_path, &audio) {
+            error!("[TTS][batch] write failed {}: {}", line.id, e);
+            let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                current: missing.iter().position(|l| l.id == line.id).unwrap_or(0) + 1,
+                total,
                 line_id: line.id.clone(),
-                file_path: audio_path.to_string_lossy().to_string(),
-                duration_ms,
-            };
+                success: false, error: Some(format!("Write: {}", e)),
+            });
+            continue;
+        }
 
-            let db_result = {
-                let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
-                db.upsert_audio_fragment(&fragment)
-            };
+        reencode_with_ffmpeg(&audio_path, &line.id);
+        let duration_ms = get_audio_duration(&audio_path);
 
-            match db_result {
-                Ok(()) => {
-                    success_count += 1;
-                    info!("[TTS][batch] line {} ok ({} bytes)", line.id, audio.len());
-                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
-                        current: completed, total,
-                        line_id: line.id.clone(),
-                        success: true, error: None,
-                    });
-                }
-                Err(e) => {
-                    error!("[TTS][batch] DB error {}: {}", line.id, e);
-                    let _ = app.emit("tts-batch-progress", TtsBatchProgress {
-                        current: completed, total,
-                        line_id: line.id.clone(),
-                        success: false, error: Some(format!("DB: {}", e)),
-                    });
-                }
+        let fragment = AudioFragment {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_id: project_id.clone(),
+            line_id: line.id.clone(),
+            file_path: audio_path.to_string_lossy().to_string(),
+            duration_ms,
+        };
+
+        let db_result = {
+            let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+            db.upsert_audio_fragment(&fragment)
+        };
+
+        let completed = missing.iter().position(|l| l.id == line.id).unwrap_or(0) + 1;
+        match db_result {
+            Ok(()) => {
+                success_count += 1;
+                info!("[TTS][batch] line {} ok ({} bytes)", line.id, audio.len());
+                let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                    current: completed, total,
+                    line_id: line.id.clone(),
+                    success: true, error: None,
+                });
+            }
+            Err(e) => {
+                error!("[TTS][batch] DB error {}: {}", line.id, e);
+                let _ = app.emit("tts-batch-progress", TtsBatchProgress {
+                    current: completed, total,
+                    line_id: line.id.clone(),
+                    success: false, error: Some(format!("DB: {}", e)),
+                });
             }
         }
     }
@@ -677,5 +925,103 @@ mod tests {
     fn test_build_audio_path() {
         let p = build_audio_path(std::path::Path::new("/data"), "proj-1", "line-42");
         assert_eq!(p, std::path::PathBuf::from("/data/projects/proj-1/audio/line-42.mp3"));
+    }
+
+    #[test]
+    fn test_split_short_text_no_split() {
+        let text = "你好世界";
+        let chunks = split_text_for_tts(text);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "你好世界");
+        assert_eq!(chunks[0].pause_ms, 0);
+    }
+
+    #[test]
+    fn test_split_text_at_boundary() {
+        let text = "A".repeat(200);
+        let chunks = split_text_for_tts(&text);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text.len(), 200);
+    }
+
+    #[test]
+    fn test_split_text_over_limit() {
+        let text = "A".repeat(500);
+        let chunks = split_text_for_tts(&text);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            assert!(c.text.len() <= TTS_CHUNK_MAX_CHARS, "chunk len={} exceeds {}", c.text.len(), TTS_CHUNK_MAX_CHARS);
+        }
+    }
+
+    #[test]
+    fn test_split_by_paragraph_short_text() {
+        // Short text: no splitting needed, newlines preserved
+        let text = "第一段文字。\n第二段文字。";
+        let chunks = split_text_for_tts(text);
+        // Total length is well under 400, so it returns as-is
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn test_split_long_paragraph_by_sentence() {
+        // A long paragraph with sentence boundaries that needs splitting
+        let text = "他今天去了公园。天气很好。很多人在跑步。小鸟在树上唱歌。孩子们很开心。".repeat(8); // 37 * 8 = 296 chars — still short
+        let chunks = split_text_for_tts(&text);
+        assert!(chunks.len() >= 1);
+        for c in &chunks {
+            assert!(c.text.chars().count() <= TTS_CHUNK_MAX_CHARS, "chunk len={} exceeds {}", c.text.chars().count(), TTS_CHUNK_MAX_CHARS);
+        }
+    }
+
+    #[test]
+    fn test_split_mixed_paragraphs() {
+        // Long paragraph (>400 chars) + short + long — forces splitting
+        let long_para = "他今天去了公园。".repeat(60); // 60 * 7 = 420 chars > 400
+        let text = format!("{}\n简短段落。\n{}", long_para, "Another short one.");
+        let chunks = split_text_for_tts(&text);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            assert!(c.text.chars().count() <= TTS_CHUNK_MAX_CHARS, "chunk len={} exceeds {}", c.text.chars().count(), TTS_CHUNK_MAX_CHARS);
+        }
+    }
+
+    #[test]
+    fn test_split_empty_text() {
+        let chunks = split_text_for_tts("");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_split_preserves_sentence_boundary() {
+        // Verify chunks end at sentence boundaries when possible
+        let text = "第一句。第二句。第三句。第四句。第五句。第六句。第七句。第八句。第九句。第十句。";
+        let chunks = split_text_for_tts(text);
+        // Check that non-final chunks end with sentence-ending punctuation
+        let boundaries: &[char] = &['.', '!', '?', '。', '！', '？', '；', ';'];
+        for (i, c) in chunks.iter().enumerate() {
+            if i < chunks.len() - 1 {
+                let last_char = c.text.chars().last().unwrap();
+                assert!(boundaries.contains(&last_char),
+                    "chunk {} ends with '{}' not a sentence boundary", i, last_char);
+            }
+        }
+    }
+
+    #[test]
+    fn test_pause_different_for_paragraph_vs_sentence() {
+        // Verify that paragraph pauses are longer than sentence pauses
+        let long_para = "他今天去了公园。".repeat(60); // 420 chars > 400
+        let text = format!("{}\n简短段落。", long_para);
+        let chunks = split_text_for_tts(&text);
+        // There should be at least 2 chunks: the long paragraph split + the short paragraph
+        assert!(chunks.len() >= 2);
+        // Last chunk should have 0 pause (it's the end)
+        let last = chunks.last().unwrap();
+        assert_eq!(last.pause_ms, 0);
+        // Non-last chunks should have some pause
+        for c in chunks.iter().take(chunks.len() - 1) {
+            assert!(c.pause_ms > 0, "non-final chunk should have pause");
+        }
     }
 }
