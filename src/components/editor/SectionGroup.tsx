@@ -30,7 +30,7 @@ export default function SectionGroup({
 
     // Drag state (lifted up so parent can manage all children's visuals)
     const [draggingId, setDraggingId] = useState<string | null>(null);
-    const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+    const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
 
     const handleTitleBlur = () => {
         setEditing(false);
@@ -52,32 +52,37 @@ export default function SectionGroup({
     /* ---- Line drag: pointer-based (works reliably in Tauri) ---- */
     const handleDragStart = useCallback((lineId: string, _pointerId: number) => {
         setDraggingId(lineId);
-        setDropTargetId(null);
+        setDropTarget(null);
     }, []);
 
     const handleDragMove = useCallback((clientX: number, clientY: number) => {
         if (!draggingId) return;
-
-        // Find which card is under the cursor
         const el = document.elementFromPoint(clientX, clientY);
-        const card = el?.closest('[data-line-id]');
-        const targetId = card?.getAttribute('data-line-id') ?? null;
-
-        setDropTargetId(prev => prev !== targetId ? targetId : prev);
+        const card = el?.closest('[data-line-id]') as HTMLElement | null;
+        if (!card) { setDropTarget(null); return; }
+        const targetId = card.getAttribute('data-line-id');
+        if (!targetId || targetId === draggingId) { setDropTarget(null); return; }
+        const rect = card.getBoundingClientRect();
+        const position: 'before' | 'after' = clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        setDropTarget(prev =>
+            prev?.id === targetId && prev?.position === position ? prev : { id: targetId, position },
+        );
     }, [draggingId]);
 
     const handleDragEnd = useCallback(() => {
-        if (draggingId && dropTargetId && draggingId !== dropTargetId) {
+        if (draggingId && dropTarget && draggingId !== dropTarget.id) {
             const allLines = useScriptStore.getState().lines;
             const fromIdx = allLines.findIndex((l) => l.id === draggingId);
-            const toIdx = allLines.findIndex((l) => l.id === dropTargetId);
-            if (fromIdx !== -1 && toIdx !== -1) {
-                useScriptStore.getState().reorderLines(fromIdx, toIdx);
+            const targetIdx = allLines.findIndex((l) => l.id === dropTarget.id);
+            if (fromIdx !== -1 && targetIdx !== -1) {
+                let toIdx = dropTarget.position === 'before' ? targetIdx : targetIdx + 1;
+                if (fromIdx < toIdx) toIdx -= 1;
+                if (fromIdx !== toIdx) useScriptStore.getState().reorderLines(fromIdx, toIdx);
             }
         }
         setDraggingId(null);
-        setDropTargetId(null);
-    }, [draggingId, dropTargetId]);
+        setDropTarget(null);
+    }, [draggingId, dropTarget]);
 
     return (
         <div
@@ -144,7 +149,7 @@ export default function SectionGroup({
                             index={lineIndex}
                             totalLines={lines.length}
                             isDragging={draggingId === line.id}
-                            isDropTarget={dropTargetId === line.id}
+                            dropPosition={dropTarget?.id === line.id ? dropTarget.position : null}
                             onDragStart={handleDragStart}
                             onDragMove={handleDragMove}
                             onDragEnd={handleDragEnd}

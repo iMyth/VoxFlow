@@ -27,7 +27,8 @@ interface ScriptLineProps {
     index: number;
     totalLines?: number;
     isDragging?: boolean;
-    isDropTarget?: boolean;
+    /** Where the insertion indicator should appear: 'before' or 'after' this card */
+    dropPosition?: 'before' | 'after' | null;
     /** Called when pointer is down on the grip (starts drag) */
     onDragStart?: (lineId: string, pointerId: number) => void;
     /** Called when pointer moves during drag (to find drop target) */
@@ -39,7 +40,7 @@ interface ScriptLineProps {
 export default function ScriptLineComponent({
     line, index,
     isDragging = false,
-    isDropTarget = false,
+    dropPosition = null,
     onDragStart,
     onDragMove,
     onDragEnd,
@@ -136,18 +137,20 @@ export default function ScriptLineComponent({
     const characterName = characters.find((c) => c.id === line.character_id)?.name;
     const UNASSIGNED = '__unassigned__';
 
+    const insertIndicator = (
+        <div className="h-0.5 rounded-full bg-primary mx-1 transition-opacity" />
+    );
+
     return (
-        <Card
-            data-line-id={line.id}
-            className={`flex-row items-start gap-2 p-3 group transition-all duration-150 ${
-                isDragging ? 'opacity-40' : ''
-            } ${
-                isDropTarget
-                    ? 'border-2 border-primary/70 bg-primary/5 ring-2 ring-primary/20'
-                    : 'border border-transparent'
-            }`}
-            style={isDragging ? { userSelect: 'none', WebkitUserSelect: 'none' } : undefined}
-        >
+        <div className="relative">
+            {dropPosition === 'before' && insertIndicator}
+            <Card
+                data-line-id={line.id}
+                className={`flex-row items-start gap-2 p-3 group transition-all duration-150 ${
+                    isDragging ? 'opacity-40' : ''
+                }`}
+                style={isDragging ? { userSelect: 'none', WebkitUserSelect: 'none' } : undefined}
+            >
             {/* Drag handle: only this area initiates drag, text area remains fully selectable */}
             <div
                 className="cursor-grab select-none pt-2 text-muted-foreground hover:text-foreground active:cursor-grabbing touch-none"
@@ -255,6 +258,8 @@ export default function ScriptLineComponent({
             >
                 <Trash2 className="h-4 w-4" />
             </Button>
-        </Card>
+            </Card>
+            {dropPosition === 'after' && insertIndicator}
+        </div>
     );
 }

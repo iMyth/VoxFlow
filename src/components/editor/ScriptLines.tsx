@@ -67,33 +67,43 @@ export default function ScriptLines({
 
   // Drag state for flat line list
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
 
   const handleDragStart = useCallback((lineId: string) => {
     setDraggingId(lineId);
-    setDropTargetId(null);
+    setDropTarget(null);
   }, []);
 
   const handleDragMove = useCallback((clientX: number, clientY: number) => {
     if (!draggingId) return;
     const el = document.elementFromPoint(clientX, clientY);
-    const card = el?.closest('[data-line-id]');
-    const targetId = card?.getAttribute('data-line-id') ?? null;
-    setDropTargetId(prev => prev !== targetId ? targetId : prev);
+    const card = el?.closest('[data-line-id]') as HTMLElement | null;
+    if (!card) { setDropTarget(null); return; }
+    const targetId = card.getAttribute('data-line-id');
+    if (!targetId || targetId === draggingId) { setDropTarget(null); return; }
+    const rect = card.getBoundingClientRect();
+    const position: 'before' | 'after' = clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    setDropTarget(prev =>
+      prev?.id === targetId && prev?.position === position ? prev : { id: targetId, position },
+    );
   }, [draggingId]);
 
   const handleDragEnd = useCallback(() => {
-    if (draggingId && dropTargetId && draggingId !== dropTargetId) {
+    if (draggingId && dropTarget && draggingId !== dropTarget.id) {
       const allLines = useScriptStore.getState().lines;
       const fromIdx = allLines.findIndex((l) => l.id === draggingId);
-      const toIdx = allLines.findIndex((l) => l.id === dropTargetId);
-      if (fromIdx !== -1 && toIdx !== -1) {
-        reorderLines(fromIdx, toIdx);
+      const targetIdx = allLines.findIndex((l) => l.id === dropTarget.id);
+      if (fromIdx !== -1 && targetIdx !== -1) {
+        // Calculate the insert index: if dropping "after" the target, insert at targetIdx + 1
+        // But since splice removes the dragged item first, adjust when dragging downward
+        let toIdx = dropTarget.position === 'before' ? targetIdx : targetIdx + 1;
+        if (fromIdx < toIdx) toIdx -= 1; // account for removal shifting indices
+        if (fromIdx !== toIdx) reorderLines(fromIdx, toIdx);
       }
     }
     setDraggingId(null);
-    setDropTargetId(null);
-  }, [draggingId, dropTargetId, reorderLines]);
+    setDropTarget(null);
+  }, [draggingId, dropTarget, reorderLines]);
 
   // Trigger bounce animation on first mount when outline button is visible
   useEffect(() => {
@@ -313,7 +323,7 @@ export default function ScriptLines({
                   line={line}
                   index={index}
                   isDragging={draggingId === line.id}
-                  isDropTarget={dropTargetId === line.id}
+                  dropPosition={dropTarget?.id === line.id ? dropTarget.position : null}
                   onDragStart={handleDragStart}
                   onDragMove={handleDragMove}
                   onDragEnd={handleDragEnd}
@@ -348,7 +358,7 @@ export default function ScriptLines({
             line={line}
             index={index}
             isDragging={draggingId === line.id}
-            isDropTarget={dropTargetId === line.id}
+            dropPosition={dropTarget?.id === line.id ? dropTarget.position : null}
             onDragStart={handleDragStart}
             onDragMove={handleDragMove}
             onDragEnd={handleDragEnd}
