@@ -10,7 +10,10 @@
     "tauri": "tauri",
     "tauri:dev": "RUST_LOG=debug tauri dev",
     "tauri:build": "node scripts/load-env.mjs tauri build",
-    "tauri:build:debug": "node scripts/load-env.mjs tauri build --debug"
+    "tauri:build:debug": "node scripts/load-env.mjs tauri build --debug",
+    "release": "node scripts/release.js",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
