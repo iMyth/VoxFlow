@@ -112,7 +112,12 @@
     "charNameRequired": "Character name is required",
     "charCreated": "Character \"{{name}}\" created",
     "mapAllCharsRequired": "Please assign or create all suggested characters",
-    "finishCreatingChars": "Please finish creating characters: {{names}}"
+    "finishCreatingChars": "Please finish creating characters: {{names}}",
+    "generationFailed": "Generation failed",
+    "defaultSectionTitle": "Main",
+    "exportAudiobookTitle": "Export Audiobook",
+    "languageZh": "Chinese",
+    "languageEn": "English"
   },
   "tools": {
     "label": "Skills",

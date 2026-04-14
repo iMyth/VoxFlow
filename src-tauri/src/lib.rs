@@ -16,18 +16,31 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
+            let app_data_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    log::error!("failed to resolve app data dir: {}", e);
+                    return Err(format!("failed to resolve app data dir: {}", e).into());
+                }
+            };
 
-            std::fs::create_dir_all(&app_data_dir)
-                .expect("failed to create app data directory");
+            if let Err(e) = std::fs::create_dir_all(&app_data_dir) {
+                log::error!("failed to create app data directory: {}", e);
+                // Continue anyway — db might still open
+            }
 
             let db_path = app_data_dir.join("voxflow.db");
-            let db = Database::open(&db_path)
-                .expect("failed to open database");
-            db.migrate().expect("failed to run database migrations");
+            let db = match Database::open(&db_path) {
+                Ok(db) => db,
+                Err(e) => {
+                    log::error!("failed to open database at {:?}: {}", db_path, e);
+                    return Err(format!("failed to open database: {}", e).into());
+                }
+            };
+            if let Err(e) = db.migrate() {
+                log::error!("failed to run database migrations: {}", e);
+                return Err(format!("failed to run database migrations: {}", e).into());
+            }
 
             app.manage(Mutex::new(db));
             app.manage(commands::audio::AudioPlayer::new());

@@ -194,7 +194,7 @@ fn group_chunks_into_sessions(chunks: &[TtsChunk], limit: usize) -> Vec<Vec<&Tts
 /// Merge multiple audio files with silence gaps between them.
 /// Takes a list of (audio_path, pause_after_ms) pairs.
 /// The pause is inserted AFTER each chunk, before the next one.
-fn merge_audio_with_silence(
+async fn merge_audio_with_silence(
     chunk_paths: &[(std::path::PathBuf, u32)],
     output: &std::path::Path,
 ) -> Result<(), String> {
@@ -202,9 +202,14 @@ fn merge_audio_with_silence(
         return Err("no audio chunks to merge".into());
     }
     if chunk_paths.len() == 1 {
-        std::fs::copy(&chunk_paths[0].0, output)
-            .map_err(|e| format!("copy single chunk: {}", e))?;
-        return Ok(());
+        let output = output.to_path_buf();
+        let src = chunk_paths[0].0.clone();
+        return tokio::task::spawn_blocking(move || {
+            std::fs::copy(&src, &output).map_err(|e| format!("copy single chunk: {}", e))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?;
     }
 
     let tmp_dir = std::env::temp_dir();
@@ -216,7 +221,7 @@ fn merge_audio_with_silence(
         // Insert silence after this chunk (except for the last one)
         if i < chunk_paths.len() - 1 && *pause_ms > 0 {
             let silence_path = tmp_dir.join(format!("tts_silence_{}.mp3", i));
-            generate_silence(&silence_path, *pause_ms)?;
+            generate_silence(&silence_path, *pause_ms).await?;
             all_paths.push(silence_path);
         }
     }
@@ -231,21 +236,27 @@ fn merge_audio_with_silence(
     std::fs::write(&concat_list, &list_content)
         .map_err(|e| format!("write concat list: {}", e))?;
 
-    let result = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", &concat_list.to_string_lossy(),
-            "-c", "copy",
-            &output.to_string_lossy(),
-        ])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .output();
+    let output = output.to_path_buf();
+    let concat_list_for_cleanup = concat_list.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", &concat_list.to_string_lossy(),
+                "-c", "copy",
+                &output.to_string_lossy(),
+            ])
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .output()
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {}", e))?;
 
     // Cleanup temp files
-    let _ = std::fs::remove_file(&concat_list);
+    let _ = std::fs::remove_file(&concat_list_for_cleanup);
     for p in &all_paths {
         if p.to_string_lossy().contains("tts_silence_") {
             let _ = std::fs::remove_file(p);
@@ -263,30 +274,35 @@ fn merge_audio_with_silence(
 }
 
 /// Generate a silence MP3 file of the given duration (in ms).
-fn generate_silence(path: &std::path::Path, duration_ms: u32) -> Result<(), String> {
+async fn generate_silence(path: &std::path::Path, duration_ms: u32) -> Result<(), String> {
     let duration_sec = duration_ms as f64 / 1000.0;
-    let result = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f", "lavfi",
-            "-i", "anullsrc=r=22050:cl=mono",
-            "-t", &format!("{:.3}", duration_sec),
-            "-c:a", "libmp3lame",
-            "-b:a", "192k",
-            &path.to_string_lossy(),
-        ])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .output();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let result = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f", "lavfi",
+                "-i", "anullsrc=r=22050:cl=mono",
+                "-t", &format!("{:.3}", duration_sec),
+                "-c:a", "libmp3lame",
+                "-b:a", "192k",
+                &path.to_string_lossy(),
+            ])
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .output();
 
-    match result {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            Err(format!("generate silence failed: {}", stderr))
+        match result {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                Err(format!("generate silence failed: {}", stderr))
+            }
+            Err(e) => Err(format!("ffmpeg exec failed: {}", e)),
         }
-        Err(e) => Err(format!("ffmpeg exec failed: {}", e)),
-    }
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {}", e))?
 }
 
 // ---------------------------------------------------------------------------
@@ -480,25 +496,37 @@ where
 }
 
 /// Re-encode audio with FFmpeg to fix VBR headers.
-fn reencode_with_ffmpeg(audio_path: &std::path::Path, label: &str) {
+async fn reencode_with_ffmpeg(audio_path: &std::path::Path, label: &str) {
+    let audio_path = audio_path.to_path_buf();
     let tmp = audio_path.with_extension("tmp.mp3");
-    let r = std::process::Command::new("ffmpeg")
-        .args(["-y", "-i", &audio_path.to_string_lossy(), "-codec:a", "libmp3lame", "-b:a", "192k", &tmp.to_string_lossy()])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .output();
-    match r {
-        Ok(o) if o.status.success() => { let _ = std::fs::rename(&tmp, audio_path); }
-        _ => { let _ = std::fs::remove_file(&tmp); warn!("[TTS] FFmpeg failed for {}", label); }
-    }
+    let label = label.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let r = std::process::Command::new("ffmpeg")
+            .args(["-y", "-i", &audio_path.to_string_lossy(), "-codec:a", "libmp3lame", "-b:a", "192k", &tmp.to_string_lossy()])
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .output();
+        match r {
+            Ok(o) if o.status.success() => { let _ = std::fs::rename(&tmp, &audio_path); }
+            _ => { let _ = std::fs::remove_file(&tmp); warn!("[TTS] FFmpeg failed for {}", label); }
+        }
+    }).await;
 }
 
 /// Get audio duration in ms via FFprobe, fallback to rodio.
-fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
-    if let Ok(o) = std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", &path.to_string_lossy()])
-        .output()
-    {
+async fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
+    let path = path.to_path_buf();
+    let path_for_ffprobe = path.clone();
+    let ffprobe_result = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", &path_for_ffprobe.to_string_lossy()])
+            .output()
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok());
+
+    if let Some(o) = ffprobe_result {
         if o.status.success() {
             if let Ok(s) = String::from_utf8(o.stdout) {
                 if let Ok(secs) = s.trim().parse::<f64>() {
@@ -688,6 +716,7 @@ async fn call_tts(
             }
             let merged_path = tmp_dir.join("tts_merged.mp3");
             merge_audio_with_silence(&merged, &merged_path)
+                .await
                 .map_err(|e| AppError::TtsService(format!("merge audio: {}", e)))?;
             let audio = std::fs::read(&merged_path)
                 .map_err(|e| AppError::FileSystem(format!("read merged: {}", e)))?;
@@ -749,6 +778,7 @@ async fn batch_tts_one(
             }
             let merged_path = tmp_dir.join("tts_merged.mp3");
             merge_audio_with_silence(&merged, &merged_path)
+                .await
                 .map_err(|e| AppError::TtsService(format!("merge audio: {}", e)))?;
             let audio = std::fs::read(&merged_path)
                 .map_err(|e| AppError::FileSystem(format!("read merged: {}", e)))?;
@@ -814,9 +844,9 @@ pub async fn generate_tts(
 
     std::fs::write(&audio_path, &audio_bytes)
         .map_err(|e| AppError::FileSystem(format!("write: {}", e)))?;
-    reencode_with_ffmpeg(&audio_path, &line_id);
+    reencode_with_ffmpeg(&audio_path, &line_id).await;
 
-    let duration_ms = get_audio_duration(&audio_path);
+    let duration_ms = get_audio_duration(&audio_path).await;
     let fragment = AudioFragment {
         id: uuid::Uuid::new_v4().to_string(),
         project_id: project_id.clone(),
@@ -940,8 +970,8 @@ pub async fn generate_all_tts(
             continue;
         }
 
-        reencode_with_ffmpeg(&audio_path, &line.id);
-        let duration_ms = get_audio_duration(&audio_path);
+        reencode_with_ffmpeg(&audio_path, &line.id).await;
+        let duration_ms = get_audio_duration(&audio_path).await;
 
         let fragment = AudioFragment {
             id: uuid::Uuid::new_v4().to_string(),

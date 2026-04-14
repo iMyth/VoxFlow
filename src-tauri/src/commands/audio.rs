@@ -98,6 +98,10 @@ pub struct AudioPlayer {
     tx: mpsc::Sender<AudioCommand>,
 }
 
+/// SAFETY: AudioPlayer only contains an `mpsc::Sender<AudioCommand>`, which is inherently
+/// thread-safe (Sync + Send). The sender is a reference-counted channel handle that can
+/// be safely shared across threads. All mutation happens on the dedicated background
+/// thread that owns the receiver.
 unsafe impl Sync for AudioPlayer {}
 
 impl AudioPlayer {
@@ -484,22 +488,27 @@ pub async fn export_audio_mix(
 
     // Run FFmpeg subprocess — try common macOS paths if not in PATH
     let ffmpeg_bin = find_ffmpeg();
+    let ffmpeg_args = ffmpeg_args.clone();
 
-    let output = std::process::Command::new(&ffmpeg_bin)
-        .args(&ffmpeg_args)
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                AppError::FFmpeg(
-                    "FFmpeg not found. Please install FFmpeg (brew install ffmpeg) and ensure it is in your PATH."
-                        .to_string(),
-                )
-            } else {
-                AppError::FFmpeg(format!("Failed to start FFmpeg: {}", e))
-            }
-        })?;
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(&ffmpeg_bin)
+            .args(&ffmpeg_args)
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .output()
+    })
+    .await
+    .map_err(|e| AppError::FFmpeg(format!("FFmpeg spawn_blocking failed: {}", e)))?
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::FFmpeg(
+                "FFmpeg not found. Please install FFmpeg (brew install ffmpeg) and ensure it is in your PATH."
+                    .to_string(),
+            )
+        } else {
+            AppError::FFmpeg(format!("Failed to start FFmpeg: {}", e))
+        }
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -570,8 +579,29 @@ pub fn import_bgm(
     let dest_filename = format!("{}.{}", name, extension);
     let dest_path = bgm_dir.join(&dest_filename);
 
+    // Path validation: ensure source file is within app data directory
+    let canonical_app_data = app_data_dir
+        .canonicalize()
+        .or_else(|_| {
+            // App data dir may not exist yet, use the non-canonicalized path
+            std::result::Result::<_, AppError>::Ok(app_data_dir.clone())
+        })
+        .map_err(|e| AppError::FileSystem(format!("Cannot resolve app data dir: {}", e)))?;
+
+    // Canonicalize source path for validation
+    let canonical_source = source
+        .canonicalize()
+        .map_err(|e| AppError::FileSystem(format!("Cannot resolve source path {}: {}", source_path, e)))?;
+
+    if !canonical_source.starts_with(&canonical_app_data) {
+        return Err(AppError::FileSystem(format!(
+            "Access denied: source path {} is outside the app data directory",
+            source_path
+        )));
+    }
+
     // Copy file
-    std::fs::copy(&source_path, &dest_path).map_err(|e| {
+    std::fs::copy(&canonical_source, &dest_path).map_err(|e| {
         AppError::FileSystem(format!("Failed to copy BGM file: {}", e))
     })?;
 

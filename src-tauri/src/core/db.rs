@@ -415,13 +415,19 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         } else {
-            // Build a comma-separated list of quoted IDs for the NOT IN clause
-            let placeholders: Vec<String> = new_ids.iter().map(|id| format!("'{}'", id.replace('\'', "''"))).collect();
+            // Build dynamic parameterized placeholders for NOT IN clause
+            let placeholders: Vec<String> = (1..=new_ids.len())
+                .map(|i| format!("?{}", i + 1))
+                .collect();
             let sql = format!(
                 "DELETE FROM script_lines WHERE project_id = ?1 AND id NOT IN ({})",
                 placeholders.join(",")
             );
-            tx.execute(&sql, rusqlite::params![project_id])
+            let mut params: Vec<rusqlite::types::ToSqlOutput> = vec![rusqlite::types::ToSqlOutput::from(project_id.clone())];
+            for id in &new_ids {
+                params.push(rusqlite::types::ToSqlOutput::from(id.to_string()));
+            }
+            tx.execute(&sql, rusqlite::params_from_iter(params.iter()))
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
 
@@ -531,12 +537,19 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         } else {
-            let placeholders: Vec<String> = new_ids.iter().map(|id| format!("'{}'", id.replace('\'', "''"))).collect();
+            // Build dynamic parameterized placeholders for NOT IN clause
+            let placeholders: Vec<String> = (1..=new_ids.len())
+                .map(|i| format!("?{}", i + 1))
+                .collect();
             let sql = format!(
                 "DELETE FROM script_sections WHERE project_id = ?1 AND id NOT IN ({})",
                 placeholders.join(",")
             );
-            tx.execute(&sql, rusqlite::params![project_id])
+            let mut params: Vec<rusqlite::types::ToSqlOutput> = vec![rusqlite::types::ToSqlOutput::from(project_id.clone())];
+            for id in &new_ids {
+                params.push(rusqlite::types::ToSqlOutput::from(id.to_string()));
+            }
+            tx.execute(&sql, rusqlite::params_from_iter(params.iter()))
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
 

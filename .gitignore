@@ -8,7 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+dist/
 dist-ssr
 *.local
 
@@ -18,12 +18,24 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 .claude
-
-.env*
+skills
 bin
+
+# Environment files
+.env*
+!.env.example
+.env.local
+.env.*.local
+
+# Build artifacts
+*.tsbuildinfo
+
+# Tauri
+src-tauri/target/

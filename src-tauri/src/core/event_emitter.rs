@@ -19,16 +19,6 @@ impl<E: EventEmitter> EmitExt for E {
     }
 }
 
-/// No-op emitter — for contexts where events are not needed.
-#[allow(dead_code)]
-pub struct NoOpEmitter;
-
-impl EventEmitter for NoOpEmitter {
-    fn emit_json(&self, _event: &str, _payload: &serde_json::Value) {
-        // intentionally empty
-    }
-}
-
 /// Logging emitter — writes events to stderr for CLI usage.
 #[allow(dead_code)]
 pub struct LogEmitter {

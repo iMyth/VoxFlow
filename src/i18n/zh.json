@@ -112,7 +112,12 @@
     "charNameRequired": "角色名称不能为空",
     "charCreated": "角色 \"{{name}}\" 已创建",
     "mapAllCharsRequired": "请为所有角色指定已有角色或创建新角色",
-    "finishCreatingChars": "请先完成创建角色: {{names}}"
+    "finishCreatingChars": "请先完成创建角色: {{names}}",
+    "generationFailed": "生成失败",
+    "defaultSectionTitle": "正文",
+    "exportAudiobookTitle": "导出有声书",
+    "languageZh": "中文",
+    "languageEn": "English"
   },
   "tools": {
     "label": "技能",

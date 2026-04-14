@@ -670,6 +670,7 @@ pub async fn run_agent_pipeline(
 
     let emitter = TauriEmitter(app);
 
+    #[allow(deprecated)]
     crate::core::agent::run_agent_pipeline(
         &emitter,
         &cancel_token,

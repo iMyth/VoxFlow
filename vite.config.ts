@@ -1,7 +1,7 @@
-import path from "path";
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
+import path from 'path';
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -11,11 +11,14 @@ export default defineConfig(async () => ({
 
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      '@': path.resolve(__dirname, './src'),
     },
   },
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+  // Tauri-specific Vite options
+  // NOTE: clearScreen is only needed for Tauri development to prevent
+  // Vite from obscuring Rust compilation errors during `tauri dev`.
+  // It should NOT be used in non-Tauri projects.
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
@@ -26,14 +29,32 @@ export default defineConfig(async () => ({
     host: host || false,
     hmr: host
       ? {
-          protocol: "ws",
+          protocol: 'ws',
           host,
           port: 1421,
         }
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ['**/src-tauri/**'],
+    },
+  },
+
+  // Production build optimizations
+  build: {
+    // Use esbuild for faster minification (use 'terser' if you need
+    // more aggressive dead-code elimination or custom terser options)
+    minify: 'esbuild',
+    rollupOptions: {
+      output: {
+        // Separate vendor chunks for better caching
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          'vendor-ui': ['radix-ui', 'class-variance-authority', 'clsx', 'tailwind-merge', 'lucide-react'],
+          'vendor-state': ['zustand', 'zundo'],
+          'vendor-i18n': ['i18next', 'react-i18next'],
+        },
+      },
     },
   },
 }));

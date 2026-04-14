@@ -241,6 +241,7 @@ pub async fn run_revision_step<E: EventEmitter>(
 
 /// Run the full agent pipeline: analyze outline → generate script.
 /// This is the one-shot entry point for backward compatibility.
+#[deprecated(since = "0.1.5", note = "Use individual step functions (run_analysis_step, run_generation_step, run_revision_step) instead")]
 pub async fn run_agent_pipeline<E: EventEmitter>(
     emitter: &E,
     cancel_token: &CancellationToken,

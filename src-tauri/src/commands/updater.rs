@@ -2,6 +2,8 @@ use serde::Serialize;
 use tauri::State;
 use tauri_plugin_updater::Updater;
 
+use crate::core::error::AppError;
+
 #[derive(Debug, Serialize)]
 pub struct UpdateInfo {
     pub available: bool,
@@ -10,11 +12,11 @@ pub struct UpdateInfo {
 }
 
 #[tauri::command]
-pub async fn check_for_updates(updater: State<'_, Updater>) -> Result<UpdateInfo, String> {
+pub async fn check_for_updates(updater: State<'_, Updater>) -> Result<UpdateInfo, AppError> {
     let update = updater
         .check()
         .await
-        .map_err(|e| format!("Failed to check for updates: {}", e))?;
+        .map_err(|e| AppError::FileSystem(format!("Failed to check for updates: {}", e)))?;
 
     match update {
         Some(update) => Ok(UpdateInfo {
@@ -33,12 +35,12 @@ pub async fn check_for_updates(updater: State<'_, Updater>) -> Result<UpdateInfo
 #[tauri::command]
 pub async fn install_update(
     updater: State<'_, Updater>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let update = updater
         .check()
         .await
-        .map_err(|e| format!("Failed to check for updates: {}", e))?
-        .ok_or("No update available")?;
+        .map_err(|e| AppError::FileSystem(format!("Failed to check for updates: {}", e)))?
+        .ok_or_else(|| AppError::FileSystem("No update available".to_string()))?;
 
     let mut downloaded = 0;
     update
@@ -52,7 +54,7 @@ pub async fn install_update(
             },
         )
         .await
-        .map_err(|e| format!("Failed to install update: {}", e))?;
+        .map_err(|e| AppError::FileSystem(format!("Failed to install update: {}", e)))?;
 
     Ok(())
 }
