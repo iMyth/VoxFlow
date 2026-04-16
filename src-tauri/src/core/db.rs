@@ -428,7 +428,7 @@ impl Database {
                 "DELETE FROM script_lines WHERE project_id = ?1 AND id NOT IN ({})",
                 placeholders.join(",")
             );
-            let mut params: Vec<rusqlite::types::ToSqlOutput> = vec![rusqlite::types::ToSqlOutput::from(project_id.clone())];
+            let mut params: Vec<rusqlite::types::ToSqlOutput> = vec![rusqlite::types::ToSqlOutput::from(project_id)];
             for id in &new_ids {
                 params.push(rusqlite::types::ToSqlOutput::from(id.to_string()));
             }
@@ -550,7 +550,7 @@ impl Database {
                 "DELETE FROM script_sections WHERE project_id = ?1 AND id NOT IN ({})",
                 placeholders.join(",")
             );
-            let mut params: Vec<rusqlite::types::ToSqlOutput> = vec![rusqlite::types::ToSqlOutput::from(project_id.clone())];
+            let mut params: Vec<rusqlite::types::ToSqlOutput> = vec![rusqlite::types::ToSqlOutput::from(project_id)];
             for id in &new_ids {
                 params.push(rusqlite::types::ToSqlOutput::from(id.to_string()));
             }
