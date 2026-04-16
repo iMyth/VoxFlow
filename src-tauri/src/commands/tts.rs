@@ -514,7 +514,7 @@ async fn reencode_with_ffmpeg(audio_path: &std::path::Path, label: &str) {
 }
 
 /// Get audio duration in ms via FFprobe, fallback to rodio.
-async fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
+pub(crate) async fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
     let path = path.to_path_buf();
     let path_for_ffprobe = path.clone();
     let ffprobe_result = tokio::task::spawn_blocking(move || {
@@ -853,6 +853,7 @@ pub async fn generate_tts(
         line_id: line_id.clone(),
         file_path: audio_path.to_string_lossy().to_string(),
         duration_ms,
+        source: "tts".to_string(),
     };
 
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
@@ -979,6 +980,7 @@ pub async fn generate_all_tts(
             line_id: line.id.clone(),
             file_path: audio_path.to_string_lossy().to_string(),
             duration_ms,
+            source: "tts".to_string(),
         };
 
         let db_result = {
@@ -1031,6 +1033,27 @@ pub async fn clear_audio_fragments(
     }
     info!("[TTS] Cleared {} audio fragments", paths.len());
     // Reload project in frontend by re-fetching
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_tts_fragments(
+    _app: tauri::AppHandle,
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+) -> Result<(), AppError> {
+    info!("[TTS] clear_tts_fragments: project={}", project_id);
+    let paths = {
+        let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.clear_tts_fragments(&project_id)?
+    };
+    // Delete audio files from disk
+    for path in &paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            warn!("[TTS] Failed to delete audio file {}: {}", path, e);
+        }
+    }
+    info!("[TTS] Cleared {} TTS audio fragments", paths.len());
     Ok(())
 }
 

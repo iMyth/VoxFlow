@@ -48,6 +48,7 @@ export interface AudioFragment {
   line_id: string;
   file_path: string;
   duration_ms: number | null;
+  source: 'tts' | 'recording';
 }
 
 export interface VoiceConfig {

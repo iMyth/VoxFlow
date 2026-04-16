@@ -442,6 +442,18 @@ export async function clearAudioFragments(projectId: string): Promise<void> {
   return ipcCall<void>('clear_audio_fragments', { projectId });
 }
 
+export async function clearTtsFragments(projectId: string): Promise<void> {
+  return ipcCall<void>('clear_tts_fragments', { projectId });
+}
+
+export async function importAudio(projectId: string, lineId: string, audioDataBase64: string): Promise<AudioFragment> {
+  return ipcCall<AudioFragment>('import_audio', {
+    projectId,
+    lineId,
+    audioDataBase64,
+  });
+}
+
 export function onTtsBatchProgress(callback: (progress: TtsBatchProgress) => void): Promise<UnlistenFn> {
   return listen<TtsBatchProgress>('tts-batch-progress', (event) => {
     callback(event.payload);

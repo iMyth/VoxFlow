@@ -80,6 +80,7 @@ impl Database {
                     line_id     TEXT NOT NULL REFERENCES script_lines(id) ON DELETE CASCADE,
                     file_path   TEXT NOT NULL,
                     duration_ms INTEGER,
+                    source      TEXT NOT NULL DEFAULT 'tts',
                     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
                 );
 
@@ -132,6 +133,10 @@ impl Database {
                 CREATE INDEX IF NOT EXISTS idx_story_kb_project ON story_kb(project_id);
                 CREATE INDEX IF NOT EXISTS idx_story_kb_type ON story_kb(kb_type);
                 ",
+            ),
+            (
+                6,
+                "ALTER TABLE audio_fragments ADD COLUMN source TEXT NOT NULL DEFAULT 'tts';",
             ),
         ];
 
@@ -588,13 +593,14 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         tx.execute(
-            "INSERT INTO audio_fragments (id, project_id, line_id, file_path, duration_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO audio_fragments (id, project_id, line_id, file_path, duration_ms, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 fragment.id,
                 fragment.project_id,
                 fragment.line_id,
                 fragment.file_path,
                 fragment.duration_ms,
+                fragment.source,
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -625,11 +631,31 @@ impl Database {
         Ok(paths)
     }
 
+    /// Delete only TTS-source audio fragments for a given project, returning their file paths.
+    pub fn clear_tts_fragments(&self, project_id: &str) -> Result<Vec<String>, AppError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT file_path FROM audio_fragments WHERE project_id = ?1 AND source = 'tts'")
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let paths: Vec<String> = stmt
+            .query_map(rusqlite::params![project_id], |row| row.get(0))
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+        self.conn
+            .execute(
+                "DELETE FROM audio_fragments WHERE project_id = ?1 AND source = 'tts'",
+                rusqlite::params![project_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(paths)
+    }
+
     /// List all audio fragments for a given project.
     pub fn list_audio_fragments(&self, project_id: &str) -> Result<Vec<AudioFragment>, AppError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, project_id, line_id, file_path, duration_ms FROM audio_fragments WHERE project_id = ?1")
+            .prepare("SELECT id, project_id, line_id, file_path, duration_ms, source FROM audio_fragments WHERE project_id = ?1")
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         let fragments = stmt
@@ -640,6 +666,7 @@ impl Database {
                     line_id: row.get(2)?,
                     file_path: row.get(3)?,
                     duration_ms: row.get(4)?,
+                    source: row.get(5)?,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?
@@ -1592,6 +1619,7 @@ mod tests {
             line_id: line_id.to_string(),
             file_path: file_path.to_string(),
             duration_ms,
+            source: "tts".to_string(),
         }
     }
 

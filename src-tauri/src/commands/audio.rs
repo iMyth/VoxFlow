@@ -6,7 +6,7 @@ use tauri::Manager;
 
 use crate::core::db::Database;
 use crate::core::error::AppError;
-use crate::core::models::MixProgress;
+use crate::core::models::{AudioFragment, MixProgress};
 
 // --- Audio playback via rodio on a dedicated thread ---
 
@@ -613,6 +613,69 @@ pub fn import_bgm(
     db.insert_bgm(&id, &project_id, &file_path, &name)?;
 
     Ok(())
+}
+
+/// Import a user-recorded audio blob as an AudioFragment with source="recording".
+/// The frontend sends base64-encoded webm data, which is saved to the project's recordings directory.
+#[tauri::command]
+pub async fn import_audio(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+    line_id: String,
+    audio_data_base64: String,
+) -> Result<AudioFragment, AppError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    log::info!("[Recording] import_audio: project={}, line={}", project_id, line_id);
+
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::FileSystem(e.to_string()))?;
+
+    let recording_dir = app_data_dir
+        .join("projects")
+        .join(&project_id)
+        .join("recordings");
+
+    std::fs::create_dir_all(&recording_dir)
+        .map_err(|e| AppError::FileSystem(format!("mkdir recordings: {}", e)))?;
+
+    let audio_bytes = STANDARD
+        .decode(&audio_data_base64)
+        .map_err(|e| AppError::FileSystem(format!("base64 decode: {}", e)))?;
+
+    log::info!("[Recording] decoded {} bytes", audio_bytes.len());
+
+    // Save as .webm (native MediaRecorder format)
+    let file_path = recording_dir
+        .join(format!("{}.webm", &line_id))
+        .to_string_lossy()
+        .to_string();
+
+    std::fs::write(&file_path, &audio_bytes)
+        .map_err(|e| AppError::FileSystem(format!("write recording: {}", e)))?;
+
+    // Try to get duration via FFmpeg (ffprobe handles webm fine)
+    let duration_ms = super::tts::get_audio_duration(std::path::Path::new(&file_path)).await;
+
+    log::info!("[Recording] duration_ms={:?}", duration_ms);
+
+    let fragment = AudioFragment {
+        id: uuid::Uuid::new_v4().to_string(),
+        project_id: project_id.clone(),
+        line_id: line_id.clone(),
+        file_path,
+        duration_ms,
+        source: "recording".to_string(),
+    };
+
+    let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+    db.upsert_audio_fragment(&fragment)?;
+
+    log::info!("[Recording] import_audio done: line={}", line_id);
+    Ok(fragment)
 }
 
 #[cfg(test)]

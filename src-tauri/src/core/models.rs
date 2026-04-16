@@ -57,6 +57,7 @@ pub struct AudioFragment {
     pub line_id: String,
     pub file_path: String,
     pub duration_ms: Option<i64>,
+    pub source: String, // "tts" or "recording"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

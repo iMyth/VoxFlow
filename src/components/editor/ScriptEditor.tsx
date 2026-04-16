@@ -13,6 +13,7 @@ import { useScriptStore } from '../../store/scriptStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useToastStore } from '../../store/toastStore';
 import { useUiStore } from '../../store/uiStore';
+import { Button } from '../ui/button';
 import ConfirmDialog from '../ui/confirm-dialog';
 
 export default function ScriptEditor() {
@@ -430,7 +431,18 @@ export default function ScriptEditor() {
         confirmText={t('editor.confirmRegenerateBtn')}
         cancelText={t('editor.cancel')}
         irreversibleWarning={t('editor.irreversibleWarning')}
-        onConfirm={() => void regenerateAllTts()}
+        onConfirm={() => void regenerateAllTts(false)}
+        extraActions={
+          <Button
+            variant="default"
+            onClick={() => {
+              setShowRegenerateConfirm(false);
+              void regenerateAllTts(true);
+            }}
+          >
+            {t('editor.regeneratePreserveRecordings')}
+          </Button>
+        }
       />
     </div>
   );

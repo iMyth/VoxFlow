@@ -1,8 +1,9 @@
-import { GripVertical, Trash2, Volume2, Loader2, AlertCircle } from 'lucide-react';
+import { GripVertical, Trash2, Volume2, Loader2, AlertCircle, Mic } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AudioPlayer from './AudioPlayer';
+import AudioRecorder from './AudioRecorder';
 import * as ipc from '../../lib/ipc';
 import { useCharacterStore } from '../../store/characterStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -122,6 +123,41 @@ export default function ScriptLineComponent({
     }
   };
 
+  const handleRemoveAudio = async () => {
+    if (!audioFragment) return;
+    try {
+      await ipc.clearAudioFragments(audioFragment.project_id);
+      // Re-fetch project to sync audio fragments
+      const store = useProjectStore.getState();
+      if (store.currentProject && store.currentProject.project.id === audioFragment.project_id) {
+        const newFrags = store.currentProject.audio_fragments.filter((a) => a.line_id !== line.id);
+        useProjectStore.setState({
+          currentProject: {
+            ...store.currentProject,
+            audio_fragments: newFrags,
+          },
+        });
+      }
+      setAudioFragment(null);
+    } catch {
+      useToastStore.getState().addToast(t('editor.clearAudioFailed'));
+    }
+  };
+
+  const handleRecordingSave = useCallback((fragment: AudioFragment) => {
+    setAudioFragment(fragment);
+    const store = useProjectStore.getState();
+    if (store.currentProject) {
+      const existing = store.currentProject.audio_fragments.filter((a) => a.line_id !== fragment.line_id);
+      useProjectStore.setState({
+        currentProject: {
+          ...store.currentProject,
+          audio_fragments: [...existing, fragment],
+        },
+      });
+    }
+  }, []);
+
   /* ---- Pointer drag on grip handle ---- */
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -219,7 +255,15 @@ export default function ScriptLineComponent({
 
             {audioFragment ? (
               <Badge variant="outline" className="text-green-600 border-green-300 gap-1">
-                {t('editor.generated')}
+                {audioFragment.source === 'recording' ? (
+                  <>
+                    <Mic className="h-3 w-3" /> {t('editor.recorded')}
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="h-3 w-3" /> {t('editor.generated')}
+                  </>
+                )}
                 {audioFragment.duration_ms != null && (
                   <span className="text-xs opacity-70">({(audioFragment.duration_ms / 1000).toFixed(1)}s)</span>
                 )}
@@ -234,6 +278,13 @@ export default function ScriptLineComponent({
               {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Volume2 className="h-3 w-3" />}
               {generating ? t('editor.generatingTts') : t('editor.generateTts')}
             </Button>
+
+            <AudioRecorder
+              lineId={line.id}
+              onSave={handleRecordingSave}
+              onRemove={handleRemoveAudio}
+              hasExistingAudio={!!audioFragment}
+            />
 
             {audioFragment && <AudioPlayer filePath={audioFragment.file_path} />}
 

@@ -14,6 +14,7 @@ interface ConfirmDialogProps {
   irreversibleWarning?: string;
   onConfirm: () => void;
   variant?: 'destructive' | 'default';
+  extraActions?: React.ReactNode;
 }
 
 export default function ConfirmDialog({
@@ -26,6 +27,7 @@ export default function ConfirmDialog({
   irreversibleWarning,
   onConfirm,
   variant = 'destructive',
+  extraActions,
 }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -42,24 +44,27 @@ export default function ConfirmDialog({
             <AlertDescription>{irreversibleWarning}</AlertDescription>
           </Alert>
         )}
-        <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => {
-              onOpenChange(false);
-            }}
-          >
-            {cancelText}
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={() => {
-              onConfirm();
-              onOpenChange(false);
-            }}
-          >
-            {confirmText}
-          </Button>
+        <DialogFooter className="flex flex-col-reverse sm:flex-row sm:justify-between gap-2">
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                onOpenChange(false);
+              }}
+            >
+              {cancelText}
+            </Button>
+            <Button
+              variant={variant}
+              onClick={() => {
+                onConfirm();
+                onOpenChange(false);
+              }}
+            >
+              {confirmText}
+            </Button>
+          </div>
+          {extraActions}
         </DialogFooter>
       </DialogContent>
     </Dialog>
