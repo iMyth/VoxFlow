@@ -86,6 +86,8 @@ pub fn run() {
             commands::save_api_key,
             commands::load_api_key,
             commands::read_audio_file,
+            commands::create_voice,
+            commands::preview_voice,
             commands::check_for_updates,
             commands::install_update,
         ])

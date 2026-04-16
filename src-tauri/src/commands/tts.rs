@@ -363,6 +363,7 @@ where
     use serde_json::json;
 
     let has_instr = instructions.map(|i| !i.trim().is_empty()).unwrap_or(false);
+    let is_vc = model.starts_with("qwen3-tts-vc");
     info!("[TTS][ws-realtime] model={}, voice={}, texts={}", model, voice_config.voice_name, texts.len());
 
     // Step 1: session.update
@@ -372,7 +373,8 @@ where
     session_obj.insert("voice".into(), json!(voice_config.voice_name));
     session_obj.insert("response_format".into(), json!("mp3"));
     session_obj.insert("sample_rate".into(), json!(24000));
-    if has_instr {
+    if has_instr && !is_vc {
+        // VC models don't support instructions
         session_obj.insert("instructions".into(), json!(instructions.unwrap()));
     }
 
@@ -381,7 +383,7 @@ where
         "session": session_obj,
     });
 
-    debug!("[TTS][ws-realtime] session.update:{}", serde_json::to_string(&session_update).unwrap_or_default());
+    debug!("[TTS][ws-realtime] session.update: {}", serde_json::to_string(&session_update).unwrap_or_default());
     ws.send(Message::Text(session_update.to_string()))
         .await
         .map_err(|e| AppError::TtsService(format!("send session.update: {}", e)))?;
@@ -550,6 +552,12 @@ pub(crate) async fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
 /// All models use WebSocket streaming.
 fn resolve_model(voice_config: &VoiceConfig, has_instructions: bool) -> String {
     let cfg = &voice_config.tts_model;
+    let voice = &voice_config.voice_name;
+
+    // Cloned voices (voice cloning) must use the VC model
+    if voice.starts_with("qwen-tts-vc-voice-") {
+        return "qwen3-tts-vc-realtime-2026-01-15".to_string();
+    }
 
     if has_instructions && cfg.starts_with("qwen") {
         if cfg.ends_with("-realtime") {
@@ -569,10 +577,14 @@ fn resolve_model(voice_config: &VoiceConfig, has_instructions: bool) -> String {
 }
 
 /// Returns true if the model should use the HTTP REST API
-/// (only non-realtime qwen models).
-/// All other models use WebSocket streaming (Qwen TTS Realtime).
+/// (only non-realtime qwen models without -realtime in the name).
+/// All other models use WebSocket streaming.
 fn is_http_model(model: &str) -> bool {
-    model.starts_with("qwen") && !model.ends_with("-realtime")
+    // VC models and other realtime models use WebSocket
+    if model.contains("-realtime") || model.contains("-vc-") {
+        return false;
+    }
+    model.starts_with("qwen")
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1067,163 @@ pub async fn clear_tts_fragments(
     }
     info!("[TTS] Cleared {} TTS audio fragments", paths.len());
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Voice Cloning (声音复刻)
+// ---------------------------------------------------------------------------
+
+/// Response from the voice enrollment API.
+#[derive(Debug, serde::Deserialize)]
+struct VoiceEnrollmentOutput {
+    output: VoiceEnrollmentResult,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VoiceEnrollmentResult {
+    voice: String,
+}
+
+/// Create a cloned voice from uploaded/recorded audio via DashScope voice enrollment API.
+#[tauri::command]
+pub async fn create_voice(
+    app: tauri::AppHandle,
+    project_id: String,
+    audio_data_base64: String,
+    preferred_name: String,
+    target_model: String,
+) -> Result<String, AppError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    info!(
+        "[VoiceClone] create_voice: project={}, name={}, model={}",
+        project_id, preferred_name, target_model
+    );
+
+    let api_key = {
+        let config = crate::core::config::ConfigManager::new(app.clone());
+        config
+            .load_api_key("dashscope")
+            .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
+            .ok_or_else(|| AppError::Config("DashScope API key not configured".into()))?
+    };
+
+    // Decode base64 audio
+    let audio_bytes = STANDARD
+        .decode(&audio_data_base64)
+        .map_err(|e| AppError::FileSystem(format!("base64 decode: {}", e)))?;
+
+    // Re-encode as data URI (the audio can be any common format: mp3, wav, webm)
+    let data_uri = format!("data:audio/mpeg;base64,{}", STANDARD.encode(&audio_bytes));
+
+    let url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization";
+    let payload = serde_json::json!({
+        "model": "qwen-voice-enrollment",
+        "input": {
+            "action": "create",
+            "target_model": target_model,
+            "preferred_name": preferred_name,
+            "audio": { "data": data_uri }
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| AppError::TtsService(format!("HTTP request failed: {}", e)))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::TtsService(format!("Read response body failed: {}", e)))?;
+
+    if !status.is_success() {
+        return Err(AppError::TtsService(format!(
+            "Voice enrollment failed ({}): {}",
+            status, body
+        )));
+    }
+
+    let output: VoiceEnrollmentOutput = serde_json::from_str(&body)
+        .map_err(|e| AppError::TtsService(format!("Parse response failed: {}, body: {}", e, body)))?;
+
+    info!("[VoiceClone] Voice created: {}", output.output.voice);
+    Ok(output.output.voice)
+}
+
+/// Preview a cloned voice by synthesizing a short test sentence via WS realtime.
+/// Returns the path to the generated preview audio file.
+#[tauri::command]
+pub async fn preview_voice(
+    app: tauri::AppHandle,
+    project_id: String,
+    voice: String,
+    target_model: String,
+) -> Result<String, AppError> {
+    info!(
+        "[VoiceClone] preview_voice: project={}, voice={}, model={}",
+        project_id, voice, target_model
+    );
+
+    let api_key = {
+        let config = crate::core::config::ConfigManager::new(app.clone());
+        config
+            .load_api_key("dashscope")
+            .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
+            .ok_or_else(|| AppError::Config("DashScope API key not configured".into()))?
+    };
+
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::FileSystem(e.to_string()))?;
+
+    let preview_dir = app_data_dir
+        .join("projects")
+        .join(&project_id)
+        .join("previews");
+    std::fs::create_dir_all(&preview_dir)
+        .map_err(|e| AppError::FileSystem(format!("mkdir previews: {}", e)))?;
+
+    let preview_id = uuid::Uuid::new_v4().to_string();
+    let file_path = preview_dir
+        .join(format!("{}.mp3", &preview_id))
+        .to_string_lossy()
+        .to_string();
+
+    // Use WS realtime to synthesize a short preview sentence
+    let voice_config = VoiceConfig {
+        voice_name: voice,
+        tts_model: target_model.clone(),
+        speed: 1.0,
+        pitch: 1.0,
+    };
+
+    let preview_text = "你好，这是我的专属声音";
+    let audio_bytes = {
+        let ws = ws_realtime_connect(&api_key, &target_model).await?;
+        let mut ws = ws;
+        ws_realtime_run_task(
+            &mut ws,
+            &[preview_text],
+            &voice_config,
+            None,
+            &target_model,
+        )
+        .await?
+    };
+
+    std::fs::write(&file_path, &audio_bytes)
+        .map_err(|e| AppError::FileSystem(format!("write preview: {}", e)))?;
+
+    info!("[VoiceClone] Preview audio saved: {}", file_path);
+    Ok(file_path)
 }
 
 #[cfg(test)]

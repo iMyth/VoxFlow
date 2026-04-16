@@ -454,6 +454,28 @@ export async function importAudio(projectId: string, lineId: string, audioDataBa
   });
 }
 
+export async function createVoice(
+  projectId: string,
+  audioDataBase64: string,
+  preferredName: string,
+  targetModel: string
+): Promise<string> {
+  return ipcCall<string>('create_voice', {
+    projectId,
+    audioDataBase64,
+    preferredName,
+    targetModel,
+  });
+}
+
+export async function previewVoice(projectId: string, voice: string, targetModel: string): Promise<string> {
+  return ipcCall<string>('preview_voice', {
+    projectId,
+    voice,
+    targetModel,
+  });
+}
+
 export function onTtsBatchProgress(callback: (progress: TtsBatchProgress) => void): Promise<UnlistenFn> {
   return listen<TtsBatchProgress>('tts-batch-progress', (event) => {
     callback(event.payload);

@@ -25,6 +25,7 @@ Thumbs.db
 *.sln
 *.sw?
 .claude
+.qoder
 skills
 /bin/
 
