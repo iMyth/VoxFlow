@@ -1,0 +1,1005 @@
+//! Database tests.
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use rusqlite::Connection;
+
+    use super::super::super::error::AppError;
+    use super::super::super::models::{
+        AudioFragment, Character, Project, ScriptLine, ScriptSection, UserSettings,
+    };
+    use super::*;
+
+    fn temp_db() -> (Database, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(&db_path).unwrap();
+        db.migrate().unwrap();
+        (db, dir)
+    }
+
+    #[test]
+    fn test_open_creates_database_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("new.db");
+        assert!(!db_path.exists());
+        let _db = Database::open(&db_path).unwrap();
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn test_foreign_keys_enabled() {
+        let (db, _dir) = temp_db();
+        let fk: bool = db
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert!(fk, "foreign_keys pragma should be ON");
+    }
+
+    #[test]
+    fn test_migrate_creates_all_tables() {
+        let (db, _dir) = temp_db();
+
+        let tables: Vec<String> = {
+            let mut stmt = db
+                .conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+
+        let expected = vec![
+            "audio_fragments",
+            "bgm_files",
+            "characters",
+            "projects",
+            "schema_migrations",
+            "script_lines",
+            "user_settings",
+        ];
+        for table in &expected {
+            assert!(
+                tables.contains(&table.to_string()),
+                "Table '{}' should exist after migration, found: {:?}",
+                table,
+                tables
+            );
+        }
+    }
+
+    #[test]
+    fn test_migrate_is_idempotent() {
+        let (db, _dir) = temp_db();
+        // Running migrate a second time should not fail
+        db.migrate().unwrap();
+    }
+
+    #[test]
+    fn test_cascade_delete_characters_on_project_delete() {
+        let (db, _dir) = temp_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO projects (id, name) VALUES ('p1', 'Test Project')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO characters (id, project_id, name, voice_name) VALUES ('c1', 'p1', 'Alice', 'en-US-1')",
+                [],
+            )
+            .unwrap();
+
+        db.conn
+            .execute("DELETE FROM projects WHERE id = 'p1'", [])
+            .unwrap();
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM characters WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "Characters should be cascade-deleted with project");
+    }
+
+    #[test]
+    fn test_cascade_delete_script_lines_on_project_delete() {
+        let (db, _dir) = temp_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO projects (id, name) VALUES ('p1', 'Test')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO script_lines (id, project_id, line_order, text) VALUES ('l1', 'p1', 1, 'Hello')",
+                [],
+            )
+            .unwrap();
+
+        db.conn
+            .execute("DELETE FROM projects WHERE id = 'p1'", [])
+            .unwrap();
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM script_lines WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_character_delete_sets_null_on_script_lines() {
+        let (db, _dir) = temp_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO projects (id, name) VALUES ('p1', 'Test')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO characters (id, project_id, name, voice_name) VALUES ('c1', 'p1', 'Alice', 'en-US-1')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO script_lines (id, project_id, line_order, text, character_id) VALUES ('l1', 'p1', 1, 'Hello', 'c1')",
+                [],
+            )
+            .unwrap();
+
+        db.conn
+            .execute("DELETE FROM characters WHERE id = 'c1'", [])
+            .unwrap();
+
+        let char_id: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT character_id FROM script_lines WHERE id = 'l1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            char_id, None,
+            "character_id should be NULL after character deletion"
+        );
+    }
+
+    #[test]
+    fn test_cascade_delete_audio_fragments_on_script_line_delete() {
+        let (db, _dir) = temp_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO projects (id, name) VALUES ('p1', 'Test')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO script_lines (id, project_id, line_order, text) VALUES ('l1', 'p1', 1, 'Hello')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO audio_fragments (id, project_id, line_id, file_path) VALUES ('a1', 'p1', 'l1', '/tmp/a.mp3')",
+                [],
+            )
+            .unwrap();
+
+        db.conn
+            .execute("DELETE FROM script_lines WHERE id = 'l1'", [])
+            .unwrap();
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audio_fragments WHERE line_id = 'l1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "Audio fragments should be cascade-deleted with script line"
+        );
+    }
+
+    // ---- Project CRUD tests ----
+
+    #[test]
+    fn test_insert_and_get_project() {
+        let (db, _dir) = temp_db();
+        let project = Project {
+            id: "p1".to_string(),
+            name: "My Audiobook".to_string(),
+            outline: String::new(),
+            created_at: "2024-01-01 00:00:00".to_string(),
+            updated_at: "2024-01-01 00:00:00".to_string(),
+        };
+        db.insert_project(&project).unwrap();
+
+        let loaded = db.get_project("p1").unwrap();
+        assert_eq!(loaded.id, "p1");
+        assert_eq!(loaded.name, "My Audiobook");
+        assert_eq!(loaded.created_at, "2024-01-01 00:00:00");
+        assert_eq!(loaded.updated_at, "2024-01-01 00:00:00");
+    }
+
+    #[test]
+    fn test_list_projects_empty() {
+        let (db, _dir) = temp_db();
+        let projects = db.list_projects().unwrap();
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn test_list_projects_returns_all() {
+        let (db, _dir) = temp_db();
+        let p1 = Project {
+            id: "p1".to_string(),
+            name: "First".to_string(),
+            outline: String::new(),
+            created_at: "2024-01-01 00:00:00".to_string(),
+            updated_at: "2024-01-01 00:00:00".to_string(),
+        };
+        let p2 = Project {
+            id: "p2".to_string(),
+            name: "Second".to_string(),
+            outline: String::new(),
+            created_at: "2024-01-02 00:00:00".to_string(),
+            updated_at: "2024-01-02 00:00:00".to_string(),
+        };
+        db.insert_project(&p1).unwrap();
+        db.insert_project(&p2).unwrap();
+
+        let projects = db.list_projects().unwrap();
+        assert_eq!(projects.len(), 2);
+        // Ordered by created_at DESC, so p2 first
+        assert_eq!(projects[0].id, "p2");
+        assert_eq!(projects[1].id, "p1");
+    }
+
+    #[test]
+    fn test_get_project_not_found() {
+        let (db, _dir) = temp_db();
+        let result = db.get_project("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_project() {
+        let (db, _dir) = temp_db();
+        let project = Project {
+            id: "p1".to_string(),
+            name: "To Delete".to_string(),
+            outline: String::new(),
+            created_at: "2024-01-01 00:00:00".to_string(),
+            updated_at: "2024-01-01 00:00:00".to_string(),
+        };
+        db.insert_project(&project).unwrap();
+        db.delete_project("p1").unwrap();
+
+        let projects = db.list_projects().unwrap();
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn test_delete_project_not_found() {
+        let (db, _dir) = temp_db();
+        let result = db.delete_project("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_project_cascades_all_related_data() {
+        let (db, _dir) = temp_db();
+
+        // Create project with characters, script lines, and audio fragments
+        let project = Project {
+            id: "p1".to_string(),
+            name: "Cascade Test".to_string(),
+            outline: String::new(),
+            created_at: "2024-01-01 00:00:00".to_string(),
+            updated_at: "2024-01-01 00:00:00".to_string(),
+        };
+        db.insert_project(&project).unwrap();
+
+        db.conn
+            .execute(
+                "INSERT INTO characters (id, project_id, name, voice_name) VALUES ('c1', 'p1', 'Alice', 'en-US-1')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO script_lines (id, project_id, line_order, text, character_id) VALUES ('l1', 'p1', 1, 'Hello', 'c1')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO audio_fragments (id, project_id, line_id, file_path) VALUES ('a1', 'p1', 'l1', '/tmp/a.mp3')",
+                [],
+            )
+            .unwrap();
+
+        db.delete_project("p1").unwrap();
+
+        // Verify all related data is gone
+        let char_count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM characters", [], |row| row.get(0))
+            .unwrap();
+        let line_count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM script_lines", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let audio_count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM audio_fragments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(char_count, 0, "Characters should be cascade-deleted");
+        assert_eq!(line_count, 0, "Script lines should be cascade-deleted");
+        assert_eq!(
+            audio_count, 0,
+            "Audio fragments should be cascade-deleted"
+        );
+    }
+
+    // ---- Character CRUD tests ----
+
+    fn make_character(id: &str, project_id: &str, name: &str, tts_model: &str) -> Character {
+        Character {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            name: name.to_string(),
+            tts_model: tts_model.to_string(),
+            voice_name: "en-US-AriaNeural".to_string(),
+            speed: 1.0,
+            pitch: 1.0,
+        }
+    }
+
+    fn setup_project(db: &Database, id: &str) {
+        let project = Project {
+            id: id.to_string(),
+            name: "Test Project".to_string(),
+            outline: String::new(),
+            created_at: "2024-01-01 00:00:00".to_string(),
+            updated_at: "2024-01-01 00:00:00".to_string(),
+        };
+        db.insert_project(&project).unwrap();
+    }
+
+    #[test]
+    fn test_insert_and_list_characters() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c1 = make_character("c1", "p1", "Alice", "qwen3-tts-flash");
+        let c2 = make_character("c2", "p1", "Bob", "cosyvoice-v3-flash");
+        db.insert_character(&c1).unwrap();
+        db.insert_character(&c2).unwrap();
+
+        let chars = db.list_characters("p1").unwrap();
+        assert_eq!(chars.len(), 2);
+
+        let names: Vec<&str> = chars.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"Alice"));
+        assert!(names.contains(&"Bob"));
+    }
+
+    #[test]
+    fn test_list_characters_empty() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let chars = db.list_characters("p1").unwrap();
+        assert!(chars.is_empty());
+    }
+
+    #[test]
+    fn test_list_characters_filters_by_project() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+        setup_project(&db, "p2");
+
+        let c1 = make_character("c1", "p1", "Alice", "qwen3-tts-flash");
+        let c2 = make_character("c2", "p2", "Bob", "cosyvoice-v3-flash");
+        db.insert_character(&c1).unwrap();
+        db.insert_character(&c2).unwrap();
+
+        let p1_chars = db.list_characters("p1").unwrap();
+        assert_eq!(p1_chars.len(), 1);
+        assert_eq!(p1_chars[0].name, "Alice");
+
+        let p2_chars = db.list_characters("p2").unwrap();
+        assert_eq!(p2_chars.len(), 1);
+        assert_eq!(p2_chars[0].name, "Bob");
+    }
+
+    #[test]
+    fn test_insert_character_preserves_fields() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c = Character {
+            id: "c1".to_string(),
+            project_id: "p1".to_string(),
+            name: "Narrator".to_string(),
+            tts_model: "cosyvoice-v3-flash".to_string(),
+            voice_name: "zh-CN-XiaoxiaoNeural".to_string(),
+            speed: 1.5,
+            pitch: 0.8,
+        };
+        db.insert_character(&c).unwrap();
+
+        let chars = db.list_characters("p1").unwrap();
+        assert_eq!(chars.len(), 1);
+        let loaded = &chars[0];
+        assert_eq!(loaded.id, "c1");
+        assert_eq!(loaded.project_id, "p1");
+        assert_eq!(loaded.name, "Narrator");
+        assert_eq!(loaded.tts_model, "cosyvoice-v3-flash");
+        assert_eq!(loaded.voice_name, "zh-CN-XiaoxiaoNeural");
+        assert!((loaded.speed - 1.5).abs() < f32::EPSILON);
+        assert!((loaded.pitch - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_update_character() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c = make_character("c1", "p1", "Alice", "qwen3-tts-flash");
+        db.insert_character(&c).unwrap();
+
+        let updated = Character {
+            id: "c1".to_string(),
+            project_id: "p1".to_string(),
+            name: "Alice Updated".to_string(),
+            tts_model: "cosyvoice-v3-flash".to_string(),
+            voice_name: "zh-CN-YunxiNeural".to_string(),
+            speed: 2.0,
+            pitch: 0.5,
+        };
+        db.update_character(&updated).unwrap();
+
+        let chars = db.list_characters("p1").unwrap();
+        assert_eq!(chars.len(), 1);
+        let loaded = &chars[0];
+        assert_eq!(loaded.name, "Alice Updated");
+        assert_eq!(loaded.tts_model, "cosyvoice-v3-flash");
+        assert_eq!(loaded.voice_name, "zh-CN-YunxiNeural");
+        assert!((loaded.speed - 2.0).abs() < f32::EPSILON);
+        assert!((loaded.pitch - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_update_character_not_found() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c = make_character("nonexistent", "p1", "Ghost", "qwen3-tts-flash");
+        let result = db.update_character(&c);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_character() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c = make_character("c1", "p1", "Alice", "qwen3-tts-flash");
+        db.insert_character(&c).unwrap();
+        db.delete_character("c1").unwrap();
+
+        let chars = db.list_characters("p1").unwrap();
+        assert!(chars.is_empty());
+    }
+
+    #[test]
+    fn test_delete_character_not_found() {
+        let (db, _dir) = temp_db();
+        let result = db.delete_character("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_character_sets_null_on_script_lines_via_crud() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c = make_character("c1", "p1", "Alice", "qwen3-tts-flash");
+        db.insert_character(&c).unwrap();
+
+        // Insert a script line referencing this character
+        db.conn
+            .execute(
+                "INSERT INTO script_lines (id, project_id, line_order, text, character_id) VALUES ('l1', 'p1', 1, 'Hello world', 'c1')",
+                [],
+            )
+            .unwrap();
+
+        db.delete_character("c1").unwrap();
+
+        let char_id: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT character_id FROM script_lines WHERE id = 'l1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            char_id, None,
+            "character_id should be NULL after character deletion"
+        );
+    }
+
+    #[test]
+    fn test_insert_character_tts_model_roundtrip() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c = make_character("c1", "p1", "Narrator", "cosyvoice-v3-flash");
+        db.insert_character(&c).unwrap();
+
+        let chars = db.list_characters("p1").unwrap();
+        assert_eq!(chars[0].tts_model, "cosyvoice-v3-flash");
+    }
+
+    // ---- Script Line tests ----
+
+    fn make_script_line(
+        id: &str,
+        project_id: &str,
+        order: i32,
+        text: &str,
+        character_id: Option<&str>,
+    ) -> ScriptLine {
+        ScriptLine {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            line_order: order,
+            text: text.to_string(),
+            character_id: character_id.map(|s| s.to_string()),
+            gap_after_ms: 500,
+            instructions: String::new(),
+            section_id: None,
+        }
+    }
+
+    #[test]
+    fn test_save_and_load_script_roundtrip() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let lines = vec![
+            make_script_line("l1", "p1", 0, "Hello world", None),
+            make_script_line("l2", "p1", 1, "How are you?", None),
+            make_script_line("l3", "p1", 2, "Goodbye!", None),
+        ];
+
+        db.save_script("p1", &lines, &[]).unwrap();
+        let loaded = db.load_script("p1").unwrap();
+
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(loaded, lines);
+    }
+
+    #[test]
+    fn test_load_script_empty() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let loaded = db.load_script("p1").unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_save_script_replaces_existing() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let original = vec![
+            make_script_line("l1", "p1", 0, "Original line 1", None),
+            make_script_line("l2", "p1", 1, "Original line 2", None),
+        ];
+        db.save_script("p1", &original, &[]).unwrap();
+
+        let replacement = vec![make_script_line("l3", "p1", 0, "New line 1", None)];
+        db.save_script("p1", &replacement, &[]).unwrap();
+
+        let loaded = db.load_script("p1").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "l3");
+        assert_eq!(loaded[0].text, "New line 1");
+    }
+
+    #[test]
+    fn test_load_script_ordered_by_line_order() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        // Insert out of order
+        let lines = vec![
+            make_script_line("l3", "p1", 2, "Third", None),
+            make_script_line("l1", "p1", 0, "First", None),
+            make_script_line("l2", "p1", 1, "Second", None),
+        ];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        let loaded = db.load_script("p1").unwrap();
+        assert_eq!(loaded[0].text, "First");
+        assert_eq!(loaded[1].text, "Second");
+        assert_eq!(loaded[2].text, "Third");
+    }
+
+    #[test]
+    fn test_save_script_with_character_id() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let c = make_character("c1", "p1", "Alice", "qwen3-tts-flash");
+        db.insert_character(&c).unwrap();
+
+        let lines = vec![
+            make_script_line("l1", "p1", 0, "Hello", Some("c1")),
+            make_script_line("l2", "p1", 1, "World", None),
+        ];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        let loaded = db.load_script("p1").unwrap();
+        assert_eq!(loaded[0].character_id, Some("c1".to_string()));
+        assert_eq!(loaded[1].character_id, None);
+    }
+
+    #[test]
+    fn test_save_script_empty_clears_all() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let lines = vec![make_script_line("l1", "p1", 0, "Hello", None)];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        // Save empty list should clear all lines
+        db.save_script("p1", &[], &[]).unwrap();
+        let loaded = db.load_script("p1").unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_load_script_filters_by_project() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+        setup_project(&db, "p2");
+
+        let lines_p1 = vec![make_script_line("l1", "p1", 0, "Project 1 line", None)];
+        let lines_p2 = vec![make_script_line("l2", "p2", 0, "Project 2 line", None)];
+        db.save_script("p1", &lines_p1, &[]).unwrap();
+        db.save_script("p2", &lines_p2, &[]).unwrap();
+
+        let loaded_p1 = db.load_script("p1").unwrap();
+        assert_eq!(loaded_p1.len(), 1);
+        assert_eq!(loaded_p1[0].text, "Project 1 line");
+
+        let loaded_p2 = db.load_script("p2").unwrap();
+        assert_eq!(loaded_p2.len(), 1);
+        assert_eq!(loaded_p2[0].text, "Project 2 line");
+    }
+
+    // ---- Audio Fragment tests ----
+
+    fn make_audio_fragment(
+        id: &str,
+        project_id: &str,
+        line_id: &str,
+        file_path: &str,
+        duration_ms: Option<i64>,
+    ) -> AudioFragment {
+        AudioFragment {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            line_id: line_id.to_string(),
+            file_path: file_path.to_string(),
+            duration_ms,
+            source: "tts".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_upsert_audio_fragment_insert() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+        let lines = vec![make_script_line("l1", "p1", 0, "Hello", None)];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        let frag = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(3000));
+        db.upsert_audio_fragment(&frag).unwrap();
+
+        let fragments = db.list_audio_fragments("p1").unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].id, "a1");
+        assert_eq!(fragments[0].line_id, "l1");
+        assert_eq!(fragments[0].file_path, "/audio/l1.mp3");
+        assert_eq!(fragments[0].duration_ms, Some(3000));
+    }
+
+    #[test]
+    fn test_upsert_audio_fragment_replaces_existing_for_same_line() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+        let lines = vec![make_script_line("l1", "p1", 0, "Hello", None)];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1_old.mp3", Some(2000));
+        db.upsert_audio_fragment(&frag1).unwrap();
+
+        let frag2 = make_audio_fragment("a2", "p1", "l1", "/audio/l1_new.mp3", Some(4000));
+        db.upsert_audio_fragment(&frag2).unwrap();
+
+        let fragments = db.list_audio_fragments("p1").unwrap();
+        assert_eq!(
+            fragments.len(), 1,
+            "Should only have one fragment per line_id after upsert"
+        );
+        assert_eq!(fragments[0].id, "a2");
+        assert_eq!(fragments[0].file_path, "/audio/l1_new.mp3");
+        assert_eq!(fragments[0].duration_ms, Some(4000));
+    }
+
+    #[test]
+    fn test_upsert_audio_fragment_different_lines() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+        let lines = vec![
+            make_script_line("l1", "p1", 0, "Hello", None),
+            make_script_line("l2", "p1", 1, "World", None),
+        ];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(1000));
+        let frag2 = make_audio_fragment("a2", "p1", "l2", "/audio/l2.mp3", Some(2000));
+        db.upsert_audio_fragment(&frag1).unwrap();
+        db.upsert_audio_fragment(&frag2).unwrap();
+
+        let fragments = db.list_audio_fragments("p1").unwrap();
+        assert_eq!(fragments.len(), 2);
+    }
+
+    #[test]
+    fn test_upsert_audio_fragment_with_no_duration() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+        let lines = vec![make_script_line("l1", "p1", 0, "Hello", None)];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        let frag = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", None);
+        db.upsert_audio_fragment(&frag).unwrap();
+
+        let fragments = db.list_audio_fragments("p1").unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].duration_ms, None);
+    }
+
+    #[test]
+    fn test_list_audio_fragments_empty() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let fragments = db.list_audio_fragments("p1").unwrap();
+        assert!(fragments.is_empty());
+    }
+
+    #[test]
+    fn test_list_audio_fragments_filters_by_project() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+        setup_project(&db, "p2");
+
+        let lines_p1 = vec![make_script_line("l1", "p1", 0, "Hello", None)];
+        let lines_p2 = vec![make_script_line("l2", "p2", 0, "World", None)];
+        db.save_script("p1", &lines_p1, &[]).unwrap();
+        db.save_script("p2", &lines_p2, &[]).unwrap();
+
+        let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(1000));
+        let frag2 = make_audio_fragment("a2", "p2", "l2", "/audio/l2.mp3", Some(2000));
+        db.upsert_audio_fragment(&frag1).unwrap();
+        db.upsert_audio_fragment(&frag2).unwrap();
+
+        let p1_frags = db.list_audio_fragments("p1").unwrap();
+        assert_eq!(p1_frags.len(), 1);
+        assert_eq!(p1_frags[0].id, "a1");
+
+        let p2_frags = db.list_audio_fragments("p2").unwrap();
+        assert_eq!(p2_frags.len(), 1);
+        assert_eq!(p2_frags[0].id, "a2");
+    }
+
+    // ---- User Settings tests ----
+
+    fn default_settings() -> UserSettings {
+        UserSettings {
+            llm_endpoint: "https://api.openai.com/v1".to_string(),
+            llm_model: "gpt-4".to_string(),
+            default_tts_model: "qwen3-tts-flash".to_string(),
+            default_voice_name: "Cherry".to_string(),
+            default_speed: 1.0,
+            default_pitch: 1.0,
+            enable_thinking: true,
+        }
+    }
+
+    #[test]
+    fn test_load_settings_returns_defaults_when_empty() {
+        let (db, _dir) = temp_db();
+        let settings = db.load_settings().unwrap();
+
+        assert_eq!(settings.llm_endpoint, "https://api.openai.com/v1");
+        assert_eq!(settings.llm_model, "gpt-4");
+        assert_eq!(settings.default_tts_model, "qwen3-tts-flash");
+        assert_eq!(settings.default_voice_name, "Cherry");
+        assert!((settings.default_speed - 1.0).abs() < f32::EPSILON);
+        assert!((settings.default_pitch - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_save_and_load_settings_roundtrip() {
+        let (db, _dir) = temp_db();
+        let settings = UserSettings {
+            llm_endpoint: "https://custom.api.com/v1".to_string(),
+            llm_model: "gpt-3.5-turbo".to_string(),
+            default_tts_model: "cosyvoice-v3-flash".to_string(),
+            default_voice_name: "en-US-AriaNeural".to_string(),
+            default_speed: 1.5,
+            default_pitch: 0.8,
+            enable_thinking: false,
+        };
+
+        db.save_settings(&settings).unwrap();
+        let loaded = db.load_settings().unwrap();
+
+        assert_eq!(loaded.llm_endpoint, "https://custom.api.com/v1");
+        assert_eq!(loaded.llm_model, "gpt-3.5-turbo");
+        assert_eq!(loaded.default_tts_model, "cosyvoice-v3-flash");
+        assert_eq!(loaded.default_voice_name, "en-US-AriaNeural");
+        assert!((loaded.default_speed - 1.5).abs() < f32::EPSILON);
+        assert!((loaded.default_pitch - 0.8).abs() < f32::EPSILON);
+        assert!(!loaded.enable_thinking);
+    }
+
+    #[test]
+    fn test_save_settings_overwrites_previous() {
+        let (db, _dir) = temp_db();
+
+        let first = default_settings();
+        db.save_settings(&first).unwrap();
+
+        let second = UserSettings {
+            llm_endpoint: "https://other.api.com".to_string(),
+            llm_model: "claude-3".to_string(),
+            default_tts_model: "cosyvoice-v3-flash".to_string(),
+            default_voice_name: "ja-JP-NanamiNeural".to_string(),
+            default_speed: 2.0,
+            default_pitch: 0.5,
+            enable_thinking: true,
+        };
+        db.save_settings(&second).unwrap();
+
+        let loaded = db.load_settings().unwrap();
+        assert_eq!(loaded.llm_endpoint, "https://other.api.com");
+        assert_eq!(loaded.llm_model, "claude-3");
+        assert_eq!(loaded.default_tts_model, "cosyvoice-v3-flash");
+        assert_eq!(loaded.default_voice_name, "ja-JP-NanamiNeural");
+        assert!((loaded.default_speed - 2.0).abs() < f32::EPSILON);
+        assert!((loaded.default_pitch - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_save_settings_preserves_default_values() {
+        let (db, _dir) = temp_db();
+
+        let settings = default_settings();
+        db.save_settings(&settings).unwrap();
+        let loaded = db.load_settings().unwrap();
+
+        assert_eq!(loaded.llm_endpoint, settings.llm_endpoint);
+        assert_eq!(loaded.llm_model, settings.llm_model);
+        assert_eq!(loaded.default_voice_name, settings.default_voice_name);
+        assert!(
+            (loaded.default_speed - settings.default_speed).abs() < f32::EPSILON
+        );
+        assert!(
+            (loaded.default_pitch - settings.default_pitch).abs() < f32::EPSILON
+        );
+    }
+
+    // ---- load_project aggregate test ----
+
+    #[test]
+    fn test_load_project_aggregates_all_data() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        // Insert characters
+        let c1 = make_character("c1", "p1", "Alice", "qwen3-tts-flash");
+        let c2 = make_character("c2", "p1", "Bob", "cosyvoice-v3-flash");
+        db.insert_character(&c1).unwrap();
+        db.insert_character(&c2).unwrap();
+
+        // Insert script lines
+        let lines = vec![
+            make_script_line("l1", "p1", 0, "Hello from Alice", Some("c1")),
+            make_script_line("l2", "p1", 1, "Hello from Bob", Some("c2")),
+            make_script_line("l3", "p1", 2, "Narrator line", None),
+        ];
+        db.save_script("p1", &lines, &[]).unwrap();
+
+        // Insert audio fragments
+        let frag1 = make_audio_fragment("a1", "p1", "l1", "/audio/l1.mp3", Some(3000));
+        let frag2 = make_audio_fragment("a2", "p1", "l2", "/audio/l2.mp3", Some(2500));
+        db.upsert_audio_fragment(&frag1).unwrap();
+        db.upsert_audio_fragment(&frag2).unwrap();
+
+        // Load the complete project
+        let detail = db.load_project("p1").unwrap();
+
+        assert_eq!(detail.project.id, "p1");
+        assert_eq!(detail.characters.len(), 2);
+        assert_eq!(detail.script_lines.len(), 3);
+        assert_eq!(detail.audio_fragments.len(), 2);
+
+        // Verify script lines are ordered
+        assert_eq!(detail.script_lines[0].text, "Hello from Alice");
+        assert_eq!(detail.script_lines[1].text, "Hello from Bob");
+        assert_eq!(detail.script_lines[2].text, "Narrator line");
+    }
+
+    #[test]
+    fn test_load_project_empty_associations() {
+        let (db, _dir) = temp_db();
+        setup_project(&db, "p1");
+
+        let detail = db.load_project("p1").unwrap();
+
+        assert_eq!(detail.project.id, "p1");
+        assert!(detail.characters.is_empty());
+        assert!(detail.script_lines.is_empty());
+        assert!(detail.audio_fragments.is_empty());
+    }
+
+    #[test]
+    fn test_load_project_not_found() {
+        let (db, _dir) = temp_db();
+        let result = db.load_project("nonexistent");
+        assert!(result.is_err());
+    }
+}
