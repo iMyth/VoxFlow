@@ -214,17 +214,15 @@ export default function ScriptLineComponent({
             }}
             placeholder={t('editor.linePlaceholder')}
           />
-          {line.instructions && (
-            <input
-              type="text"
-              className="w-full rounded-md border border-purple-300/50 bg-purple-50/30 dark:bg-purple-900/10 px-3 py-1.5 text-xs text-purple-700 dark:text-purple-300 placeholder:text-purple-400/80 dark:placeholder:text-purple-300/70 focus-visible:border-purple-500 focus-visible:ring-2 focus-visible:ring-purple-500/30 outline-none"
-              value={line.instructions}
-              onChange={(e) => {
-                setInstructions(line.id, e.target.value);
-              }}
-              placeholder={t('editor.instructionsPlaceholder')}
-            />
-          )}
+          <input
+            type="text"
+            className="w-full rounded-md border border-purple-300/50 bg-purple-50/30 dark:bg-purple-900/10 px-3 py-1.5 text-xs text-purple-700 dark:text-purple-300 placeholder:text-purple-400/80 dark:placeholder:text-purple-300/70 focus-visible:border-purple-500 focus-visible:ring-2 focus-visible:ring-purple-500/30 outline-none"
+            value={line.instructions}
+            onChange={(e) => {
+              setInstructions(line.id, e.target.value);
+            }}
+            placeholder={t('editor.instructionsPlaceholder')}
+          />
           <div className="flex items-center gap-3 flex-wrap">
             <Select
               value={line.character_id ?? UNASSIGNED}

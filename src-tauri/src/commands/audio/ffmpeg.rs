@@ -94,20 +94,37 @@ pub fn build_ffmpeg_args(
     args
 }
 
-/// Find ffmpeg binary — check common macOS Homebrew paths if not in PATH.
+/// Find ffmpeg binary — check common macOS paths first, then fall back to shell resolution.
+///
+/// Tauri apps do not inherit the user's shell PATH (e.g. /opt/homebrew/bin is missing),
+/// so we must probe known absolute locations before trying a shell `which` lookup.
 pub fn find_ffmpeg() -> String {
+    // 1. Check well-known absolute paths (covers Homebrew Apple Silicon, Intel, MacPorts)
     let candidates = [
-        "ffmpeg",
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
+        "/opt/homebrew/bin/ffmpeg", // Homebrew on Apple Silicon (M1/M2/M3)
+        "/usr/local/bin/ffmpeg",    // Homebrew on Intel Mac
+        "/opt/local/bin/ffmpeg",    // MacPorts
+        "/usr/bin/ffmpeg",          // System / manual install
     ];
     for candidate in &candidates {
-        if std::path::Path::new(candidate).exists() || candidate == &"ffmpeg" {
-            // "ffmpeg" without path will be resolved by the OS via PATH
-            if candidate != &"ffmpeg" {
-                return candidate.to_string();
+        if std::path::Path::new(candidate).exists() {
+            return candidate.to_string();
+        }
+    }
+
+    // 2. Ask the shell — inherits the user's full PATH (including Homebrew shims, nix, etc.)
+    if let Ok(output) = std::process::Command::new("/bin/sh")
+        .args(["-c", "which ffmpeg"])
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
             }
         }
     }
+
+    // 3. Last resort — let the OS try via whatever PATH it does have
     "ffmpeg".to_string()
 }
