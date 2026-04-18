@@ -149,6 +149,24 @@ export default function CharacterPanel() {
 
   const handleSave = async () => {
     if (!form.name.trim()) return;
+
+    // In cloning mode, the voice_name and tts_model are derived from the cloned
+    // voice — not from the form fields (which are hidden in this mode).
+    if (vcMode === 'cloning') {
+      if (!vcVoiceId) {
+        useToastStore.getState().addToast(t('character.vcVoiceRequired'));
+        return;
+      }
+      const cloneForm = { ...form, voice_name: vcVoiceId, tts_model: VC_TTS_MODEL };
+      if (isCreating) {
+        await createCharacter(cloneForm);
+      } else if (editing) {
+        await updateCharacter(editing, cloneForm);
+      }
+      cancel();
+      return;
+    }
+
     if (isCreating) {
       await createCharacter(form);
     } else if (editing) {
@@ -185,23 +203,20 @@ export default function CharacterPanel() {
           clearInterval(vcTimerRef.current);
           vcTimerRef.current = null;
         }
-        // Convert to base64
-        const blob = new Blob(vcChunksRef.current);
-        blob
-          .arrayBuffer()
-          .then((buf) => {
-            const uint8 = new Uint8Array(buf);
-            let b64 = '';
-            const chunkSize = 8192;
-            for (let i = 0; i < uint8.length; i += chunkSize) {
-              b64 += String.fromCharCode(...uint8.subarray(i, i + chunkSize));
-            }
-            setVcAudioBase64(btoa(b64));
-            setVcAudioDuration(Math.floor((Date.now() - vcStartTimeRef.current) / 1000));
-          })
-          .catch(() => {
-            useToastStore.getState().addToast(t('character.vcProcessingFailed'));
-          });
+        // Preserve recorder MIME type so the data URI has the correct format
+        const mimeType = recorder.mimeType || 'audio/webm';
+        const blob = new Blob(vcChunksRef.current, { type: mimeType });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          // Store the full data URL (including MIME type prefix) so the backend
+          // can use the correct Content-Type when sending to the API
+          setVcAudioBase64(reader.result as string);
+          setVcAudioDuration(Math.floor((Date.now() - vcStartTimeRef.current) / 1000));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().addToast(t('character.vcProcessingFailed'));
+        };
+        reader.readAsDataURL(blob);
       };
 
       recorder.start(100);
@@ -225,20 +240,23 @@ export default function CharacterPanel() {
   }, []);
 
   const handleVcFileUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
+    (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const arrayBuffer = await file.arrayBuffer();
-        const uint8 = new Uint8Array(arrayBuffer);
-        let b64 = '';
-        const chunkSize = 8192;
-        for (let i = 0; i < uint8.length; i += chunkSize) {
-          b64 += String.fromCharCode(...uint8.subarray(i, i + chunkSize));
-        }
-        setVcAudioBase64(btoa(b64));
-        // Estimate duration from file size (rough: ~12KB/s for speech audio)
-        setVcAudioDuration(Math.max(1, Math.round(file.size / 12000)));
+        // Use FileReader for reliable base64 encoding
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          // Store the full data URL (including MIME type prefix) so the backend
+          // receives the correct format information
+          setVcAudioBase64(reader.result as string);
+          // Estimate duration from file size (rough: ~12KB/s for speech audio)
+          setVcAudioDuration(Math.max(1, Math.round(file.size / 12000)));
+        };
+        reader.onerror = () => {
+          useToastStore.getState().addToast(t('character.vcFileUploadFailed'));
+        };
+        reader.readAsDataURL(file);
       } catch {
         useToastStore.getState().addToast(t('character.vcFileUploadFailed'));
       }
@@ -252,6 +270,11 @@ export default function CharacterPanel() {
     if (!vcAudioBase64 || !currentProject) return;
     // Generate a valid preferred_name: alphanumeric only, max 20 chars
     const sanitizedName = (form.name || 'voice').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20) || 'voice';
+
+    // Debug logging
+    console.log('[VoiceClone] Frontend - base64 length:', vcAudioBase64.length);
+    console.log('[VoiceClone] Frontend - base64 preview:', vcAudioBase64.substring(0, 100) + '...');
+
     setVcCreating(true);
     try {
       const voiceId = await ipc.createVoice(currentProject.project.id, vcAudioBase64, sanitizedName, VC_TTS_MODEL);
@@ -295,14 +318,6 @@ export default function CharacterPanel() {
       }
     }
   }, [vcPreviewPath, vcPlayingPreview, t]);
-
-  const applyVoiceToForm = useCallback(
-    (voiceId: string) => {
-      setForm({ ...form, voice_name: voiceId, tts_model: VC_TTS_MODEL });
-      useToastStore.getState().addToast(t('character.vcApplied'), 'success');
-    },
-    [form, t]
-  );
 
   const formatVcTime = (s: number) => {
     const m = Math.floor(s / 60);
@@ -418,10 +433,11 @@ export default function CharacterPanel() {
             {/* Voice ID & Preview */}
             {vcVoiceId && (
               <div className="space-y-2">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <Badge variant="secondary" className="font-mono text-xs">
                     {vcVoiceId.slice(0, 16)}...
                   </Badge>
+                  <span className="text-xs text-muted-foreground">{t('character.vcWillSave')}</span>
                 </div>
                 <div className="flex gap-2">
                   <Button size="xs" onClick={() => void handleVcPreview()} disabled={vcPreviewing}>
@@ -434,15 +450,6 @@ export default function CharacterPanel() {
                       {vcPlayingPreview ? t('editor.pause') : t('editor.play')}
                     </Button>
                   )}
-                  <Button
-                    size="xs"
-                    variant="default"
-                    onClick={() => {
-                      applyVoiceToForm(vcVoiceId);
-                    }}
-                  >
-                    {t('character.vcApply')}
-                  </Button>
                 </div>
               </div>
             )}

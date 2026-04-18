@@ -1,82 +1,6 @@
 use std::sync::mpsc;
 
-use rodio::Source;
-use std::io::Read;
 use tauri::Emitter;
-
-/// A custom rodio Source that reads raw PCM s16le data from a pipe (FFmpeg stdout).
-struct PcmSource<R: Read> {
-    reader: R,
-    sample_rate: u32,
-    channels: u16,
-    // Two-sample buffer for stereo interleaving
-    pending: Option<i16>,
-}
-
-impl<R: Read> PcmSource<R> {
-    fn new(reader: R, sample_rate: u32, channels: u16) -> Self {
-        Self {
-            reader,
-            sample_rate,
-            channels,
-            pending: None,
-        }
-    }
-}
-
-impl<R: Read> Iterator for PcmSource<R> {
-    type Item = i16;
-
-    fn next(&mut self) -> Option<i16> {
-        if self.channels == 1 {
-            let mut buf = [0u8; 2];
-            match self.reader.read_exact(&mut buf) {
-                Ok(()) => Some(i16::from_le_bytes(buf)),
-                Err(_) => None,
-            }
-        } else {
-            // Stereo: interleave left/right samples
-            if let Some(sample) = self.pending.take() {
-                return Some(sample);
-            }
-            let mut buf = [0u8; 2];
-            match self.reader.read_exact(&mut buf) {
-                Ok(()) => {
-                    let left = i16::from_le_bytes(buf);
-                    // Read right channel
-                    match self.reader.read_exact(&mut buf) {
-                        Ok(()) => {
-                            let right = i16::from_le_bytes(buf);
-                            self.pending = Some(right);
-                            Some(left)
-                        }
-                        Err(_) => Some(left),
-                    }
-                }
-                Err(_) => None,
-            }
-        }
-    }
-}
-
-impl<R: Read> Source for PcmSource<R> {
-    fn current_frame_len(&self) -> Option<usize> {
-        // Unknown length for a pipe
-        None
-    }
-
-    fn channels(&self) -> u16 {
-        self.channels
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    fn total_duration(&self) -> Option<std::time::Duration> {
-        None
-    }
-}
 
 enum AudioCommand {
     Play(String, mpsc::Sender<Result<(), String>>, Option<tauri::AppHandle>),
@@ -102,7 +26,6 @@ impl AudioPlayer {
         std::thread::spawn(move || {
             let mut current_sink: Option<std::sync::Arc<rodio::Sink>> = None;
             let mut current_stream: Option<rodio::OutputStream> = None;
-            let mut current_child: Option<std::process::Child> = None;
 
             while let Ok(cmd) = rx.recv() {
                 match cmd {
@@ -112,62 +35,35 @@ impl AudioPlayer {
                             sink.stop();
                         }
                         current_stream.take();
-                        if let Some(mut child) = current_child.take() {
-                            let _ = child.kill();
-                        }
 
-                        let result = (|| -> Result<(std::sync::Arc<rodio::Sink>, std::process::Child), String> {
+                        let result = (|| -> Result<std::sync::Arc<rodio::Sink>, String> {
                             let (stream, stream_handle) =
                                 rodio::OutputStream::try_default()
-                                    .map_err(|e| format!("Failed to open default audio output: {}", e))?;
+                                    .map_err(|e| format!("Failed to open audio output: {}", e))?;
 
                             let sink = rodio::Sink::try_new(&stream_handle)
                                 .map_err(|e| format!("Failed to create audio sink: {}", e))?;
 
-                            // Use FFmpeg to decode any audio format to raw PCM (16-bit signed LE, 44100Hz, stereo)
-                            // then pipe it to rodio for playback. This handles WAV, FLAC, AAC, etc.
-                            let ffmpeg_bin = super::ffmpeg::find_ffmpeg();
-                            let mut child = std::process::Command::new(&ffmpeg_bin)
-                                .args([
-                                    "-i", &path,
-                                    "-f", "s16le",
-                                    "-acodec", "pcm_s16le",
-                                    "-ar", "44100",
-                                    "-ac", "2",
-                                    "-",
-                                ])
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::null())
-                                .spawn()
-                                .map_err(|e| {
-                                    if e.kind() == std::io::ErrorKind::NotFound {
-                                        "FFmpeg not found".to_string()
-                                    } else {
-                                        format!("Failed to start FFmpeg: {}", e)
-                                    }
-                                })?;
-
-                            let stdout = child.stdout.take()
-                                .ok_or("FFmpeg has no stdout")?;
-
-                            // Raw PCM source: 44100Hz, 16-bit signed LE, stereo
-                            let source = PcmSource::new(std::io::BufReader::new(stdout), 44100, 2);
+                            // Use rodio's built-in decoder (via symphonia) — no FFmpeg needed.
+                            // Supports MP3, WAV, OGG, FLAC, AAC, M4A out of the box.
+                            let file = std::fs::File::open(&path)
+                                .map_err(|e| format!("Failed to open audio file '{}': {}", path, e))?;
+                            let source = rodio::Decoder::new(std::io::BufReader::new(file))
+                                .map_err(|e| format!("Failed to decode audio: {}", e))?;
 
                             sink.append(source);
                             let sink = std::sync::Arc::new(sink);
                             current_stream = Some(stream);
-                            Ok((sink, child))
+                            Ok(sink)
                         })();
 
                         match result {
-                            Ok((sink, child)) => {
+                            Ok(sink) => {
                                 current_sink = Some(sink.clone());
-                                current_child = Some(child);
                                 let _ = reply.send(Ok(()));
 
                                 // Spawn a watcher thread that emits audio-finished when done
-                                if let Some(app) = app_handle.clone() {
+                                if let Some(app) = app_handle {
                                     let path = path.clone();
                                     std::thread::spawn(move || {
                                         sink.sleep_until_end();
@@ -185,9 +81,6 @@ impl AudioPlayer {
                             sink.stop();
                         }
                         current_stream.take();
-                        if let Some(mut child) = current_child.take() {
-                            let _ = child.kill();
-                        }
                     }
                     AudioCommand::SetVolume(vol) => {
                         if let Some(ref sink) = current_sink {
@@ -252,3 +145,4 @@ pub fn set_audio_volume(
     state.set_volume(volume);
     Ok(())
 }
+

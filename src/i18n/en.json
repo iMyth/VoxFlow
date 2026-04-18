@@ -182,7 +182,9 @@
     "vcFileUploadFailed": "Failed to read audio file",
     "vcProcessingFailed": "Failed to process recorded audio",
     "vcModelLocked": "TTS model is locked for cloned voice",
-    "vcVoiceLocked": "Voice is locked for cloned voice"
+    "vcVoiceLocked": "Voice is locked for cloned voice",
+    "vcVoiceRequired": "Please generate a cloned voice before saving",
+    "vcWillSave": "This voice will be applied on save"
   },
   "export": {
     "title": "Export Audiobook",

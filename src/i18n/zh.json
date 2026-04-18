@@ -182,7 +182,9 @@
     "vcFileUploadFailed": "音频文件读取失败",
     "vcProcessingFailed": "处理录音失败",
     "vcModelLocked": "复刻音色已锁定 TTS 模型",
-    "vcVoiceLocked": "复刻音色已锁定音色值"
+    "vcVoiceLocked": "复刻音色已锁定音色值",
+    "vcVoiceRequired": "请先生成复刻音色后再保存",
+    "vcWillSave": "保存时将自动应用此音色"
   },
   "export": {
     "title": "导出有声书",
