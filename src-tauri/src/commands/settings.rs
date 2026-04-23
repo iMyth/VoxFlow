@@ -74,3 +74,12 @@ pub fn read_audio_file(app: tauri::AppHandle, file_path: String) -> Result<Strin
     })?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
+
+/// Read a text file from an arbitrary path and return its contents as a string.
+/// Used for importing script text files chosen by the user.
+#[tauri::command]
+pub fn read_text_file(file_path: String) -> Result<String, AppError> {
+    std::fs::read_to_string(&file_path).map_err(|e| {
+        AppError::FileSystem(format!("Failed to read text file {}: {}", file_path, e))
+    })
+}

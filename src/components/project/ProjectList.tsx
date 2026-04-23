@@ -1,7 +1,9 @@
+import { save } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import ProjectCard from './ProjectCard';
+import * as ipc from '../../lib/ipc';
 import { useProjectStore } from '../../store/projectStore';
 import { Button } from '../ui/button';
 import ConfirmDialog from '../ui/confirm-dialog';
@@ -36,6 +38,25 @@ export default function ProjectList({ onSelectProject, showInput, onShowInput }:
     if (!deleteId) return;
     await deleteProject(deleteId);
     setDeleteId(null);
+  };
+
+  const handleExport = async (projectId: string, projectName: string) => {
+    const selectedPath = await save({
+      title: t('project.exportScriptTitle'),
+      defaultPath: `${projectName}.txt`,
+      filters: [{ name: 'Text File', extensions: ['txt'] }],
+    });
+    if (!selectedPath) return;
+
+    try {
+      await ipc.exportScriptText(projectId, selectedPath);
+    } catch (e) {
+      if (String(e).includes('No script lines found')) {
+        alert(t('project.noScriptToExport'));
+      } else {
+        alert(`${t('project.exportScriptFailed')}: ${e}`);
+      }
+    }
   };
 
   return (
@@ -85,6 +106,9 @@ export default function ProjectList({ onSelectProject, showInput, onShowInput }:
               }}
               onDelete={() => {
                 setDeleteId(p.id);
+              }}
+              onExport={() => {
+                void handleExport(p.id, p.name);
               }}
             />
           ))}

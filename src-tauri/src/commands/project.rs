@@ -114,3 +114,38 @@ pub fn list_projects_with_stats(
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
     db.list_projects_with_stats()
 }
+
+#[tauri::command]
+pub fn export_script_text(
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+    output_path: String,
+) -> Result<(), AppError> {
+    let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+
+    let project = db.get_project(&project_id)?;
+    let lines = db.load_script_lines(&project_id)?;
+
+    if lines.is_empty() {
+        return Err(AppError::FileSystem("No script lines found for this project".to_string()));
+    }
+
+    let mut content = String::new();
+    content.push_str(&format!("{}\n{}\n\n", project.name, "=".repeat(project.name.chars().count())));
+
+    let mut current_section = String::new();
+    for line in &lines {
+        if let Some(ref section) = line.section_title {
+            if section != &current_section {
+                current_section = section.clone();
+                content.push_str(&format!("\n=== {} ===\n\n", section));
+            }
+        }
+        let speaker = line.character_name.as_deref().unwrap_or("Narrator");
+        content.push_str(&format!("[{}] {}\n", speaker, line.text));
+    }
+
+    std::fs::write(&output_path, content).map_err(|e| {
+        AppError::FileSystem(format!("Failed to write file {}: {}", output_path, e))
+    })
+}

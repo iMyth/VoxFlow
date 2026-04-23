@@ -57,6 +57,14 @@ export async function saveOutline(projectId: string, outline: string): Promise<v
   return ipcCall<void>('save_outline', { projectId, outline });
 }
 
+export async function exportScriptText(projectId: string, outputPath: string): Promise<void> {
+  return ipcCall<void>('export_script_text', { projectId, outputPath });
+}
+
+export async function readTextFile(filePath: string): Promise<string> {
+  return ipcCall<string>('read_text_file', { filePath });
+}
+
 // ---- Character Management ----
 
 export async function createCharacter(projectId: string, input: CharacterInput): Promise<Character> {

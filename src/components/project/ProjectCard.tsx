@@ -1,4 +1,4 @@
-import { Trash2, FolderOpen, FileText, Mic, Users } from 'lucide-react';
+import { Trash2, FolderOpen, FileText, Mic, Users, Download } from 'lucide-react';
 
 import { Button } from '../ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardAction } from '../ui/card';
@@ -19,9 +19,10 @@ interface ProjectCardProps {
   stats?: ProjectStats;
   onClick: () => void;
   onDelete: () => void;
+  onExport: () => void;
 }
 
-export default function ProjectCard({ project, stats, onClick, onDelete }: ProjectCardProps) {
+export default function ProjectCard({ project, stats, onClick, onDelete, onExport }: ProjectCardProps) {
   return (
     <Card
       className="group cursor-pointer transition hover:shadow-md"
@@ -61,6 +62,18 @@ export default function ProjectCard({ project, stats, onClick, onDelete }: Proje
           </div>
         )}
         <CardAction>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="opacity-0 group-hover:opacity-100 transition"
+            onClick={(e) => {
+              e.stopPropagation();
+              onExport();
+            }}
+            aria-label={`Export script for ${project.name}`}
+          >
+            <Download className="h-4 w-4" />
+          </Button>
           <Button
             variant="ghost"
             size="icon-sm"

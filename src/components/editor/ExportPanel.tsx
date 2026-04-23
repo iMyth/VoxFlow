@@ -1,11 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { Download, Music, AlertTriangle, CheckCircle, Loader2, FolderOpen, Play, Pause } from 'lucide-react';
+import { Download, Music, AlertTriangle, CheckCircle, Loader2, FolderOpen, Play, Pause, FileUp } from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import ImportMappingDialog from './ImportMappingDialog';
 import * as ipc from '../../lib/ipc';
+import { parseScriptText } from '../../lib/scriptImporter';
+import { useCharacterStore } from '../../store/characterStore';
 import { useProjectStore } from '../../store/projectStore';
 import { useScriptStore } from '../../store/scriptStore';
 import { Alert, AlertTitle, AlertDescription } from '../ui/alert';
@@ -16,7 +19,8 @@ import { Label } from '../ui/label';
 import { Progress } from '../ui/progress';
 import { Slider } from '../ui/slider';
 
-import type { MixProgress } from '../../types';
+import type { CharacterMapping } from './ImportMappingDialog';
+import type { MixProgress, ScriptLine, ScriptSection } from '../../types';
 
 export default function ExportPanel() {
   const { t } = useTranslation();
@@ -30,6 +34,12 @@ export default function ExportPanel() {
   const [progress, setProgress] = useState<MixProgress | null>(null);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Import state
+  const [importOpen, setImportOpen] = useState(false);
+  const [importParseResult, setImportParseResult] = useState<ReturnType<typeof parseScriptText> | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState(false);
 
   const audioFragments = currentProject?.audio_fragments;
   const coveredLineIds = useMemo(() => new Set((audioFragments ?? []).map((a) => a.line_id)), [audioFragments]);
@@ -127,6 +137,121 @@ export default function ExportPanel() {
     } finally {
       unlisten();
       setExporting(false);
+    }
+  };
+
+  // ---- Import handlers ----
+
+  const handleImportSelect = async () => {
+    setImportError(null);
+    setImportSuccess(false);
+    const selected = await open({
+      title: t('project.importSelectFile'),
+      multiple: false,
+      filters: [{ name: 'Text Files', extensions: ['txt'] }],
+    });
+    if (!selected) return;
+
+    const filePath = Array.isArray(selected)
+      ? (selected[0] as string)
+      : typeof selected === 'object'
+        ? (selected as { filePath: string }).filePath
+        : selected;
+
+    try {
+      const content = await ipc.readTextFile(filePath);
+      const result = parseScriptText(content);
+      if (result.lines.length === 0) {
+        setImportError(t('project.importNoContent'));
+        return;
+      }
+      setImportParseResult(result);
+      setImportOpen(true);
+    } catch (e: unknown) {
+      setImportError(`${t('project.importParseFailed')}: ${String(e)}`);
+    }
+  };
+
+  const handleImportConfirm = async (mapping: CharacterMapping[]) => {
+    if (!currentProject) return;
+    const projectId = currentProject.project.id;
+
+    try {
+      // 1. Create new characters if any
+      const charIdMap = new Map<string, string>(); // fileCharacterName → characterId
+      for (const m of mapping) {
+        if (m.type === 'existing' && m.characterId) {
+          charIdMap.set(m.fileCharacterName, m.characterId);
+        } else if (m.type === 'new' && m.newCharacterName) {
+          const settingsMod = await import('../../store/settingsStore');
+          const settings = settingsMod.useSettingsStore.getState();
+          const character = await ipc.createCharacter(projectId, {
+            name: m.newCharacterName,
+            voice_name: settings.defaultVoiceName,
+            tts_model: settings.defaultTtsModel,
+            speed: settings.defaultSpeed,
+            pitch: settings.defaultPitch,
+          });
+          charIdMap.set(m.fileCharacterName, character.id);
+          // Also update local character store
+          await useCharacterStore.getState().fetchCharacters();
+        }
+      }
+
+      // 2. Build sections
+      const existingSections = useScriptStore.getState().sections;
+      const sectionMap = new Map<string, ScriptSection>(); // sectionName → section
+      let sectionOrder = existingSections.length;
+
+      if (importParseResult) {
+        for (const sectionName of importParseResult.sectionNames) {
+          // Try to match existing section by name
+          const existing = existingSections.find((s) => s.title === sectionName);
+          if (existing) {
+            sectionMap.set(sectionName, existing);
+          } else {
+            const newSection: ScriptSection = {
+              id: crypto.randomUUID(),
+              project_id: projectId,
+              title: sectionName,
+              section_order: sectionOrder++,
+            };
+            sectionMap.set(sectionName, newSection);
+          }
+        }
+      }
+
+      const newSections = [
+        ...existingSections,
+        ...[...sectionMap.values()].filter((s) => !existingSections.some((e) => e.id === s.id)),
+      ];
+
+      // 3. Build script lines
+      const existingLines = useScriptStore.getState().lines;
+      let lineOrder = existingLines.length;
+
+      const importedLines: ScriptLine[] = (importParseResult?.lines ?? []).map((parsed) => ({
+        id: crypto.randomUUID(),
+        project_id: projectId,
+        line_order: lineOrder++,
+        text: parsed.text,
+        character_id: parsed.characterName ? (charIdMap.get(parsed.characterName) ?? null) : null,
+        gap_after_ms: 500,
+        instructions: '',
+        section_id: parsed.sectionName ? (sectionMap.get(parsed.sectionName)?.id ?? null) : null,
+      }));
+
+      // 4. Set into store and save
+      useScriptStore.setState({ lines: [...existingLines, ...importedLines], sections: newSections, isDirty: true });
+      await useScriptStore.getState().saveScript();
+
+      // 5. Reload project to sync
+      await useProjectStore.getState().loadProject(projectId);
+      await useCharacterStore.getState().fetchCharacters();
+
+      setImportSuccess(true);
+    } catch (e) {
+      setImportError(`${t('project.importFailed')}: ${e}`);
     }
   };
 
@@ -233,6 +358,20 @@ export default function ExportPanel() {
         </Alert>
       )}
 
+      {importError && (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>{importError}</AlertTitle>
+        </Alert>
+      )}
+
+      {importSuccess && (
+        <Alert>
+          <CheckCircle className="h-4 w-4 text-green-500" />
+          <AlertTitle>{t('project.importSuccess')}</AlertTitle>
+        </Alert>
+      )}
+
       <Button
         size="lg"
         onClick={() => void handleExport()}
@@ -241,6 +380,39 @@ export default function ExportPanel() {
         <Download className="h-4 w-4" />
         {exporting ? t('export.exporting') : t('export.exportButton')}
       </Button>
+
+      {/* Import Script Section */}
+      <div className="pt-4 border-t">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FileUp className="h-4 w-4" /> {t('project.importScript')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              onClick={() => {
+                void handleImportSelect().catch(() => {});
+              }}
+            >
+              <FolderOpen className="h-4 w-4" />
+              {t('project.importSelectFile')}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Import Mapping Dialog */}
+      {importParseResult && (
+        <ImportMappingDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
+          parseResult={importParseResult}
+          existingCharacters={currentProject?.characters ?? []}
+          onConfirm={(mapping) => void handleImportConfirm(mapping)}
+        />
+      )}
     </div>
   );
 }
