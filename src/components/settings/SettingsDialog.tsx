@@ -2,6 +2,7 @@ import { Save, KeyRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { AVAILABLE_VOICES } from '../../lib/voices';
 import { useSettingsStore } from '../../store/settingsStore';
 import { Button } from '../ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
@@ -151,19 +152,30 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
                 <SelectContent>
                   <SelectItem value="qwen3-tts-flash">Qwen3 TTS Flash</SelectItem>
                   <SelectItem value="qwen3-tts-instruct-flash">Qwen3 TTS Instruct Flash</SelectItem>
-                  <SelectItem value="qwen3-tts-instruct-flash-realtime">Qwen3 TTS Instruct Flash</SelectItem>
+                  <SelectItem value="qwen3-tts-instruct-flash-realtime">Qwen3 TTS Instruct Flash Realtime</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>{t('settings.defaultVoice')}</Label>
-              <Input
-                value={localVoice}
-                onChange={(e) => {
-                  setLocalVoice(e.target.value);
-                }}
-                placeholder="Cherry"
-              />
+              <Select value={localVoice} onValueChange={setLocalVoice}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder={t('settings.selectVoice')} />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {AVAILABLE_VOICES.map((v) => (
+                    <SelectItem key={v.id} value={v.name}>
+                      {v.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {(() => {
+                const matched = AVAILABLE_VOICES.find((v) => v.name === localVoice);
+                return matched?.description ? (
+                  <p className="text-xs text-muted-foreground">{matched.description}</p>
+                ) : null;
+              })()}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">

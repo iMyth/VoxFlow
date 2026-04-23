@@ -1,6 +1,7 @@
 import { temporal } from 'zundo';
 import { create } from 'zustand';
 
+import i18n from '../i18n';
 import { useCharacterStore } from './characterStore';
 import { useProjectStore } from './projectStore';
 import { useToastStore } from './toastStore';
@@ -115,6 +116,7 @@ interface ScriptStore {
   moveLineToSection: (lineId: string, sectionId: string | null) => void;
   saveScript: () => Promise<void>;
   generateAllTts: () => Promise<void>;
+  cancelBatchTts: () => Promise<void>;
   regenerateAllTts: (preserveRecordings?: boolean) => Promise<void>;
 }
 
@@ -542,7 +544,7 @@ export const useScriptStore = create<ScriptStore>()(
           const newSection: ScriptSection = {
             id: crypto.randomUUID(),
             project_id: projectId,
-            title: '新段落',
+            title: i18n.t('editor.defaultSectionTitle'),
             section_order: state.sections.length,
           };
           return {
@@ -602,7 +604,10 @@ export const useScriptStore = create<ScriptStore>()(
         if (!project) return;
 
         const apiKey = await ipc.loadApiKey('dashscope');
-        if (!apiKey) return;
+        if (!apiKey) {
+          useToastStore.getState().addToast('settings.apiKeyHint');
+          return;
+        }
 
         // Compute total missing count upfront so UI shows immediately
         const audioFragments = useProjectStore.getState().currentProject?.audio_fragments ?? [];
@@ -615,6 +620,11 @@ export const useScriptStore = create<ScriptStore>()(
           set({ batchTtsProgress: { current: p.current, total: p.total } });
         });
 
+        const unlistenCancel = await ipc.onTtsCancelled(() => {
+          useToastStore.getState().addToast('editor.batchTtsCancelled', 'info');
+          set({ isBatchTtsRunning: false });
+        });
+
         try {
           await ipc.generateAllTts(project.project.id, apiKey);
           // Reload project to refresh audio fragments
@@ -623,8 +633,13 @@ export const useScriptStore = create<ScriptStore>()(
           useToastStore.getState().addToast('editor.batchTtsFailed');
         } finally {
           unlisten();
-          set({ isBatchTtsRunning: false });
+          unlistenCancel();
+          set((state) => (state.isBatchTtsRunning ? { isBatchTtsRunning: false } : {}));
         }
+      },
+
+      cancelBatchTts: async () => {
+        await ipc.cancelTts();
       },
 
       regenerateAllTts: async (preserveRecordings?: boolean) => {

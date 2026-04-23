@@ -38,6 +38,7 @@ export default function ScriptEditor() {
     cancelLlm,
     saveScript,
     generateAllTts,
+    cancelBatchTts,
     regenerateAllTts,
     isBatchTtsRunning,
     batchTtsProgress,
@@ -294,6 +295,11 @@ export default function ScriptEditor() {
                 </p>
               </div>
             )}
+            <div className="flex gap-2 justify-center">
+              <Button variant="destructive" size="sm" onClick={() => void cancelBatchTts()}>
+                {t('editor.cancelBatchTts')}
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground">{t('editor.batchTtsHint')}</p>
           </div>
         </div>

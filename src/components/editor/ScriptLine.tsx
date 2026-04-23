@@ -1,4 +1,4 @@
-import { GripVertical, Trash2, Volume2, Loader2, AlertCircle, Mic } from 'lucide-react';
+import { GripVertical, Trash2, Volume2, Loader2, AlertCircle, Mic, RotateCcw } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -246,8 +246,17 @@ export default function ScriptLineComponent({
             {characterName && <Badge variant="secondary">{characterName}</Badge>}
 
             {ttsError && (
-              <Badge variant="destructive" className="gap-1">
+              <Badge variant="destructive" className="gap-1" title={ttsError}>
                 <AlertCircle className="h-3 w-3" /> {t('editor.generationFailed')}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="h-4 w-4 p-0 text-destructive-foreground hover:text-destructive-foreground"
+                  onClick={() => void handleGenerateTts()}
+                  aria-label={t('editor.retry')}
+                >
+                  <RotateCcw className="h-3 w-3" />
+                </Button>
               </Badge>
             )}
 
@@ -284,8 +293,6 @@ export default function ScriptLineComponent({
               hasExistingAudio={!!audioFragment}
             />
 
-            {audioFragment && <AudioPlayer filePath={audioFragment.file_path} />}
-
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               {t('editor.gap')}
               <Input
@@ -301,6 +308,8 @@ export default function ScriptLineComponent({
               />
               ms
             </span>
+
+            {audioFragment && <AudioPlayer filePath={audioFragment.file_path} />}
           </div>
         </div>
 

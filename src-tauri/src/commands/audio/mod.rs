@@ -14,6 +14,8 @@ mod utils;
 
 // Re-export all public items from submodules (includes __cmd__ functions from #[tauri::command])
 pub use export::*;
-pub use ffmpeg::{build_ffmpeg_args, find_ffmpeg};
 pub use import::*;
 pub use player::*;
+// ffmpeg module is used internally by other commands
+#[allow(unused_imports)]
+pub use ffmpeg::*;

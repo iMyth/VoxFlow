@@ -14,7 +14,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use super::error::AppError;
-use super::models::{AudioFragment, Character, Project, ProjectDetail, ScriptLine, ScriptSection, StoryKnowledgeItem, UserSettings};
+use super::models::{AudioFragment, Character, Project, ProjectDetail, ProjectStats, ScriptLine, ScriptSection, StoryKnowledgeItem, UserSettings};
 
 pub use audio::{clear_audio_fragments, clear_tts_fragments, insert_bgm, list_audio_fragments, upsert_audio_fragment};
 pub use character::{
@@ -67,6 +67,47 @@ impl Database {
     /// List all projects ordered by creation time (newest first).
     pub fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         project::list_projects(&self.conn)
+    }
+
+    /// List all projects with aggregate stats (line count, audio count, character count).
+    pub fn list_projects_with_stats(&self) -> Result<Vec<ProjectStats>, AppError> {
+        let projects = project::list_projects(&self.conn)?;
+        let mut stats = Vec::new();
+        for p in &projects {
+            let line_count: i32 = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM script_lines WHERE project_id = ?",
+                    rusqlite::params![p.id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let audio_count: i32 = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM audio_fragments WHERE project_id = ?",
+                    rusqlite::params![p.id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let char_count: i32 = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM characters WHERE project_id = ?",
+                    rusqlite::params![p.id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            stats.push(ProjectStats {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                created_at: p.created_at.clone(),
+                line_count,
+                audio_count,
+                character_count: char_count,
+            });
+        }
+        Ok(stats)
     }
 
     /// Get a single project by ID.

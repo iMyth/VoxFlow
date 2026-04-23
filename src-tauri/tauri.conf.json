@@ -18,7 +18,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https:;"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' asset: https://asset.localhost; connect-src 'self' http: https:;",
+      "assetProtocol": {
+        "scope": {
+          "allow": ["**"],
+          "deny": []
+        },
+        "enable": true
+      }
     }
   },
   "bundle": {

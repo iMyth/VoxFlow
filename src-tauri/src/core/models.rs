@@ -139,3 +139,14 @@ pub struct StoryKnowledgeItem {
     pub metadata: String, // JSON string for extra context
     pub created_at: String,
 }
+
+/// Summary stats for a project shown on the project list card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectStats {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub line_count: i32,
+    pub audio_count: i32,
+    pub character_count: i32,
+}

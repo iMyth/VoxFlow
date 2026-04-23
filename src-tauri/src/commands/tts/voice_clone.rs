@@ -159,11 +159,16 @@ pub async fn preview_voice(
     std::fs::create_dir_all(&preview_dir)
         .map_err(|e| AppError::FileSystem(format!("mkdir previews: {}", e)))?;
 
-    let preview_id = uuid::Uuid::new_v4().to_string();
+    // Cache by voice name — skip regeneration if preview already exists
     let file_path = preview_dir
-        .join(format!("{}.mp3", &preview_id))
+        .join(format!("{}.mp3", &voice))
         .to_string_lossy()
         .to_string();
+
+    if std::path::Path::new(&file_path).exists() {
+        info!("[VoiceClone] preview_voice: cache hit for voice={}", voice);
+        return Ok(file_path);
+    }
 
     // Use WS realtime to synthesize a short preview sentence
     let voice_config = VoiceConfig {

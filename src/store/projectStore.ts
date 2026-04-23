@@ -5,12 +5,23 @@ import * as ipc from '../lib/ipc';
 
 import type { Project, ProjectDetail } from '../types';
 
+interface ProjectStats {
+  id: string;
+  name: string;
+  created_at: string;
+  line_count: number;
+  audio_count: number;
+  character_count: number;
+}
+
 interface ProjectStore {
   projects: Project[];
+  projectStats: Record<string, ProjectStats>;
   currentProject: ProjectDetail | null;
   loading: boolean;
   error: string | null;
   fetchProjects: () => Promise<void>;
+  fetchProjectStats: () => Promise<void>;
   createProject: (name: string) => Promise<void>;
   loadProject: (id: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -19,6 +30,7 @@ interface ProjectStore {
 
 export const useProjectStore = create<ProjectStore>((set) => ({
   projects: [],
+  projectStats: {},
   currentProject: null,
   loading: false,
   error: null,
@@ -30,6 +42,19 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       set({ projects, loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });
+    }
+  },
+
+  fetchProjectStats: async () => {
+    try {
+      const statsList = await ipc.listProjectsWithStats();
+      const statsMap: Record<string, ProjectStats> = {};
+      for (const s of statsList) {
+        statsMap[s.id] = s;
+      }
+      set({ projectStats: statsMap });
+    } catch {
+      // Stats are non-critical, silently ignore errors
     }
   },
 

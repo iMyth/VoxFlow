@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import ProjectCard from './ProjectCard';
 import { useProjectStore } from '../../store/projectStore';
 import { Button } from '../ui/button';
+import ConfirmDialog from '../ui/confirm-dialog';
 import { Input } from '../ui/input';
 
 interface ProjectListProps {
@@ -14,12 +15,14 @@ interface ProjectListProps {
 
 export default function ProjectList({ onSelectProject, showInput, onShowInput }: ProjectListProps) {
   const { t } = useTranslation();
-  const { projects, fetchProjects, createProject, deleteProject } = useProjectStore();
+  const { projects, fetchProjects, createProject, deleteProject, fetchProjectStats, projectStats } = useProjectStore();
   const [newName, setNewName] = useState('');
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     void fetchProjects();
-  }, [fetchProjects]);
+    void fetchProjectStats();
+  }, [fetchProjects, fetchProjectStats]);
 
   const handleCreate = async () => {
     const name = newName.trim();
@@ -29,10 +32,10 @@ export default function ProjectList({ onSelectProject, showInput, onShowInput }:
     onShowInput(false);
   };
 
-  const handleDelete = async (id: string) => {
-    if (window.confirm(t('project.confirmDelete'))) {
-      await deleteProject(id);
-    }
+  const handleDelete = async () => {
+    if (!deleteId) return;
+    await deleteProject(deleteId);
+    setDeleteId(null);
   };
 
   return (
@@ -76,14 +79,29 @@ export default function ProjectList({ onSelectProject, showInput, onShowInput }:
             <ProjectCard
               key={p.id}
               project={p}
+              stats={projectStats[p.id]}
               onClick={() => {
                 onSelectProject(p.id);
               }}
-              onDelete={() => void handleDelete(p.id)}
+              onDelete={() => {
+                setDeleteId(p.id);
+              }}
             />
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!deleteId}
+        onOpenChange={(open) => {
+          if (!open) setDeleteId(null);
+        }}
+        title={t('project.deleteConfirmTitle')}
+        description={t('project.confirmDelete')}
+        confirmText={t('project.delete')}
+        cancelText={t('project.cancel')}
+        onConfirm={() => void handleDelete()}
+      />
     </div>
   );
 }

@@ -32,6 +32,19 @@ export async function listProjects(): Promise<Project[]> {
   return ipcCall<Project[]>('list_projects');
 }
 
+export interface ProjectStats {
+  id: string;
+  name: string;
+  created_at: string;
+  line_count: number;
+  audio_count: number;
+  character_count: number;
+}
+
+export async function listProjectsWithStats(): Promise<ProjectStats[]> {
+  return ipcCall<ProjectStats[]>('list_projects_with_stats');
+}
+
 export async function loadProject(projectId: string): Promise<ProjectDetail> {
   return ipcCall<ProjectDetail>('load_project', { projectId });
 }
@@ -438,6 +451,16 @@ export async function generateAllTts(projectId: string, apiKey: string): Promise
   });
 }
 
+export async function cancelTts(): Promise<void> {
+  return ipcCall<void>('cancel_tts');
+}
+
+export function onTtsCancelled(callback: () => void): Promise<UnlistenFn> {
+  return listen('tts-cancelled', () => {
+    callback();
+  });
+}
+
 export async function clearAudioFragments(projectId: string): Promise<void> {
   return ipcCall<void>('clear_audio_fragments', { projectId });
 }
@@ -502,6 +525,20 @@ export function onMixProgress(callback: (progress: MixProgress) => void): Promis
   return listen<MixProgress>('mix-progress', (event) => {
     callback(event.payload);
   });
+}
+
+// ---- Audio Position / Seek ----
+
+export async function getAudioPosition(): Promise<number> {
+  return ipcCall<number>('get_audio_position');
+}
+
+export async function getAudioDurationInfo(): Promise<number> {
+  return ipcCall<number>('get_audio_duration_ms');
+}
+
+export async function seekAudio(positionMs: number): Promise<void> {
+  return ipcCall<void>('seek_audio', { positionMs });
 }
 
 // ---- Settings Management ----

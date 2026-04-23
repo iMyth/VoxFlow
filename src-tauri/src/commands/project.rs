@@ -4,7 +4,7 @@ use tauri::Manager;
 
 use crate::core::db::Database;
 use crate::core::error::AppError;
-use crate::core::models::{Project, ProjectDetail};
+use crate::core::models::{Project, ProjectDetail, ProjectStats};
 
 #[tauri::command]
 pub fn create_project(
@@ -105,4 +105,12 @@ pub fn save_outline(
 ) -> Result<(), AppError> {
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
     db.save_project_outline(&project_id, &outline)
+}
+
+#[tauri::command]
+pub fn list_projects_with_stats(
+    db: tauri::State<'_, Mutex<Database>>,
+) -> Result<Vec<ProjectStats>, AppError> {
+    let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+    db.list_projects_with_stats()
 }

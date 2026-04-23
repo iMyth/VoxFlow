@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use tauri::{Emitter, Manager};
 
+use crate::core::cancel_token::CancellationToken;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 use crate::core::models::{AudioFragment, TtsBatchProgress, VoiceConfig};
@@ -75,10 +76,13 @@ pub async fn generate_tts(
 pub async fn generate_all_tts(
     app: tauri::AppHandle,
     db: tauri::State<'_, Mutex<Database>>,
+    cancel_token: tauri::State<'_, CancellationToken>,
     project_id: String,
     api_key: String,
 ) -> Result<usize, AppError> {
     info!("[TTS] generate_all_tts: project={}", project_id);
+
+    cancel_token.reset();
 
     let (script_lines, fragments, characters) = {
         let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
@@ -161,6 +165,12 @@ pub async fn generate_all_tts(
     let mut success_count = 0usize;
 
     for line in &missing {
+        if cancel_token.is_cancelled() {
+            info!("[TTS] batch TTS cancelled at line={}", line.id);
+            let _ = app.emit("tts-cancelled", &());
+            return Ok(success_count);
+        }
+
         let has_instr = !line.instructions.is_empty();
         let model = resolve_model(&line.vc, has_instr);
         let instr: Option<&str> = if has_instr {
@@ -326,4 +336,9 @@ pub async fn clear_tts_fragments(
     }
     info!("[TTS] Cleared {} TTS audio fragments", paths.len());
     Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_tts(cancel_token: tauri::State<'_, CancellationToken>) {
+    cancel_token.cancel();
 }

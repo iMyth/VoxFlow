@@ -18,6 +18,7 @@ import { useState, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import * as ipc from '../../lib/ipc';
+import { AVAILABLE_VOICES } from '../../lib/voices';
 import { useCharacterStore } from '../../store/characterStore';
 import { useProjectStore } from '../../store/projectStore';
 import { useToastStore } from '../../store/toastStore';
@@ -95,8 +96,13 @@ export default function CharacterPanel() {
       speed: c.speed,
       pitch: c.pitch,
     });
-    setVcMode('standard');
-    setVcVoiceId(null);
+    if (c.tts_model === VC_TTS_MODEL) {
+      setVcMode('cloning');
+      setVcVoiceId(c.voice_name);
+    } else {
+      setVcMode('standard');
+      setVcVoiceId(null);
+    }
     setVcPreviewPath(null);
   };
 
@@ -348,8 +354,6 @@ export default function CharacterPanel() {
             className="flex-1"
             onClick={() => {
               setVcMode('standard');
-              setVcVoiceId(null);
-              setVcPreviewPath(null);
             }}
           >
             {t('character.vcStandardMode')}
@@ -475,7 +479,9 @@ export default function CharacterPanel() {
                     <SelectItem value="qwen3-tts-flash">Qwen3 TTS Flash</SelectItem>
                     <SelectItem value="qwen3-tts-instruct-flash">Qwen3 TTS Instruct Flash</SelectItem>
                     <SelectItem value="qwen3-tts-instruct-flash-realtime">Qwen3 TTS Instruct Flash Realtime</SelectItem>
-                    <SelectItem value={VC_TTS_MODEL}>Qwen3 TTS VC Realtime (Voice Cloning)</SelectItem>
+                    <SelectItem value={VC_TTS_MODEL} disabled>
+                      Qwen3 TTS VC Realtime (Voice Cloning)
+                    </SelectItem>
                   </SelectContent>
                 </Select>
                 {form.tts_model === VC_TTS_MODEL && (
@@ -484,16 +490,54 @@ export default function CharacterPanel() {
               </div>
               <div className="space-y-1.5">
                 <Label>{t('character.voice')}</Label>
-                <Input
-                  value={form.voice_name}
-                  onChange={(e) => {
-                    setForm({ ...form, voice_name: e.target.value });
-                  }}
-                  placeholder="Cherry"
-                  disabled={form.tts_model === VC_TTS_MODEL}
-                />
-                {form.tts_model === VC_TTS_MODEL && (
-                  <p className="text-xs text-muted-foreground">{t('character.vcVoiceLocked')}</p>
+                {form.tts_model === VC_TTS_MODEL ? (
+                  <div className="space-y-1.5">
+                    <Badge
+                      variant="secondary"
+                      className="font-mono text-xs w-full! truncate px-3 h-9"
+                      title={form.voice_name}
+                    >
+                      {form.voice_name}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">{t('character.vcVoiceLocked')}</span>
+                  </div>
+                ) : AVAILABLE_VOICES.find((v) => v.name === form.voice_name) ? (
+                  <>
+                    <Select
+                      value={form.voice_name}
+                      onValueChange={(v) => {
+                        setForm({ ...form, voice_name: v });
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder={t('character.selectVoice')} />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60">
+                        {AVAILABLE_VOICES.map((v) => (
+                          <SelectItem key={v.id} value={v.name}>
+                            {v.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {(() => {
+                      const matched = AVAILABLE_VOICES.find((v) => v.name === form.voice_name);
+                      return matched?.description ? (
+                        <p className="text-xs text-muted-foreground">{matched.description}</p>
+                      ) : null;
+                    })()}
+                  </>
+                ) : (
+                  <div className="space-y-1.5">
+                    <Badge
+                      variant="outline"
+                      className="font-mono text-xs w-full! truncate px-3 h-9"
+                      title={form.voice_name}
+                    >
+                      {form.voice_name}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">复刻音色 ID</span>
+                  </div>
                 )}
               </div>
             </div>
@@ -566,8 +610,11 @@ export default function CharacterPanel() {
                 <div>
                   <p className="font-medium">{c.name}</p>
                   <p className="text-sm text-muted-foreground">
-                    {c.tts_model} · {c.voice_name} · {t('character.speed')} {c.speed}x · {t('character.pitch')}{' '}
-                    {c.pitch}x
+                    {c.tts_model} ·{' '}
+                    <span className="font-mono max-w-40 truncate inline-block align-middle" title={c.voice_name}>
+                      {c.voice_name}
+                    </span>{' '}
+                    · {t('character.speed')} {c.speed}x · {t('character.pitch')} {c.pitch}x
                   </p>
                 </div>
                 <div className="flex gap-1">
