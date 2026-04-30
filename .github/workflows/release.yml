@@ -96,7 +96,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and upload
-        uses: tauri-apps/tauri-action@354b73785cfebaed70a35623586341f47510496e  # v0.5.15
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
