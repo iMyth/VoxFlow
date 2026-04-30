@@ -16,7 +16,7 @@ name = "vox_flow_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "voxflow"
+name = "vox-flow"
 path = "src/bin/voxflow/main.rs"
 
 [build-dependencies]
