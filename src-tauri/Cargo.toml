@@ -1,11 +1,10 @@
 [package]
-name = "vox-flow"
+name = "voxflow"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
-default-run = "vox-flow"
-
+default-run = "voxflow"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -16,7 +15,7 @@ name = "vox_flow_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "vox-flow"
+name = "voxflow"
 path = "src/bin/voxflow/main.rs"
 
 [build-dependencies]
