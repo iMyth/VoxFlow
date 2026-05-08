@@ -15,7 +15,7 @@ name = "vox_flow_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "voxflow"
+name = "voxflow-cli"
 path = "src/bin/voxflow/main.rs"
 
 [build-dependencies]
@@ -46,6 +46,9 @@ cpal = "0.15"
 rig-core = "0.17"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
+tiny-skia = "0.11"
+symphonia = { version = "0.5", features = ["mp3", "aac", "pcm", "wav"] }
+rand = "0.8"
 
 [dev-dependencies]
 proptest = "1"

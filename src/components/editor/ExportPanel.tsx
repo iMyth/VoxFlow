@@ -1,7 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { Download, Music, AlertTriangle, CheckCircle, Loader2, FolderOpen, Play, Pause, FileUp } from 'lucide-react';
+import {
+  Download,
+  Music,
+  AlertTriangle,
+  CheckCircle,
+  Loader2,
+  FolderOpen,
+  Play,
+  Pause,
+  FileUp,
+  Video,
+  Image,
+} from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -17,9 +29,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Progress } from '../ui/progress';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Slider } from '../ui/slider';
 
 import type { CharacterMapping } from './ImportMappingDialog';
+import type { VideoStyle } from '../../lib/ipc';
 import type { MixProgress, ScriptLine, ScriptSection } from '../../types';
 
 export default function ExportPanel() {
@@ -40,6 +54,17 @@ export default function ExportPanel() {
   const [importParseResult, setImportParseResult] = useState<ReturnType<typeof parseScriptText> | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
+
+  // Video export state
+  const [videoStyle, setVideoStyle] = useState<VideoStyle>('particles');
+  const [videoFgColor, setVideoFgColor] = useState('6366f1');
+  const [videoBgColor, setVideoBgColor] = useState('1a1a2e');
+  const [videoBgImage, setVideoBgImage] = useState<string | null>(null);
+  const [videoExporting, setVideoExporting] = useState(false);
+  const [videoProgress, setVideoProgress] = useState<MixProgress | null>(null);
+  const [videoDone, setVideoDone] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [lastExportedAudioPath, setLastExportedAudioPath] = useState<string | null>(null);
 
   const audioFragments = currentProject?.audio_fragments;
   const coveredLineIds = useMemo(() => new Set((audioFragments ?? []).map((a) => a.line_id)), [audioFragments]);
@@ -132,6 +157,7 @@ export default function ExportPanel() {
     try {
       await ipc.exportAudioMix(currentProject.project.id, selectedPath, bgmPath, bgmVolume);
       setDone(true);
+      setLastExportedAudioPath(selectedPath);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -169,6 +195,58 @@ export default function ExportPanel() {
       setImportOpen(true);
     } catch (e: unknown) {
       setImportError(`${t('project.importParseFailed')}: ${String(e)}`);
+    }
+  };
+
+  const handleVideoBgImageBrowse = async () => {
+    const selected = await open({
+      title: t('export.selectBgImage'),
+      multiple: false,
+      filters: [{ name: 'Image Files', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+    });
+    if (selected) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+      setVideoBgImage(Array.isArray(selected) ? selected[0] : selected);
+    }
+  };
+
+  const handleExportVideo = async () => {
+    if (!lastExportedAudioPath) return;
+
+    const selectedPath = await save({
+      title: t('export.exportVideoTitle'),
+      defaultPath: `${currentProject?.project.name ?? 'output'}.mp4`,
+      filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+    });
+    if (!selectedPath) return;
+
+    setVideoExporting(true);
+    setVideoProgress(null);
+    setVideoDone(false);
+    setVideoError(null);
+
+    const unlisten = await ipc.onVideoProgress((p) => {
+      setVideoProgress(p);
+    });
+
+    try {
+      await ipc.exportVideo({
+        audio_path: lastExportedAudioPath,
+        output_path: selectedPath,
+        style: videoStyle,
+        width: 1920,
+        height: 1080,
+        fg_color: videoFgColor,
+        bg_color: videoBgColor,
+        bg_image_path: videoBgImage,
+        fps: 30,
+      });
+      setVideoDone(true);
+    } catch (e) {
+      setVideoError(String(e));
+    } finally {
+      unlisten();
+      setVideoExporting(false);
     }
   };
 
@@ -380,6 +458,143 @@ export default function ExportPanel() {
         <Download className="h-4 w-4" />
         {exporting ? t('export.exporting') : t('export.exportButton')}
       </Button>
+
+      {/* Video Export Section */}
+      <div className="pt-4 border-t">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Video className="h-4 w-4" /> {t('export.videoTitle')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {!lastExportedAudioPath && (
+              <p className="text-sm text-muted-foreground">{t('export.videoNeedAudioFirst')}</p>
+            )}
+
+            {lastExportedAudioPath && (
+              <>
+                <div className="space-y-2">
+                  <Label>{t('export.videoStyle')}</Label>
+                  <Select
+                    value={videoStyle}
+                    onValueChange={(v) => {
+                      setVideoStyle(v as VideoStyle);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="particles">{t('export.styleParticles')}</SelectItem>
+                      <SelectItem value="showwaves">{t('export.styleShowwaves')}</SelectItem>
+                      <SelectItem value="showfreqs">{t('export.styleShowfreqs')}</SelectItem>
+                      <SelectItem value="avectorscope">{t('export.styleAvectorscope')}</SelectItem>
+                      <SelectItem value="showspectrum">{t('export.styleShowspectrum')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>{t('export.videoFgColor')}</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">#</span>
+                      <Input
+                        value={videoFgColor}
+                        onChange={(e) => {
+                          setVideoFgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
+                        }}
+                        className="flex-1"
+                        maxLength={6}
+                      />
+                      <div className="w-8 h-8 rounded border" style={{ backgroundColor: `#${videoFgColor}` }} />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t('export.videoBgColor')}</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">#</span>
+                      <Input
+                        value={videoBgColor}
+                        onChange={(e) => {
+                          setVideoBgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
+                        }}
+                        className="flex-1"
+                        maxLength={6}
+                      />
+                      <div className="w-8 h-8 rounded border" style={{ backgroundColor: `#${videoBgColor}` }} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>{t('export.videoBgImage')}</Label>
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      className="flex-1"
+                      placeholder={t('export.videoBgImagePlaceholder')}
+                      value={videoBgImage ?? ''}
+                      readOnly
+                    />
+                    <Button variant="outline" size="icon" onClick={() => void handleVideoBgImageBrowse()}>
+                      <Image className="h-4 w-4" />
+                    </Button>
+                    {videoBgImage && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setVideoBgImage(null);
+                        }}
+                      >
+                        ✕
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">{t('export.videoBgImageHint')}</p>
+                </div>
+
+                {videoExporting && videoProgress && (
+                  <Alert>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <AlertTitle>{videoProgress.stage}</AlertTitle>
+                    <AlertDescription className="space-y-2">
+                      <Progress value={videoProgress.percent} className="h-2" />
+                      <p className="text-xs">{Math.round(videoProgress.percent)}%</p>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {videoDone && (
+                  <Alert>
+                    <CheckCircle className="h-4 w-4 text-green-500" />
+                    <AlertTitle>{t('export.videoExportSuccess')}</AlertTitle>
+                  </Alert>
+                )}
+
+                {videoError && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>{t('export.videoExportFailed')}</AlertTitle>
+                    <AlertDescription>{videoError}</AlertDescription>
+                  </Alert>
+                )}
+
+                <Button
+                  size="lg"
+                  variant="secondary"
+                  onClick={() => void handleExportVideo()}
+                  disabled={videoExporting}
+                >
+                  <Video className="h-4 w-4" />
+                  {videoExporting ? t('export.videoExporting') : t('export.videoExportButton')}
+                </Button>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Import Script Section */}
       <div className="pt-4 border-t">
