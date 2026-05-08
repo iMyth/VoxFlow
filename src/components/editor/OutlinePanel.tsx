@@ -1,4 +1,4 @@
-import { BrainCircuit, Sparkles, Square } from 'lucide-react';
+import { BrainCircuit, Check, Sparkles, Square } from 'lucide-react';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -16,6 +16,8 @@ interface OutlinePanelProps {
   hasAgentPlan: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Whether the outline was recently saved (for visual feedback) */
+  saved?: boolean;
 }
 
 export default function OutlinePanel({
@@ -29,6 +31,7 @@ export default function OutlinePanel({
   hasAgentPlan,
   open,
   onOpenChange,
+  saved,
 }: OutlinePanelProps) {
   const { t } = useTranslation();
 
@@ -43,7 +46,15 @@ export default function OutlinePanel({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[85vh]">
         <DialogHeader>
-          <DialogTitle>{t('editor.outlineEdit')}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            {t('editor.outlineEdit')}
+            {saved && (
+              <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-normal animate-in fade-in duration-300">
+                <Check className="h-3 w-3" />
+                {t('editor.saved')}
+              </span>
+            )}
+          </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-3">

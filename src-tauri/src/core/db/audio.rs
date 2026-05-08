@@ -99,6 +99,24 @@ pub fn list_audio_fragments(conn: &Connection, project_id: &str) -> Result<Vec<A
     Ok(fragments)
 }
 
+/// Delete audio fragment(s) for a specific line and return their file paths.
+pub fn delete_audio_by_line(conn: &Connection, line_id: &str) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn
+        .prepare("SELECT file_path FROM audio_fragments WHERE line_id = ?1")
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let paths: Vec<String> = stmt
+        .query_map(rusqlite::params![line_id], |row| row.get(0))
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect();
+    conn.execute(
+        "DELETE FROM audio_fragments WHERE line_id = ?1",
+        rusqlite::params![line_id],
+    )
+    .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(paths)
+}
+
 // ---- BGM operations ----
 
 /// Insert a BGM file record into the database.

@@ -318,6 +318,26 @@ pub async fn clear_audio_fragments(
 }
 
 #[tauri::command]
+pub async fn delete_audio_by_line(
+    _app: tauri::AppHandle,
+    db: tauri::State<'_, Mutex<Database>>,
+    line_id: String,
+) -> Result<(), AppError> {
+    info!("[TTS] delete_audio_by_line: line={}", line_id);
+    let paths = {
+        let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db.delete_audio_by_line(&line_id)?
+    };
+    for path in &paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            warn!("[TTS] Failed to delete audio file {}: {}", path, e);
+        }
+    }
+    info!("[TTS] Deleted {} audio fragments for line={}", paths.len(), line_id);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn clear_tts_fragments(
     _app: tauri::AppHandle,
     db: tauri::State<'_, Mutex<Database>>,

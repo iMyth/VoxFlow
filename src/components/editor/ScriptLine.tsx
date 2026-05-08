@@ -1,5 +1,5 @@
 import { GripVertical, Trash2, Volume2, Loader2, AlertCircle, Mic, RotateCcw } from 'lucide-react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AudioPlayer from './AudioPlayer';
@@ -34,7 +34,7 @@ interface ScriptLineProps {
   onDragEnd?: () => void;
 }
 
-export default function ScriptLineComponent({
+function ScriptLineComponent({
   line,
   index,
   isDragging = false,
@@ -66,14 +66,12 @@ export default function ScriptLineComponent({
   }, [isDragging]);
 
   // Sync local audioFragment with project store (e.g. after batch TTS)
-  // Use a string of IDs as dependency to avoid re-rendering on array reference changes
-  const audioFragmentIdStr = currentProject?.audio_fragments.map((a) => `${a.line_id}:${a.file_path}`).join('|');
+  const audioFragments = currentProject?.audio_fragments;
 
   useEffect(() => {
-    const frag = currentProject?.audio_fragments.find((a) => a.line_id === line.id) ?? null;
+    const frag = audioFragments?.find((a) => a.line_id === line.id) ?? null;
     setAudioFragment(frag);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [line.id, audioFragmentIdStr]);
+  }, [line.id, audioFragments]);
 
   // Clear error when audio fragment appears
   useEffect(() => {
@@ -123,13 +121,14 @@ export default function ScriptLineComponent({
     }
   };
 
-  const handleRemoveAudio = async () => {
+  const handleRemoveAudio = useCallback(async () => {
     if (!audioFragment) return;
     try {
-      await ipc.clearAudioFragments(audioFragment.project_id);
-      // Re-fetch project to sync audio fragments
+      // Only delete audio for this specific line, not the entire project
+      await ipc.deleteAudioByLine(line.id);
+      // Update local project store
       const store = useProjectStore.getState();
-      if (store.currentProject && store.currentProject.project.id === audioFragment.project_id) {
+      if (store.currentProject) {
         const newFrags = store.currentProject.audio_fragments.filter((a) => a.line_id !== line.id);
         useProjectStore.setState({
           currentProject: {
@@ -142,7 +141,7 @@ export default function ScriptLineComponent({
     } catch {
       useToastStore.getState().addToast(t('editor.clearAudioFailed'));
     }
-  };
+  }, [audioFragment, line.id, t]);
 
   const handleRecordingSave = useCallback((fragment: AudioFragment) => {
     setAudioFragment(fragment);
@@ -289,7 +288,7 @@ export default function ScriptLineComponent({
             <AudioRecorder
               lineId={line.id}
               onSave={handleRecordingSave}
-              onRemove={handleRemoveAudio}
+              onRemove={() => void handleRemoveAudio()}
               hasExistingAudio={!!audioFragment}
             />
 
@@ -329,3 +328,5 @@ export default function ScriptLineComponent({
     </div>
   );
 }
+
+export default memo(ScriptLineComponent);

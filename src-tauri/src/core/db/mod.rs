@@ -16,7 +16,7 @@ use rusqlite::Connection;
 use super::error::AppError;
 use super::models::{AudioFragment, Character, Project, ProjectDetail, ProjectStats, ScriptLine, ScriptSection, StoryKnowledgeItem, UserSettings};
 
-pub use audio::{clear_audio_fragments, clear_tts_fragments, insert_bgm, list_audio_fragments, upsert_audio_fragment};
+pub use audio::{clear_audio_fragments, clear_tts_fragments, delete_audio_by_line, insert_bgm, list_audio_fragments, upsert_audio_fragment};
 pub use character::{
     delete_character, get_character_by_id, get_character_project_id, insert_character, list_all_project_characters,
     list_characters, update_character,
@@ -211,6 +211,11 @@ impl Database {
     /// List all audio fragments for a given project.
     pub fn list_audio_fragments(&self, project_id: &str) -> Result<Vec<AudioFragment>, AppError> {
         audio::list_audio_fragments(&self.conn, project_id)
+    }
+
+    /// Delete audio fragment(s) for a specific line and return their file paths.
+    pub fn delete_audio_by_line(&self, line_id: &str) -> Result<Vec<String>, AppError> {
+        audio::delete_audio_by_line(&self.conn, line_id)
     }
 
     // ---- User Settings operations ----

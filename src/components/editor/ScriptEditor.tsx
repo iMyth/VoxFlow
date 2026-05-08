@@ -100,6 +100,7 @@ export default function ScriptEditor() {
 
   // ---- Auto-save outline: debounce 3 seconds ----
   const outlineSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [outlineSaved, setOutlineSaved] = useState(false);
 
   useEffect(() => {
     const projectId = currentProject?.project.id;
@@ -108,9 +109,15 @@ export default function ScriptEditor() {
     if (outlineSaveTimerRef.current) {
       clearTimeout(outlineSaveTimerRef.current);
     }
+    setOutlineSaved(false);
     outlineSaveTimerRef.current = setTimeout(() => {
       void (async () => {
         await useProjectStore.getState().saveOutline(outlineRef.current);
+        setOutlineSaved(true);
+        // Auto-hide the saved indicator after 2 seconds
+        setTimeout(() => {
+          setOutlineSaved(false);
+        }, 2000);
       })();
     }, 3000);
 
@@ -269,13 +276,10 @@ export default function ScriptEditor() {
 
   return (
     <div className="px-6 py-4 space-y-4 relative">
-      {/* Batch TTS blocking overlay */}
+      {/* Batch TTS floating progress bar (non-blocking) */}
       {isBatchTtsRunning && (
-        <div
-          className="fixed z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm pointer-events-auto"
-          style={{ top: 0, right: 0, bottom: 0, left: 0, width: '100vw', height: '100vh' }}
-        >
-          <div className="card p-6 space-y-3 text-center max-w-sm">
+        <div className="fixed bottom-4 right-4 z-50 pointer-events-auto">
+          <div className="card p-4 space-y-2 shadow-lg border max-w-xs bg-background">
             <p className="text-sm font-medium">
               {t('editor.batchTtsRunning', {
                 current: batchTtsProgress?.current ?? 0,
@@ -295,12 +299,9 @@ export default function ScriptEditor() {
                 </p>
               </div>
             )}
-            <div className="flex gap-2 justify-center">
-              <Button variant="destructive" size="sm" onClick={() => void cancelBatchTts()}>
-                {t('editor.cancelBatchTts')}
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">{t('editor.batchTtsHint')}</p>
+            <Button variant="destructive" size="sm" className="w-full" onClick={() => void cancelBatchTts()}>
+              {t('editor.cancelBatchTts')}
+            </Button>
           </div>
         </div>
       )}
@@ -317,6 +318,7 @@ export default function ScriptEditor() {
         hasAgentPlan={!!agentPlan}
         open={showOutlineDialog}
         onOpenChange={setShowOutlineDialog}
+        saved={outlineSaved}
       />
 
       {/* Analyzing streaming */}

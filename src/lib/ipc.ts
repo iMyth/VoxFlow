@@ -473,6 +473,10 @@ export async function clearAudioFragments(projectId: string): Promise<void> {
   return ipcCall<void>('clear_audio_fragments', { projectId });
 }
 
+export async function deleteAudioByLine(lineId: string): Promise<void> {
+  return ipcCall<void>('delete_audio_by_line', { lineId });
+}
+
 export async function clearTtsFragments(projectId: string): Promise<void> {
   return ipcCall<void>('clear_tts_fragments', { projectId });
 }
@@ -531,6 +535,33 @@ export async function exportAudioMix(
 
 export function onMixProgress(callback: (progress: MixProgress) => void): Promise<UnlistenFn> {
   return listen<MixProgress>('mix-progress', (event) => {
+    callback(event.payload);
+  });
+}
+
+// ---- Video Export ----
+
+export type VideoStyle = 'showwaves' | 'showfreqs' | 'avectorscope' | 'showspectrum' | 'particles';
+
+export interface VideoExportConfig {
+  audio_path: string;
+  output_path: string;
+  style: VideoStyle;
+  width?: number;
+  height?: number;
+  fg_color?: string;
+  bg_color?: string;
+  bg_image_path?: string | null;
+  fps?: number;
+  symmetry_folds?: number;
+}
+
+export async function exportVideo(config: VideoExportConfig): Promise<string> {
+  return ipcCall<string>('export_video', { config });
+}
+
+export function onVideoProgress(callback: (progress: MixProgress) => void): Promise<UnlistenFn> {
+  return listen<MixProgress>('video-progress', (event) => {
     callback(event.payload);
   });
 }
