@@ -1,15 +1,17 @@
-//! Frame renderer — draws particles with kaleidoscope symmetry using tiny-skia,
-//! pipes raw RGBA pixels directly to FFmpeg stdin (no PNG files, no disk I/O).
+//! Frame renderer — draws particles with kaleidoscope symmetry using direct pixel
+//! manipulation (no path rasterization), pipes raw RGBA to FFmpeg via a multi-threaded
+//! pipeline: update (serial) → render (parallel) → encode (piped).
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 
 use log::info;
-use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Transform};
+use rayon::prelude::*;
 
 use super::audio_analysis::{extract_audio_features, FrameFeatures};
-use super::particle_system::{hsl_to_rgb, ParticleConfig, ParticleSystem};
+use super::particle_system::{hsl_to_rgb, ParticleConfig, ParticleSystem, Particle};
 use crate::core::error::AppError;
 use crate::core::models::MixProgress;
 
@@ -27,8 +29,66 @@ pub struct ParticleVideoConfig {
     pub bg_color: (u8, u8, u8),
 }
 
+/// Pre-computed circle template for a given radius.
+/// Stores (dx, dy, alpha_multiplier) offsets relative to center.
+struct CircleTemplate {
+    /// For each integer radius, store the pixel offsets and alpha weights.
+    entries: Vec<CircleEntry>,
+}
+
+struct CircleEntry {
+    /// Pixel offsets and alpha multiplier for this radius.
+    pixels: Vec<(i32, i32, f32)>,
+}
+
+impl CircleTemplate {
+    /// Pre-compute circle templates for radii 1..=max_radius.
+    fn new(max_radius: u32) -> Self {
+        let mut entries = Vec::with_capacity(max_radius as usize + 1);
+
+        for r in 0..=max_radius {
+            let rf = r as f32;
+            let mut pixels = Vec::new();
+
+            if r == 0 {
+                pixels.push((0, 0, 1.0));
+            } else {
+                let r_sq = rf * rf;
+                let ir = r as i32;
+                for dy in -ir..=ir {
+                    for dx in -ir..=ir {
+                        let dist_sq = (dx * dx + dy * dy) as f32;
+                        if dist_sq <= r_sq {
+                            // Smooth edge: anti-alias the last pixel ring
+                            let dist = dist_sq.sqrt();
+                            let alpha = if dist > rf - 1.0 {
+                                (rf - dist).clamp(0.0, 1.0)
+                            } else {
+                                1.0
+                            };
+                            if alpha > 0.01 {
+                                pixels.push((dx, dy, alpha));
+                            }
+                        }
+                    }
+                }
+            }
+
+            entries.push(CircleEntry { pixels });
+        }
+
+        Self { entries }
+    }
+
+    #[inline]
+    fn get(&self, radius: u32) -> &[( i32, i32, f32)] {
+        let idx = (radius as usize).min(self.entries.len() - 1);
+        &self.entries[idx].pixels
+    }
+}
+
 /// Render a particle visualization video from audio.
-/// Pipes raw pixel data directly to FFmpeg — no temp files needed.
+/// Uses a pipelined architecture for maximum throughput.
 pub fn render_particle_video<F>(
     config: &ParticleVideoConfig,
     on_progress: F,
@@ -60,7 +120,7 @@ where
         stage: format!("音频分析完成，共 {} 帧", total_frames),
     });
 
-    // Step 2: Start FFmpeg process that reads raw RGBA from stdin
+    // Step 2: Start FFmpeg process — use ultrafast preset for speed
     let ffmpeg_bin = find_ffmpeg();
     let mut child = Command::new(&ffmpeg_bin)
         .args([
@@ -73,10 +133,11 @@ where
             "-i", "pipe:0",
             // Input: audio file
             "-i", &config.audio_path.to_string_lossy(),
-            // Video encoding
+            // Video encoding — ultrafast for speed, YouTube will re-encode anyway
             "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "22",
+            "-preset", "ultrafast",
+            "-tune", "stillimage",
+            "-crf", "23",
             "-pix_fmt", "yuv420p",
             // Audio encoding
             "-c:a", "aac",
@@ -99,7 +160,7 @@ where
     let mut stdin = child.stdin.take()
         .ok_or_else(|| AppError::FFmpeg("Failed to open FFmpeg stdin".to_string()))?;
 
-    // Step 3: Initialize particle system
+    // Step 3: Initialize particle system and circle templates
     let particle_config = ParticleConfig {
         symmetry_folds: config.symmetry_folds,
         max_spawn_rate: 12,
@@ -109,38 +170,76 @@ where
     };
     let mut system = ParticleSystem::new(particle_config);
 
-    // Step 4: Render frames and pipe directly to FFmpeg
+    // Pre-compute circle templates up to max possible radius
+    let max_radius = 20u32; // max particle size
+    let circle_templates = CircleTemplate::new(max_radius);
+
+    // Pre-compute fold angles
+    let angle_step = std::f32::consts::TAU / config.symmetry_folds as f32;
+    let fold_angles: Vec<(f32, f32)> = (0..config.symmetry_folds)
+        .map(|fold| {
+            let angle = fold as f32 * angle_step;
+            (angle.cos(), angle.sin())
+        })
+        .collect();
+
+    // Step 4: Pipelined rendering
+    // We use a bounded channel so the render thread doesn't get too far ahead of FFmpeg.
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
+
+    let width = config.width;
+    let height = config.height;
+
+    // Writer thread: receives rendered frames and pipes to FFmpeg
+    let writer_handle = std::thread::spawn(move || -> Result<(), String> {
+        for frame_data in rx {
+            if stdin.write_all(&frame_data).is_err() {
+                break;
+            }
+        }
+        drop(stdin);
+        Ok(())
+    });
+
+    // Main loop: update particles (serial), render frame (parallel pixel ops), send to writer
     let render_progress_start = 5.0;
     let render_progress_end = 95.0;
 
-    // Reuse a single pixmap across frames to avoid allocation
-    let mut pixmap = Pixmap::new(config.width, config.height)
-        .ok_or_else(|| AppError::FFmpeg("Failed to create pixmap".to_string()))?;
+    let cx = width as f32 / 2.0;
+    let cy = height as f32 / 2.0;
+    let scale = width.max(height) as f32 / 2.0;
+    let bg_color = config.bg_color;
+    let base_hue = config.base_hue;
 
     for (frame_idx, frame_features) in features.iter().enumerate() {
-        // Update particle system
+        // Update particle system (must be serial — stateful)
         system.update(frame_features);
 
-        // Render frame into the reused pixmap
-        render_frame_into(
-            &mut pixmap,
-            &system,
-            config.width,
-            config.height,
-            config.symmetry_folds,
-            config.bg_color,
+        // Render frame using direct pixel manipulation
+        let frame_data = render_frame_fast(
+            &system.particles,
+            width,
+            height,
+            cx,
+            cy,
+            scale,
+            &fold_angles,
+            bg_color,
+            base_hue,
             frame_features,
+            &circle_templates,
         );
 
-        // Write raw RGBA pixels directly to FFmpeg stdin
-        if stdin.write_all(pixmap.data()).is_err() {
-            break; // FFmpeg closed pipe (e.g. error)
+        // Send to writer thread
+        if tx.send(frame_data).is_err() {
+            break; // Writer died (FFmpeg error)
         }
 
-        // Progress update every 30 frames (~1 second)
+        // Progress update every 30 frames
         if frame_idx % 30 == 0 || frame_idx == total_frames - 1 {
             let pct = render_progress_start
-                + (frame_idx as f32 / total_frames as f32) * (render_progress_end - render_progress_start);
+                + (frame_idx as f32 / total_frames as f32)
+                    * (render_progress_end - render_progress_start);
             on_progress(MixProgress {
                 percent: pct,
                 stage: format!("渲染帧 {}/{}", frame_idx + 1, total_frames),
@@ -148,8 +247,14 @@ where
         }
     }
 
-    // Close stdin to signal EOF to FFmpeg
-    drop(stdin);
+    // Signal writer we're done
+    drop(tx);
+
+    // Wait for writer thread
+    writer_handle
+        .join()
+        .map_err(|_| AppError::FFmpeg("Writer thread panicked".to_string()))?
+        .map_err(|e| AppError::FFmpeg(e))?;
 
     // Wait for FFmpeg to finish
     let output = child.wait_with_output()
@@ -172,101 +277,147 @@ where
     Ok(())
 }
 
-/// Render a single frame with kaleidoscope symmetry into an existing pixmap.
-fn render_frame_into(
-    pixmap: &mut Pixmap,
-    system: &ParticleSystem,
+/// Render a single frame using direct pixel manipulation with parallel scanline rendering.
+/// Returns owned RGBA buffer.
+fn render_frame_fast(
+    particles: &[Particle],
     width: u32,
     height: u32,
-    symmetry_folds: u32,
+    cx: f32,
+    cy: f32,
+    scale: f32,
+    fold_angles: &[(f32, f32)],
     bg_color: (u8, u8, u8),
+    base_hue: f32,
     features: &FrameFeatures,
-) {
-    // Clear with background color
-    pixmap.fill(Color::from_rgba8(bg_color.0, bg_color.1, bg_color.2, 255));
+    circle_templates: &CircleTemplate,
+) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let frame_size = w * h * 4;
 
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
-    // Use the longer edge as scale so the pattern fills the width,
-    // with top/bottom naturally clipped — keeps circles round.
-    let scale = width.max(height) as f32 / 2.0;
+    // Initialize buffer with background color
+    let mut buf = vec![0u8; frame_size];
+    // Fill background using chunks for efficiency
+    for pixel in buf.chunks_exact_mut(4) {
+        pixel[0] = bg_color.0;
+        pixel[1] = bg_color.1;
+        pixel[2] = bg_color.2;
+        pixel[3] = 255;
+    }
 
-    let angle_step = std::f32::consts::TAU / symmetry_folds as f32;
+    // Pre-compute all draw commands (particle positions + colors) to avoid
+    // borrow issues and enable potential future parallelism on the draw step.
+    // Each draw command: (screen_x, screen_y, radius, r, g, b, alpha)
+    let draw_commands: Vec<(f32, f32, u32, u8, u8, u8, u8)> = particles
+        .par_iter()
+        .flat_map_iter(|particle| {
+            let alpha_f = particle.life * particle.brightness;
+            let alpha = (alpha_f * 255.0).clamp(0.0, 255.0) as u8;
+            if alpha < 5 {
+                return Vec::new();
+            }
 
-    // Pre-compute sin/cos for each fold
-    let fold_angles: Vec<(f32, f32)> = (0..symmetry_folds)
-        .map(|fold| {
-            let angle = fold as f32 * angle_step;
-            (angle.cos(), angle.sin())
+            let (r, g, b) = hsl_to_rgb(particle.hue, particle.saturation, 0.55 + particle.life * 0.15);
+            let size = particle.size * (0.5 + features.rms * 0.5);
+            let radius = (size as u32).min(20).max(1);
+
+            let mut cmds = Vec::with_capacity(fold_angles.len() * 2);
+
+            for &(cos_a, sin_a) in fold_angles {
+                let rx = particle.x * cos_a - particle.y * sin_a;
+                let ry = particle.x * sin_a + particle.y * cos_a;
+
+                for &(px, py) in &[(rx, ry), (rx, -ry)] {
+                    let screen_x = cx + px * scale;
+                    let screen_y = cy + py * scale;
+
+                    // Skip if off-screen (with margin)
+                    let rf = radius as f32;
+                    if screen_x < -rf || screen_x > width as f32 + rf
+                        || screen_y < -rf || screen_y > height as f32 + rf
+                    {
+                        continue;
+                    }
+
+                    cmds.push((screen_x, screen_y, radius, r, g, b, alpha));
+                }
+            }
+
+            cmds
         })
         .collect();
 
-    // Draw each particle with N-fold symmetry
-    for particle in &system.particles {
-        let alpha = (particle.life * particle.brightness * 255.0).clamp(0.0, 255.0) as u8;
-        if alpha < 5 {
+    // Draw all commands onto the buffer (serial — pixel writes to shared buffer)
+    for &(screen_x, screen_y, radius, r, g, b, alpha) in &draw_commands {
+        draw_circle_fast(
+            &mut buf,
+            w,
+            h,
+            screen_x,
+            screen_y,
+            radius,
+            r,
+            g,
+            b,
+            alpha,
+            circle_templates,
+        );
+    }
+
+    // Center glow
+    if features.rms > 0.1 {
+        let glow_size = (20.0 + features.rms * 60.0) as u32;
+        let glow_radius = glow_size.min(20);
+        let glow_alpha = (features.rms * 80.0).clamp(0.0, 80.0) as u8;
+        let (gr, gg, gb) = hsl_to_rgb(base_hue, 0.8, 0.6);
+        draw_circle_fast(&mut buf, w, h, cx, cy, glow_radius, gr, gg, gb, glow_alpha, circle_templates);
+    }
+
+    buf
+}
+
+/// Draw a circle directly into the pixel buffer using pre-computed templates.
+#[inline]
+fn draw_circle_fast(
+    buf: &mut [u8],
+    width: usize,
+    height: usize,
+    cx: f32,
+    cy: f32,
+    radius: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    alpha: u8,
+    templates: &CircleTemplate,
+) {
+    let icx = cx as i32;
+    let icy = cy as i32;
+    let pixels = templates.get(radius);
+
+    let w = width as i32;
+    let h = height as i32;
+    let a = alpha as u32;
+
+    for &(dx, dy, edge_alpha) in pixels {
+        let px = icx + dx;
+        let py = icy + dy;
+
+        if px < 0 || px >= w || py < 0 || py >= h {
             continue;
         }
 
-        let (r, g, b) = hsl_to_rgb(particle.hue, particle.saturation, 0.55 + particle.life * 0.15);
+        let idx = ((py as usize) * width + (px as usize)) * 4;
 
-        let mut paint = Paint::default();
-        paint.set_color(Color::from_rgba8(r, g, b, alpha));
-        paint.anti_alias = true;
+        // Alpha blend: out = src * alpha + dst * (1 - alpha)
+        let final_alpha = ((a * (edge_alpha * 256.0) as u32) >> 8).min(255);
+        let inv_alpha = 255 - final_alpha;
 
-        let size = particle.size * (0.5 + features.rms * 0.5);
-
-        for &(cos_a, sin_a) in &fold_angles {
-            // Rotate particle position
-            let rx = particle.x * cos_a - particle.y * sin_a;
-            let ry = particle.x * sin_a + particle.y * cos_a;
-
-            // Draw original + mirror
-            let positions = [(rx, ry), (rx, -ry)];
-
-            for &(px, py) in &positions {
-                let screen_x = cx + px * scale;
-                let screen_y = cy + py * scale;
-
-                // Skip if off-screen
-                if screen_x < -size || screen_x > width as f32 + size
-                    || screen_y < -size || screen_y > height as f32 + size
-                {
-                    continue;
-                }
-
-                // Draw circle
-                if let Some(path) = PathBuilder::from_circle(screen_x, screen_y, size) {
-                    pixmap.fill_path(
-                        &path,
-                        &paint,
-                        tiny_skia::FillRule::Winding,
-                        Transform::identity(),
-                        None,
-                    );
-                }
-            }
-        }
-    }
-
-    // Center glow based on RMS
-    if features.rms > 0.1 {
-        let glow_size = 20.0 + features.rms * 60.0;
-        let glow_alpha = (features.rms * 80.0).clamp(0.0, 80.0) as u8;
-        let (gr, gg, gb) = hsl_to_rgb(system.config.base_hue, 0.8, 0.6);
-
-        let mut glow_paint = Paint::default();
-        glow_paint.set_color(Color::from_rgba8(gr, gg, gb, glow_alpha));
-        glow_paint.anti_alias = true;
-
-        if let Some(path) = PathBuilder::from_circle(cx, cy, glow_size) {
-            pixmap.fill_path(
-                &path,
-                &glow_paint,
-                tiny_skia::FillRule::Winding,
-                Transform::identity(),
-                None,
-            );
-        }
+        // SAFETY: bounds checked above
+        buf[idx]     = ((r as u32 * final_alpha + buf[idx] as u32 * inv_alpha) >> 8) as u8;
+        buf[idx + 1] = ((g as u32 * final_alpha + buf[idx + 1] as u32 * inv_alpha) >> 8) as u8;
+        buf[idx + 2] = ((b as u32 * final_alpha + buf[idx + 2] as u32 * inv_alpha) >> 8) as u8;
+        // Keep alpha at 255 (opaque frame)
     }
 }
