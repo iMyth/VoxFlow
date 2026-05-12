@@ -162,11 +162,11 @@ impl FfmpegVideoEncoder {
     }
 }
 
-/// Spawn an FFmpeg subprocess that reads raw RGBA frames from stdin and encodes H.264 + AAC audio.
+/// Spawn an FFmpeg subprocess that reads raw RGBA frames from stdin and encodes video + AAC audio.
 ///
 /// Automatically picks the best encoder and quality settings for the current platform:
-/// - **macOS Apple Silicon (M1/M2/M3/M4)**: `h264_videotoolbox` (hardware encoding)
-/// - **Other platforms**: `libx264` with `slow` preset and CRF 28
+/// - **macOS Apple Silicon (M1/M2/M3/M4)**: `hevc_videotoolbox` (HEVC hardware encoding, ~40% smaller)
+/// - **Other platforms**: `libx264` with `slow` preset and CRF 26
 ///
 /// Returns `(encoder, tx)` where:
 /// - `tx` sends raw RGBA frames (`width * height * 4` bytes, RGBA order)
@@ -202,22 +202,22 @@ pub fn spawn_video_encoder(
     ];
 
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        // Apple Silicon: hardware encoder via VideoToolbox
-        // -q:v 1-100 (lower = better). 60 is roughly CRF 26-28 quality.
-        // -profile:v high for best compression efficiency.
+        // Apple Silicon: HEVC hardware encoder via VideoToolbox
+        // ~40% smaller than H.264 at same quality, zero CPU overhead.
+        // -q:v 1-100 (lower = better). 55 gives excellent quality at small size.
         args.extend_from_slice(&[
-            "-c:v".into(), "h264_videotoolbox".into(),
-            "-q:v".into(), "60".into(),
-            "-profile:v".into(), "high".into(),
+            "-c:v".into(), "hevc_videotoolbox".into(),
+            "-q:v".into(), "55".into(),
+            "-tag:v".into(), "hvc1".into(), // Required for YouTube/Apple compatibility
             "-allow_sw".into(), "1".into(),
         ]);
     } else {
-        // Intel Mac / Windows / Linux: software x264
+        // Intel Mac / Windows / Linux: software x264 (libx265 is too slow)
         args.extend_from_slice(&[
             "-c:v".into(), "libx264".into(),
             "-preset".into(), "slow".into(),
             "-tune".into(), "stillimage".into(),
-            "-crf".into(), "28".into(),
+            "-crf".into(), "26".into(),
         ]);
     }
 
