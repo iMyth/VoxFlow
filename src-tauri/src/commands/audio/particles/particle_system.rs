@@ -219,7 +219,7 @@ impl ParticleSystem {
                 }
                 ParticleKind::Glow => {
                     let size = 7.0 + self.smooth_low * 14.0 + rng.gen::<f32>() * 5.0;
-                    let decay = 0.003 + rng.gen::<f32>() * 0.004;
+                    let decay = 0.005 + rng.gen::<f32>() * 0.006;
                     (size, decay)
                 }
                 ParticleKind::Spark => {
@@ -287,9 +287,10 @@ impl ParticleSystem {
         self.particles.retain(|p| p.life > 0.0);
         self.rings.retain(|r| r.life > 0.0 && r.radius < 1.2);
 
-        // Cap particle count
-        if self.particles.len() > 5000 {
-            self.particles.drain(0..self.particles.len() - 4000);
+        // Cap particle count — aggressive cap to prevent slowdown on long videos.
+        // Keep the newest particles (at the end) which are most visible.
+        if self.particles.len() > 2000 {
+            self.particles.drain(0..self.particles.len() - 1500);
         }
     }
 

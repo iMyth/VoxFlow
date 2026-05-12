@@ -171,7 +171,7 @@ where
             let params = ParticleParams {
                 width: render_width,
                 height: render_height,
-                num_particles: system.particles.len().min(6000) as u32,
+                num_particles: system.particles.len().min(2000) as u32,
                 num_rings: system.rings.len().min(32) as u32,
                 symmetry_folds: config.symmetry_folds,
                 frame_idx: frame_idx as u32,

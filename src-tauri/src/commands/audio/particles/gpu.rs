@@ -235,18 +235,14 @@ impl GpuParticleRenderer {
 
     /// Render a single frame. Uploads current particle state to GPU and dispatches.
     pub fn render_frame(&self, params: &ParticleParams, system: &ParticleSystem) -> Vec<u8> {
-        // Convert particles to GPU format, sorted by visibility (life × brightness)
-        // so the shader's 512-particle cap keeps the most visible ones.
-        let mut sorted_indices: Vec<usize> = (0..system.particles.len().min(MAX_PARTICLES)).collect();
-        sorted_indices.sort_unstable_by(|&a, &b| {
-            let va = system.particles[a].life * system.particles[a].brightness;
-            let vb = system.particles[b].life * system.particles[b].brightness;
-            vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let gpu_particles: Vec<GpuParticle> = sorted_indices
+        // Take the most recent particles (at the end of the vec) — they are the
+        // most visible since they have the highest life values. This avoids an
+        // expensive O(n log n) sort that was causing slowdown on long videos.
+        let particle_count = system.particles.len().min(MAX_PARTICLES);
+        let start = system.particles.len().saturating_sub(particle_count);
+        let gpu_particles: Vec<GpuParticle> = system.particles[start..]
             .iter()
-            .map(|&i| particle_to_gpu(&system.particles[i]))
+            .map(|p| particle_to_gpu(p))
             .collect();
 
         let gpu_rings: Vec<GpuRing> = system
