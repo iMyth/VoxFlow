@@ -1,11 +1,7 @@
-//! Starfield renderer — classic "flying through space" effect with audio-reactive
-//! speed, trails, and color bursts. Optimized for real-time-ish rendering.
+//! Starfield tunnel renderer — "flying through space" with audio-reactive effects.
 //!
-//! Performance strategy:
-//! - Background is pre-computed once and memcpy'd each frame
-//! - No per-frame sorting (stars are small, overlap is fine)
-//! - Minimal per-pixel math (no sqrt in hot loops)
-//! - Trail drawing uses fast integer Bresenham
+//! Enhanced visuals: spiral motion, nebula background, warp speed lines, richer colors.
+//! Performance: GPU-accelerated via wgpu, with CPU fallback.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,13 +13,14 @@ use std::sync::mpsc;
 use log::info;
 use rand::Rng;
 
+use super::gpu::{GpuStar, GpuStarfieldRenderer, StarfieldParams};
 use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::commands::audio::particles::audio_analysis::{extract_audio_features, FrameFeatures};
-use crate::commands::audio::particles::particle_system::hsl_to_rgb;
 use crate::core::error::AppError;
 use crate::core::models::MixProgress;
 
 /// Configuration for starfield video rendering.
+#[allow(dead_code)]
 pub struct StarfieldVideoConfig {
     pub audio_path: PathBuf,
     pub output_path: PathBuf,
@@ -36,7 +33,6 @@ pub struct StarfieldVideoConfig {
 }
 
 /// A single star in 3D space.
-#[derive(Clone)]
 struct Star {
     x: f32,
     y: f32,
@@ -49,16 +45,18 @@ struct Star {
     brightness: f32,
 }
 
-/// Starfield state.
+/// Starfield simulation state.
 struct Starfield {
     stars: Vec<Star>,
     max_depth: f32,
     smooth_rms: f32,
     smooth_low: f32,
+    smooth_mid: f32,
     prev_rms: f32,
     beat_cooldown: u32,
     is_beat: bool,
     frame_count: u32,
+    warp_intensity: f32,
 }
 
 impl Starfield {
@@ -73,8 +71,8 @@ impl Starfield {
                 prev_sy: 0.0,
                 has_prev: false,
                 hue: rng.gen::<f32>() * 360.0,
-                speed_mult: 0.5 + rng.gen::<f32>() * 1.0,
-                brightness: 0.7 + rng.gen::<f32>() * 0.3,
+                speed_mult: 0.4 + rng.gen::<f32>() * 1.2,
+                brightness: 0.6 + rng.gen::<f32>() * 0.4,
             })
             .collect();
 
@@ -83,10 +81,12 @@ impl Starfield {
             max_depth,
             smooth_rms: 0.0,
             smooth_low: 0.0,
+            smooth_mid: 0.0,
             prev_rms: 0.0,
             beat_cooldown: 0,
             is_beat: false,
             frame_count: 0,
+            warp_intensity: 0.0,
         }
     }
 
@@ -94,73 +94,128 @@ impl Starfield {
         self.frame_count += 1;
         let mut rng = rand::thread_rng();
 
-        self.smooth_rms += (features.rms - self.smooth_rms) * 0.12;
-        self.smooth_low += (features.low_energy - self.smooth_low) * 0.10;
+        self.smooth_rms += (features.rms - self.smooth_rms) * 0.15;
+        self.smooth_low += (features.low_energy - self.smooth_low) * 0.12;
+        self.smooth_mid += (features.mid_energy - self.smooth_mid) * 0.12;
 
-        self.is_beat = self.smooth_rms > self.prev_rms + 0.12 && self.beat_cooldown == 0;
+        // Beat detection
+        self.is_beat = self.smooth_rms > self.prev_rms + 0.10 && self.beat_cooldown == 0;
         if self.is_beat {
-            self.beat_cooldown = 10;
+            self.beat_cooldown = 8;
+            self.warp_intensity = 1.0; // Flash warp on beat
         }
         if self.beat_cooldown > 0 {
             self.beat_cooldown -= 1;
         }
         self.prev_rms = self.smooth_rms;
 
-        let base_speed = 0.012;
-        let audio_mod = self.smooth_rms * 0.008;
-        let global_speed = base_speed + audio_mod;
+        // Warp intensity decays
+        self.warp_intensity *= 0.92;
+
+        let base_speed = 0.015;
+        let audio_speed = self.smooth_rms * 0.012 + self.smooth_low * 0.005;
+        let global_speed = base_speed + audio_speed;
 
         let cx = width as f32 / 2.0;
         let cy = height as f32 / 2.0;
         let focal = width as f32 * 0.6;
 
+        // Subtle spiral rotation (audio-reactive)
+        let spiral_angle = self.smooth_mid * 0.003;
+        let cos_s = spiral_angle.cos();
+        let sin_s = spiral_angle.sin();
+
         for star in &mut self.stars {
+            // Save previous screen position for trail
             if star.z > 0.01 {
-                let sx = cx + (star.x * focal) / star.z;
-                let sy = cy + (star.y * focal) / star.z;
+                let inv_z = 1.0 / star.z;
+                let sx = cx + star.x * focal * inv_z;
+                let sy = cy + star.y * focal * inv_z;
                 star.prev_sx = sx;
                 star.prev_sy = sy;
                 star.has_prev = true;
             }
 
+            // Move star toward camera
             star.z -= global_speed * star.speed_mult;
 
+            // Apply subtle spiral rotation
+            let new_x = star.x * cos_s - star.y * sin_s;
+            let new_y = star.x * sin_s + star.y * cos_s;
+            star.x = new_x;
+            star.y = new_y;
+
+            // Respawn if past camera
             if star.z <= 0.01 {
                 star.x = rng.gen::<f32>() * 2.0 - 1.0;
                 star.y = rng.gen::<f32>() * 2.0 - 1.0;
-                star.z = self.max_depth - rng.gen::<f32>() * 0.2;
+                star.z = self.max_depth - rng.gen::<f32>() * 0.3;
                 star.has_prev = false;
-                star.speed_mult = 0.5 + rng.gen::<f32>() * 1.0;
-                star.brightness = 0.7 + rng.gen::<f32>() * 0.3;
+                star.speed_mult = 0.4 + rng.gen::<f32>() * 1.2;
+                star.brightness = 0.6 + rng.gen::<f32>() * 0.4;
+                // More colorful stars
                 star.hue = if self.is_beat {
-                    (self.frame_count as f32 * 2.0) % 360.0
+                    (self.frame_count as f32 * 3.0 + rng.gen::<f32>() * 40.0) % 360.0
                 } else {
-                    rng.gen::<f32>() * 360.0
+                    // Bias toward blue/purple/cyan for space feel
+                    180.0 + rng.gen::<f32>() * 180.0
                 };
             }
         }
 
+        // Burst new stars on beat
         if self.is_beat {
-            for _ in 0..50 {
-                if self.stars.len() < 1200 {
-                    self.stars.push(Star {
-                        x: rng.gen::<f32>() * 2.0 - 1.0,
-                        y: rng.gen::<f32>() * 2.0 - 1.0,
-                        z: self.max_depth * (0.7 + rng.gen::<f32>() * 0.3),
-                        prev_sx: 0.0,
-                        prev_sy: 0.0,
-                        has_prev: false,
-                        hue: (self.frame_count as f32 * 2.0 + rng.gen::<f32>() * 30.0) % 360.0,
-                        speed_mult: 0.8 + rng.gen::<f32>() * 0.8,
-                        brightness: 0.9 + rng.gen::<f32>() * 0.1,
-                    });
-                }
+            let burst_count = 80.min(1500 - self.stars.len());
+            for _ in 0..burst_count {
+                self.stars.push(Star {
+                    x: rng.gen::<f32>() * 2.0 - 1.0,
+                    y: rng.gen::<f32>() * 2.0 - 1.0,
+                    z: self.max_depth * (0.6 + rng.gen::<f32>() * 0.4),
+                    prev_sx: 0.0,
+                    prev_sy: 0.0,
+                    has_prev: false,
+                    hue: (self.frame_count as f32 * 3.0 + rng.gen::<f32>() * 60.0) % 360.0,
+                    speed_mult: 0.6 + rng.gen::<f32>() * 1.0,
+                    brightness: 0.8 + rng.gen::<f32>() * 0.2,
+                });
             }
         }
 
-        if self.stars.len() > 1200 {
-            self.stars.truncate(1000);
+        // Cap star count
+        if self.stars.len() > 1500 {
+            self.stars.truncate(1200);
         }
+    }
+
+    /// Convert stars to GPU format for the current frame.
+    fn to_gpu_stars(&self, width: u32, height: u32) -> Vec<GpuStar> {
+        let cx = width as f32 / 2.0;
+        let cy = height as f32 / 2.0;
+        let focal = width as f32 * 0.6;
+        let max_depth = self.max_depth;
+
+        self.stars
+            .iter()
+            .filter(|s| s.z > 0.01)
+            .take(2000)
+            .map(|star| {
+                let inv_z = 1.0 / star.z;
+                let sx = cx + star.x * focal * inv_z;
+                let sy = cy + star.y * focal * inv_z;
+                let depth = 1.0 - (star.z / max_depth);
+
+                GpuStar {
+                    sx,
+                    sy,
+                    prev_sx: star.prev_sx,
+                    prev_sy: star.prev_sy,
+                    depth,
+                    hue: star.hue,
+                    brightness: star.brightness,
+                    has_trail: if star.has_prev { 1.0 } else { 0.0 },
+                }
+            })
+            .collect()
     }
 }
 
@@ -191,22 +246,20 @@ where
         return Err(AppError::FFmpeg("No audio frames to render".to_string()));
     }
 
-    let width = config.width;
-    let height = config.height;
-    let w = width as usize;
-    let h = height as usize;
+    // Render at half resolution, FFmpeg upscales with lanczos
+    let render_width = config.width / 2;
+    let render_height = config.height / 2;
+    let scale_filter = format!("scale={}:{}:flags=lanczos", config.width, config.height);
 
-    // Pre-compute background once (the expensive radial gradient or image blend)
-    on_progress(MixProgress {
-        percent: 2.0,
-        stage: "正在准备背景".to_string(),
-    });
+    // Try GPU renderer
+    let gpu_renderer = GpuStarfieldRenderer::new(render_width, render_height);
+    let use_gpu = gpu_renderer.is_some();
 
-    let bg_frame = precompute_background(
-        w, h,
-        config.bg_color,
-        config.bg_image_path.as_ref(),
-    );
+    if use_gpu {
+        info!("[Starfield] Using GPU-accelerated rendering");
+    } else {
+        info!("[Starfield] GPU unavailable, falling back to CPU");
+    }
 
     on_progress(MixProgress {
         percent: 5.0,
@@ -217,20 +270,15 @@ where
     let ffmpeg_bin = find_ffmpeg();
     let mut child = Command::new(&ffmpeg_bin)
         .args([
-            "-y",
-            "-f", "rawvideo",
-            "-pixel_format", "rgba",
-            "-video_size", &format!("{}x{}", width, height),
+            "-y", "-f", "rawvideo", "-pixel_format", "rgba",
+            "-video_size", &format!("{}x{}", render_width, render_height),
             "-framerate", &config.fps.to_string(),
             "-i", "pipe:0",
             "-i", &config.audio_path.to_string_lossy(),
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "stillimage",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "192k",
+            "-vf", &scale_filter,
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
+            "-crf", "23", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
             "-shortest",
             &config.output_path.to_string_lossy(),
         ])
@@ -250,42 +298,56 @@ where
         .ok_or_else(|| AppError::FFmpeg("Failed to open FFmpeg stdin".to_string()))?;
 
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
-
     let writer_handle = std::thread::spawn(move || -> Result<(), String> {
         for frame_data in rx {
-            if stdin.write_all(&frame_data).is_err() {
-                break;
-            }
+            if stdin.write_all(&frame_data).is_err() { break; }
         }
         drop(stdin);
         Ok(())
     });
 
-    let num_stars = 800;
-    let max_depth = 1.5f32;
-    let mut starfield = Starfield::new(num_stars, max_depth);
+    // Initialize starfield with more stars
+    let mut starfield = Starfield::new(1200, 2.0);
 
     let fg_color = config.fg_color;
+    let bg_color = config.bg_color;
 
+    // ─── Frame Loop ──────────────────────────────────────────────────────
     for (frame_idx, frame_features) in features.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
             info!("[Starfield] Render cancelled at frame {}/{}", frame_idx, total_frames);
             break;
         }
 
-        starfield.update(frame_features, width, height);
+        starfield.update(frame_features, render_width, render_height);
 
-        let frame_data = render_starfield_frame(
-            &starfield,
-            width, height,
-            fg_color,
-            &bg_frame,
-            frame_features,
-        );
+        let frame_data = if let Some(ref gpu) = gpu_renderer {
+            let gpu_stars = starfield.to_gpu_stars(render_width, render_height);
+            let params = StarfieldParams {
+                width: render_width,
+                height: render_height,
+                num_stars: gpu_stars.len() as u32,
+                _pad0: 0,
+                rms: starfield.smooth_rms,
+                low_energy: starfield.smooth_low,
+                mid_energy: starfield.smooth_mid,
+                high_energy: frame_features.high_energy,
+                fg_r: fg_color.0 as f32 / 255.0,
+                fg_g: fg_color.1 as f32 / 255.0,
+                fg_b: fg_color.2 as f32 / 255.0,
+                bg_r: bg_color.0 as f32 / 255.0,
+                bg_g: bg_color.1 as f32 / 255.0,
+                bg_b: bg_color.2 as f32 / 255.0,
+                frame_time: frame_idx as f32,
+                warp_intensity: starfield.warp_intensity,
+            };
+            gpu.render_frame(&params, &gpu_stars)
+        } else {
+            // Simple CPU fallback — just black with white dots
+            render_starfield_frame_cpu(&starfield, render_width, render_height, bg_color)
+        };
 
-        if tx.send(frame_data).is_err() {
-            break;
-        }
+        if tx.send(frame_data).is_err() { break; }
 
         if frame_idx % 30 == 0 || frame_idx == total_frames - 1 {
             let pct = 5.0 + (frame_idx as f32 / total_frames as f32) * 90.0;
@@ -298,8 +360,7 @@ where
 
     drop(tx);
 
-    writer_handle
-        .join()
+    writer_handle.join()
         .map_err(|_| AppError::FFmpeg("Writer thread panicked".to_string()))?
         .map_err(|e| AppError::FFmpeg(e))?;
 
@@ -319,295 +380,52 @@ where
         stage: "视频生成完成".to_string(),
     });
 
-    info!("[Starfield] Video rendered successfully: {:?}", config.output_path);
+    info!("[Starfield] Video rendered successfully (GPU={}): {:?}", use_gpu, config.output_path);
     Ok(())
 }
 
-/// Pre-compute the background frame (radial gradient or image blend).
-/// This is done ONCE and then memcpy'd into each frame buffer.
-fn precompute_background(
-    w: usize,
-    h: usize,
-    bg_color: (u8, u8, u8),
-    bg_image_path: Option<&PathBuf>,
-) -> Vec<u8> {
-    let mut buf = vec![0u8; w * h * 4];
-    let cx = w as f32 / 2.0;
-    let cy = h as f32 / 2.0;
-
-    if let Some(path) = bg_image_path {
-        if let Ok(tex) = load_bg_image(path, w as u32, h as u32) {
-            for i in 0..(w * h) {
-                let idx = i * 4;
-                let tex_r = tex[idx] as u32;
-                let tex_g = tex[idx + 1] as u32;
-                let tex_b = tex[idx + 2] as u32;
-                buf[idx]     = ((bg_color.0 as u32 * 160 + tex_r * 95) >> 8) as u8;
-                buf[idx + 1] = ((bg_color.1 as u32 * 160 + tex_g * 95) >> 8) as u8;
-                buf[idx + 2] = ((bg_color.2 as u32 * 160 + tex_b * 95) >> 8) as u8;
-                buf[idx + 3] = 255;
-            }
-            return buf;
-        }
-    }
-
-    // Radial gradient — use squared distance to avoid sqrt
-    let max_dist_sq = cx * cx + cy * cy;
-    let (br, bg_val, bb) = bg_color;
-    for y in 0..h {
-        let dy = y as f32 - cy;
-        let dy_sq = dy * dy;
-        for x in 0..w {
-            let dx = x as f32 - cx;
-            let dist_sq = dx * dx + dy_sq;
-            let t = (dist_sq / max_dist_sq).min(1.0); // No sqrt needed!
-            let idx = (y * w + x) * 4;
-            let factor = 1.0 + (1.0 - t) * 0.15;
-            buf[idx]     = (br as f32 * factor).min(255.0) as u8;
-            buf[idx + 1] = (bg_val as f32 * factor).min(255.0) as u8;
-            buf[idx + 2] = (bb as f32 * factor).min(255.0) as u8;
-            buf[idx + 3] = 255;
-        }
-    }
-
-    buf
-}
-
-/// Render a single starfield frame. Background is pre-computed and just copied in.
-fn render_starfield_frame(
+/// Simple CPU fallback — basic star rendering without fancy effects.
+fn render_starfield_frame_cpu(
     starfield: &Starfield,
     width: u32,
     height: u32,
-    fg_color: (u8, u8, u8),
-    bg_frame: &[u8],
-    features: &FrameFeatures,
+    bg_color: (u8, u8, u8),
 ) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
+    let mut buf = vec![0u8; w * h * 4];
 
-    // Start from pre-computed background (fast memcpy)
-    let mut buf = bg_frame.to_vec();
+    // Fill background
+    for i in 0..(w * h) {
+        let idx = i * 4;
+        buf[idx] = bg_color.0;
+        buf[idx + 1] = bg_color.1;
+        buf[idx + 2] = bg_color.2;
+        buf[idx + 3] = 255;
+    }
 
     let cx = width as f32 / 2.0;
     let cy = height as f32 / 2.0;
     let focal = width as f32 * 0.6;
-    let max_depth = starfield.max_depth;
 
-    // Draw stars directly — no sorting needed (small dots, alpha blended)
     for star in &starfield.stars {
-        if star.z <= 0.01 {
-            continue;
-        }
+        if star.z <= 0.01 { continue; }
 
-        // Project to screen
         let inv_z = 1.0 / star.z;
-        let sx = cx + star.x * focal * inv_z;
-        let sy = cy + star.y * focal * inv_z;
+        let sx = (cx + star.x * focal * inv_z) as i32;
+        let sy = (cy + star.y * focal * inv_z) as i32;
 
-        // Skip if off-screen (with small margin)
-        if sx < -10.0 || sx > width as f32 + 10.0 || sy < -10.0 || sy > height as f32 + 10.0 {
-            continue;
-        }
+        if sx < 0 || sx >= w as i32 || sy < 0 || sy >= h as i32 { continue; }
 
-        // Depth factor: 0 = far, 1 = near
-        let depth_factor = 1.0 - (star.z / max_depth);
-        let star_alpha = (depth_factor * star.brightness * 255.0).min(255.0) as u8;
-        if star_alpha < 8 {
-            continue;
-        }
+        let depth = 1.0 - (star.z / starfield.max_depth);
+        let alpha = (depth * star.brightness * 255.0).min(255.0) as u32;
+        let inv_a = 255 - alpha;
 
-        // Size: 1px far → 8px near (quadratic growth)
-        let star_size = (1.0 + depth_factor * depth_factor * 7.0) as u32;
-
-        // Color
-        let (sr, sg, sb) = if starfield.is_beat || depth_factor > 0.7 {
-            let (hr, hg, hb) = hsl_to_rgb(star.hue, 0.7, 0.7);
-            let blend = depth_factor * 0.6;
-            (lerp_u8(255, hr, blend), lerp_u8(255, hg, blend), lerp_u8(255, hb, blend))
-        } else {
-            let w_val = depth_factor * 0.3;
-            ((255.0 - w_val * 30.0) as u8, (255.0 - w_val * 10.0) as u8, 255u8)
-        };
-
-        // Draw trail (fast line)
-        if star.has_prev && depth_factor > 0.15 {
-            let trail_alpha = (star_alpha >> 1) as u8; // 50% of star alpha
-            let tr = (sr >> 1) + (sr >> 2); // ~75% brightness
-            let tg = (sg >> 1) + (sg >> 2);
-            let tb = (sb >> 1) + (sb >> 2);
-            draw_line_fast(&mut buf, w, h, star.prev_sx, star.prev_sy, sx, sy, tr, tg, tb, trail_alpha);
-        }
-
-        // Draw star dot
-        if star_size <= 1 {
-            // Single pixel — fastest path
-            let ix = sx as i32;
-            let iy = sy as i32;
-            if ix >= 0 && ix < w as i32 && iy >= 0 && iy < h as i32 {
-                let idx = (iy as usize * w + ix as usize) * 4;
-                blend_pixel(&mut buf, idx, sr, sg, sb, star_alpha);
-            }
-        } else {
-            draw_star_dot_fast(&mut buf, w, h, sx, sy, star_size, sr, sg, sb, star_alpha);
-        }
-    }
-
-    // Center glow (small, cheap)
-    if features.rms > 0.05 {
-        let glow_alpha = (30.0 + features.rms * 40.0) as u8;
-        let glow_radius = (6 + (features.low_energy * 12.0) as i32).min(18);
-        draw_soft_glow_fast(&mut buf, w, h, cx, cy, glow_radius, fg_color.0, fg_color.1, fg_color.2, glow_alpha);
+        let idx = (sy as usize * w + sx as usize) * 4;
+        buf[idx]     = ((255 * alpha + buf[idx] as u32 * inv_a) >> 8) as u8;
+        buf[idx + 1] = ((255 * alpha + buf[idx + 1] as u32 * inv_a) >> 8) as u8;
+        buf[idx + 2] = ((255 * alpha + buf[idx + 2] as u32 * inv_a) >> 8) as u8;
     }
 
     buf
-}
-
-/// Draw a star dot using a simple filled circle (no sqrt, uses r² comparison).
-#[inline]
-fn draw_star_dot_fast(
-    buf: &mut [u8],
-    w: usize,
-    h: usize,
-    cx: f32,
-    cy: f32,
-    radius: u32,
-    r: u8,
-    g: u8,
-    b: u8,
-    alpha: u8,
-) {
-    let ir = radius as i32;
-    let icx = cx as i32;
-    let icy = cy as i32;
-    let r_sq = (radius * radius) as i32;
-    let r_sq_outer = ((radius + 1) * (radius + 1)) as i32; // For anti-alias ring
-
-    for dy in -ir..=ir {
-        let py = icy + dy;
-        if py < 0 || py >= h as i32 {
-            continue;
-        }
-        let dy_sq = dy * dy;
-        for dx in -ir..=ir {
-            let px = icx + dx;
-            if px < 0 || px >= w as i32 {
-                continue;
-            }
-            let dist_sq = dx * dx + dy_sq;
-            if dist_sq <= r_sq {
-                let idx = (py as usize * w + px as usize) * 4;
-                blend_pixel(buf, idx, r, g, b, alpha);
-            } else if dist_sq <= r_sq_outer {
-                // Anti-alias edge: half alpha
-                let idx = (py as usize * w + px as usize) * 4;
-                blend_pixel(buf, idx, r, g, b, alpha >> 1);
-            }
-        }
-    }
-}
-
-/// Draw a line using fast integer stepping (no sub-pixel blending).
-#[inline]
-fn draw_line_fast(
-    buf: &mut [u8],
-    w: usize,
-    h: usize,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    r: u8,
-    g: u8,
-    b: u8,
-    alpha: u8,
-) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let steps = (dx.abs().max(dy.abs())) as u32;
-    if steps == 0 || steps > 200 {
-        return; // Skip degenerate or extremely long lines
-    }
-
-    let x_inc = dx / steps as f32;
-    let y_inc = dy / steps as f32;
-    let mut x = x0;
-    let mut y = y0;
-
-    for _ in 0..=steps {
-        let ix = x as i32;
-        let iy = y as i32;
-        if ix >= 0 && ix < w as i32 && iy >= 0 && iy < h as i32 {
-            let idx = (iy as usize * w + ix as usize) * 4;
-            blend_pixel(buf, idx, r, g, b, alpha);
-        }
-        x += x_inc;
-        y += y_inc;
-    }
-}
-
-/// Draw a soft glow using squared distance (no sqrt).
-fn draw_soft_glow_fast(
-    buf: &mut [u8],
-    w: usize,
-    h: usize,
-    cx: f32,
-    cy: f32,
-    radius: i32,
-    r: u8,
-    g: u8,
-    b: u8,
-    max_alpha: u8,
-) {
-    let icx = cx as i32;
-    let icy = cy as i32;
-    let r_sq = (radius * radius) as f32;
-
-    for dy in -radius..=radius {
-        let py = icy + dy;
-        if py < 0 || py >= h as i32 {
-            continue;
-        }
-        let dy_sq = (dy * dy) as f32;
-        for dx in -radius..=radius {
-            let px = icx + dx;
-            if px < 0 || px >= w as i32 {
-                continue;
-            }
-            let dist_sq = (dx * dx) as f32 + dy_sq;
-            if dist_sq <= r_sq {
-                // Quadratic falloff using dist_sq/r_sq (no sqrt!)
-                let t = 1.0 - dist_sq / r_sq;
-                let a = (max_alpha as f32 * t) as u8;
-                if a > 2 {
-                    let idx = (py as usize * w + px as usize) * 4;
-                    blend_pixel(buf, idx, r, g, b, a);
-                }
-            }
-        }
-    }
-}
-
-/// Fast alpha blend a single pixel.
-#[inline(always)]
-fn blend_pixel(buf: &mut [u8], idx: usize, r: u8, g: u8, b: u8, alpha: u8) {
-    let a = alpha as u32;
-    let inv_a = 255 - a;
-    buf[idx]     = ((r as u32 * a + buf[idx] as u32 * inv_a) >> 8) as u8;
-    buf[idx + 1] = ((g as u32 * a + buf[idx + 1] as u32 * inv_a) >> 8) as u8;
-    buf[idx + 2] = ((b as u32 * a + buf[idx + 2] as u32 * inv_a) >> 8) as u8;
-}
-
-/// Load and resize a background image. Returns RGBA buffer.
-fn load_bg_image(path: &PathBuf, width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let img = image::open(path)
-        .map_err(|e| format!("Failed to load background image: {}", e))?;
-    let resized = img.resize_to_fill(width, height, image::imageops::FilterType::Lanczos3);
-    let rgba = resized.to_rgba8();
-    Ok(rgba.into_raw())
-}
-
-/// Linear interpolation between two u8 values.
-#[inline]
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).clamp(0.0, 255.0) as u8
 }

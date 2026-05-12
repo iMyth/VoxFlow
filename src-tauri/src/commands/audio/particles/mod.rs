@@ -1,10 +1,13 @@
 //! Particle-based audio visualization renderer.
 //!
 //! Renders a kaleidoscope-style particle animation driven by audio features.
-//! Each frame is rendered to a PNG image, then assembled into video via FFmpeg.
+//! Uses wgpu compute shaders for GPU-accelerated rendering, with automatic
+//! fallback to CPU (rayon) if GPU is unavailable.
 
 pub mod audio_analysis;
-pub mod renderer;
+mod draw;
+pub mod gpu;
 pub mod particle_system;
+pub mod renderer;
 
 pub use renderer::render_particle_video;

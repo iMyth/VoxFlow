@@ -1,9 +1,10 @@
 //! Starfield tunnel visualization renderer.
 //!
-//! Renders a classic "flying through space" starfield effect driven by audio.
-//! Stars fly from the center outward with perspective projection, leaving
-//! gradient trails. Speed and intensity are modulated by audio energy.
+//! Renders a "flying through space" effect with audio-reactive speed,
+//! spiral motion, nebula background, and warp speed lines.
+//! Uses wgpu compute shaders for GPU-accelerated rendering.
 
+pub mod gpu;
 pub mod renderer;
 
 pub use renderer::render_starfield_video;

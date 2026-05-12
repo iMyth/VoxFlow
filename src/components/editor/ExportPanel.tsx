@@ -526,7 +526,27 @@ export default function ExportPanel() {
               <Select
                 value={videoStyle}
                 onValueChange={(v) => {
-                  setVideoStyle(v as VideoStyle);
+                  const style = v as VideoStyle;
+                  setVideoStyle(style);
+                  // Set recommended default colors per style
+                  switch (style) {
+                    case 'fractal':
+                      setVideoFgColor('e8a838');
+                      setVideoBgColor('050510');
+                      break;
+                    case 'starfield':
+                      setVideoFgColor('7c9ff5');
+                      setVideoBgColor('020208');
+                      break;
+                    case 'vinyl':
+                      setVideoFgColor('6366f1');
+                      setVideoBgColor('1a1a2e');
+                      break;
+                    case 'particles':
+                      setVideoFgColor('6366f1');
+                      setVideoBgColor('0a0a1a');
+                      break;
+                  }
                 }}
               >
                 <SelectTrigger className="h-9">
@@ -537,11 +557,6 @@ export default function ExportPanel() {
                   <SelectItem value="starfield">{t('export.styleStarfield')}</SelectItem>
                   <SelectItem value="vinyl">{t('export.styleVinyl')}</SelectItem>
                   <SelectItem value="fractal">{t('export.styleFractal')}</SelectItem>
-                  <SelectItem value="ink">{t('export.styleInk')}</SelectItem>
-                  <SelectItem value="showwaves">{t('export.styleShowwaves')}</SelectItem>
-                  <SelectItem value="showfreqs">{t('export.styleShowfreqs')}</SelectItem>
-                  <SelectItem value="avectorscope">{t('export.styleAvectorscope')}</SelectItem>
-                  <SelectItem value="showspectrum">{t('export.styleShowspectrum')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>

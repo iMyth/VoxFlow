@@ -9,13 +9,11 @@
 //! - Particle-based kaleidoscope visualization
 //! - Vinyl/CD disc visualization
 //! - Fractal zoom visualization
-//! - Ink diffusion visualization
 
 mod export;
 mod ffmpeg;
 pub mod fractal;
 mod import;
-pub mod ink;
 pub mod particles;
 mod player;
 mod utils;

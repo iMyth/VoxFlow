@@ -542,15 +542,10 @@ export function onMixProgress(callback: (progress: MixProgress) => void): Promis
 // ---- Video Export ----
 
 export type VideoStyle =
-  | 'showwaves'
-  | 'showfreqs'
-  | 'avectorscope'
-  | 'showspectrum'
   | 'particles'
   | 'vinyl'
   | 'starfield'
-  | 'fractal'
-  | 'ink';
+  | 'fractal';
 
 export interface VideoExportConfig {
   audio_path: string;

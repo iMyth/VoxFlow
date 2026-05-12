@@ -6,10 +6,8 @@
 //! - Color palette cycling (mid = hue rotation)
 //! - Iteration glow intensity (high = brighter edges)
 //!
-//! Performance optimizations:
-//! - Rayon parallel pixel computation per frame
-//! - Cardioid/period-2 bulb early-out
-//! - Smooth coloring with high bailout
+//! Performance: Uses wgpu compute shaders for GPU-accelerated rendering.
+//! Falls back to CPU (rayon) if GPU is unavailable.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,6 +19,7 @@ use std::sync::mpsc;
 use log::info;
 use rayon::prelude::*;
 
+use super::gpu::{FractalParams, GpuFractalRenderer};
 use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::commands::audio::particles::audio_analysis::extract_audio_features;
 use crate::core::error::AppError;
@@ -45,14 +44,39 @@ struct ZoomTarget {
     cy: f64,
 }
 
-/// Several interesting deep zoom targets.
+/// Several interesting deep zoom targets — carefully chosen points on the
+/// Mandelbrot set boundary that produce rich, never-ending detail.
 const ZOOM_TARGETS: &[ZoomTarget] = &[
     // Seahorse valley spiral
-    ZoomTarget { cx: -0.743643887037158704752191506114774, cy: 0.131825904205311970493132056385139 },
+    ZoomTarget {
+        cx: -0.743643887037158704752191506114774,
+        cy: 0.131825904205311970493132056385139,
+    },
     // Elephant valley
-    ZoomTarget { cx: 0.281717921930775, cy: 0.5771052841488505 },
+    ZoomTarget {
+        cx: 0.281717921930775,
+        cy: 0.5771052841488505,
+    },
     // Double spiral
-    ZoomTarget { cx: -0.8624011862235098, cy: 0.21478827404879898 },
+    ZoomTarget {
+        cx: -0.8624011862235098,
+        cy: 0.21478827404879898,
+    },
+    // Mini-brot in antenna
+    ZoomTarget {
+        cx: -1.7497591451,
+        cy: 0.0000000001,
+    },
+    // Spiral near seahorse valley
+    ZoomTarget {
+        cx: -0.7463,
+        cy: 0.1102,
+    },
+    // Deep spiral arm
+    ZoomTarget {
+        cx: -0.16,
+        cy: 1.0405,
+    },
 ];
 
 /// Render a fractal zoom video from audio.
@@ -89,32 +113,63 @@ where
 
     // Choose zoom target based on audio length (deterministic)
     let target_idx = (total_frames / 100) % ZOOM_TARGETS.len();
-    let target = &ZOOM_TARGETS[target_idx];
 
     // Render at half resolution for performance, FFmpeg upscales with lanczos
     let render_width = config.width / 2;
     let render_height = config.height / 2;
     let scale_filter = format!("scale={}:{}:flags=lanczos", config.width, config.height);
 
+    // Try to initialize GPU renderer
+    let gpu_renderer = GpuFractalRenderer::new(render_width, render_height);
+    let use_gpu = gpu_renderer.is_some();
+
+    if use_gpu {
+        info!("[Fractal] Using GPU-accelerated rendering");
+        on_progress(MixProgress {
+            percent: 5.0,
+            stage: "GPU 加速已启用，准备渲染".to_string(),
+        });
+    } else {
+        info!("[Fractal] GPU unavailable, falling back to CPU (rayon)");
+        on_progress(MixProgress {
+            percent: 5.0,
+            stage: "GPU 不可用，使用 CPU 渲染".to_string(),
+        });
+    }
+
     // Start FFmpeg
     let ffmpeg_bin = find_ffmpeg();
     let mut child = Command::new(&ffmpeg_bin)
         .args([
             "-y",
-            "-f", "rawvideo",
-            "-pixel_format", "rgba",
-            "-video_size", &format!("{}x{}", render_width, render_height),
-            "-framerate", &config.fps.to_string(),
-            "-i", "pipe:0",
-            "-i", &config.audio_path.to_string_lossy(),
-            "-vf", &scale_filter,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "animation",
-            "-crf", "22",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "192k",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "rgba",
+            "-video_size",
+            &format!("{}x{}", render_width, render_height),
+            "-framerate",
+            &config.fps.to_string(),
+            "-i",
+            "pipe:0",
+            "-i",
+            &config.audio_path.to_string_lossy(),
+            "-vf",
+            &scale_filter,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "animation",
+            "-crf",
+            "22",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
             "-shortest",
             &config.output_path.to_string_lossy(),
         ])
@@ -130,7 +185,9 @@ where
             }
         })?;
 
-    let mut stdin = child.stdin.take()
+    let mut stdin = child
+        .stdin
+        .take()
         .ok_or_else(|| AppError::FFmpeg("Failed to open FFmpeg stdin".to_string()))?;
 
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
@@ -159,9 +216,19 @@ where
     let mut smooth_high: f32 = 0.0;
     let mut hue_offset: f32 = 0.0;
 
+    // Maximum zoom depth before precision loss causes pure-color frames.
+    // For f32 GPU shader: ~10^5 is safe (f32 has ~7 decimal digits).
+    // We reset to a new target when approaching this limit.
+    let max_zoom: f64 = 80_000.0;
+    let mut current_target_idx = target_idx;
+    let mut current_target = &ZOOM_TARGETS[current_target_idx];
+
     for (frame_idx, frame_features) in features.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
-            info!("[Fractal] Render cancelled at frame {}/{}", frame_idx, total_frames);
+            info!(
+                "[Fractal] Render cancelled at frame {}/{}",
+                frame_idx, total_frames
+            );
             break;
         }
 
@@ -176,25 +243,69 @@ where
         let zoom_multiplier = 1.0 + smooth_low as f64 * 0.015 + smooth_rms as f64 * 0.005;
         zoom *= base_zoom_speed * zoom_multiplier;
 
+        // Reset zoom when approaching f32 precision limit to avoid pure-color frames.
+        // Jump to the next target point for visual variety.
+        if zoom > max_zoom {
+            current_target_idx = (current_target_idx + 1) % ZOOM_TARGETS.len();
+            current_target = &ZOOM_TARGETS[current_target_idx];
+            zoom = 0.5; // Reset to zoomed-out view
+            info!(
+                "[Fractal] Zoom reset at frame {} → target {}",
+                frame_idx, current_target_idx
+            );
+        }
+
         // Hue rotation driven by mid frequencies
         hue_offset += smooth_mid * 0.5 + 0.1;
 
-        // Max iterations increase with zoom depth, capped at 200 for performance
+        // Max iterations increase with zoom depth, capped for performance
         let max_iter = (80.0 + (zoom.ln() * 10.0).min(120.0)) as u32;
 
-        let frame_data = render_fractal_frame(
-            width,
-            height,
-            target.cx,
-            target.cy,
-            zoom,
-            max_iter,
-            fg_color,
-            bg_color,
-            hue_offset,
-            smooth_high,
-            smooth_rms,
-        );
+        let frame_data = if let Some(ref gpu) = gpu_renderer {
+            // GPU path
+            let scale = 2.0 / zoom as f32;
+            let aspect = width as f32 / height as f32;
+
+            let params = FractalParams {
+                width,
+                height,
+                max_iter,
+                _pad0: 0,
+                center_x: current_target.cx as f32,
+                center_y: current_target.cy as f32,
+                scale,
+                aspect,
+                fg_r: fg_color.0 as f32 / 255.0,
+                fg_g: fg_color.1 as f32 / 255.0,
+                fg_b: fg_color.2 as f32 / 255.0,
+                hue_offset,
+                glow_intensity: 0.3 + smooth_high * 0.7,
+                brightness_boost: 1.0 + smooth_rms * 0.3,
+                bg_r: bg_color.0 as f32 / 255.0,
+                bg_g: bg_color.1 as f32 / 255.0,
+                bg_b: bg_color.2 as f32 / 255.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
+                _pad3: 0.0,
+            };
+
+            gpu.render_frame(&params)
+        } else {
+            // CPU fallback path
+            render_fractal_frame_cpu(
+                width,
+                height,
+                current_target.cx,
+                current_target.cy,
+                zoom,
+                max_iter,
+                fg_color,
+                bg_color,
+                hue_offset,
+                smooth_high,
+                smooth_rms,
+            )
+        };
 
         if tx.send(frame_data).is_err() {
             break;
@@ -216,7 +327,8 @@ where
         .map_err(|_| AppError::FFmpeg("Writer thread panicked".to_string()))?
         .map_err(|e| AppError::FFmpeg(e))?;
 
-    let output = child.wait_with_output()
+    let output = child
+        .wait_with_output()
         .map_err(|e| AppError::FFmpeg(format!("FFmpeg wait failed: {}", e)))?;
 
     if !output.status.success() {
@@ -232,12 +344,17 @@ where
         stage: "视频生成完成".to_string(),
     });
 
-    info!("[Fractal] Video rendered successfully: {:?}", config.output_path);
+    info!(
+        "[Fractal] Video rendered successfully (GPU={}): {:?}",
+        use_gpu, config.output_path
+    );
     Ok(())
 }
 
-/// Render a single fractal frame using rayon parallel rows.
-fn render_fractal_frame(
+// ─── CPU Fallback ────────────────────────────────────────────────────────────
+
+/// Render a single fractal frame using rayon parallel rows (CPU fallback).
+fn render_fractal_frame_cpu(
     width: u32,
     height: u32,
     center_x: f64,
@@ -298,8 +415,6 @@ fn render_fractal_frame(
 }
 
 /// Mandelbrot iteration with smooth (continuous) escape value.
-/// Uses period detection (cycle checking) to early-exit points inside the set,
-/// which dramatically reduces computation for deep zooms.
 #[inline]
 fn mandelbrot_smooth(cr: f64, ci: f64, max_iter: u32) -> (u32, f64) {
     let mut zr = 0.0_f64;
@@ -308,7 +423,7 @@ fn mandelbrot_smooth(cr: f64, ci: f64, max_iter: u32) -> (u32, f64) {
     let mut zi2 = 0.0_f64;
     let mut iter = 0u32;
 
-    // Cardioid / period-2 bulb check (skip expensive iteration)
+    // Cardioid / period-2 bulb check
     let q = (cr - 0.25) * (cr - 0.25) + ci * ci;
     if q * (q + (cr - 0.25)) <= 0.25 * ci * ci {
         return (max_iter, 0.0);
@@ -319,10 +434,10 @@ fn mandelbrot_smooth(cr: f64, ci: f64, max_iter: u32) -> (u32, f64) {
 
     let bailout_sq = 65536.0;
 
-    // Period detection: remember a previous z value and check if we cycle back
+    // Period detection
     let mut period_zr = 0.0_f64;
     let mut period_zi = 0.0_f64;
-    let mut period_check = 8u32; // Check period every 8 iterations, doubling
+    let mut period_check = 8u32;
 
     while zr2 + zi2 <= bailout_sq && iter < max_iter {
         zi = 2.0 * zr * zi + ci;
@@ -331,12 +446,10 @@ fn mandelbrot_smooth(cr: f64, ci: f64, max_iter: u32) -> (u32, f64) {
         zi2 = zi * zi;
         iter += 1;
 
-        // Period detection: if z returns to a previous value, it's in the set
         if zr == period_zr && zi == period_zi {
             return (max_iter, 0.0);
         }
 
-        // Update reference point at power-of-2 intervals
         if iter & (period_check - 1) == 0 {
             period_zr = zr;
             period_zi = zi;
@@ -384,9 +497,5 @@ fn fractal_palette(
     let g = ((g + edge_glow) * brightness_boost).clamp(0.0, 1.0);
     let b = ((b + edge_glow) * brightness_boost).clamp(0.0, 1.0);
 
-    (
-        (r * 255.0) as u8,
-        (g * 255.0) as u8,
-        (b * 255.0) as u8,
-    )
+    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
