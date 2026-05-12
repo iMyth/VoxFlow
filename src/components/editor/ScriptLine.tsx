@@ -165,7 +165,7 @@ function ScriptLineComponent({
     onDragEnd?.();
   }, [onDragEnd]);
 
-  const _characterName = characters.find((c) => c.id === line.character_id)?.name;
+  // const _characterName = characters.find((c) => c.id === line.character_id)?.name;
   const UNASSIGNED = '__unassigned__';
 
   const insertIndicator = <div className="h-0.5 rounded-full bg-primary mx-1 transition-opacity" />;
