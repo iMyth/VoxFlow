@@ -3,7 +3,6 @@ import { listen } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import {
   Download,
-  Music,
   AlertTriangle,
   CheckCircle,
   Loader2,
@@ -13,6 +12,8 @@ import {
   FileUp,
   Video,
   Image,
+  Lock,
+  ArrowRight,
 } from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -25,7 +26,6 @@ import { useProjectStore } from '../../store/projectStore';
 import { useScriptStore } from '../../store/scriptStore';
 import { Alert, AlertTitle, AlertDescription } from '../ui/alert';
 import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Progress } from '../ui/progress';
@@ -58,7 +58,7 @@ export default function ExportPanel() {
   // Video export state
   const [videoStyle, setVideoStyle] = useState<VideoStyle>('particles');
   const [videoFgColor, setVideoFgColor] = useState('6366f1');
-  const [videoBgColor, setVideoBgColor] = useState('1a1a2e');
+  const [videoBgColor, setVideoBgColor] = useState('0a0a1a');
   const [videoBgImage, setVideoBgImage] = useState<string | null>(null);
   const [videoExporting, setVideoExporting] = useState(false);
   const [videoProgress, setVideoProgress] = useState<MixProgress | null>(null);
@@ -79,7 +79,6 @@ export default function ExportPanel() {
     }
   }, [currentProject]);
 
-  // Stop BGM preview on unmount and listen for audio-finished
   useEffect(() => {
     const unlisten = listen('audio-finished', () => {
       setBgmPlaying(false);
@@ -137,7 +136,6 @@ export default function ExportPanel() {
   const handleExport = async () => {
     if (!currentProject || missingLines.length > 0) return;
 
-    // Open save dialog to let user choose full output path
     const selectedPath = await save({
       title: t('editor.exportAudiobookTitle'),
       defaultPath: outputPath,
@@ -250,13 +248,18 @@ export default function ExportPanel() {
     }
   };
 
+  const handleCancelVideo = async () => {
+    await ipc.cancelVideoExport();
+    setVideoExporting(false);
+    setVideoProgress(null);
+  };
+
   const handleImportConfirm = async (mapping: CharacterMapping[]) => {
     if (!currentProject) return;
     const projectId = currentProject.project.id;
 
     try {
-      // 1. Create new characters if any
-      const charIdMap = new Map<string, string>(); // fileCharacterName → characterId
+      const charIdMap = new Map<string, string>();
       for (const m of mapping) {
         if (m.type === 'existing' && m.characterId) {
           charIdMap.set(m.fileCharacterName, m.characterId);
@@ -271,19 +274,16 @@ export default function ExportPanel() {
             pitch: settings.defaultPitch,
           });
           charIdMap.set(m.fileCharacterName, character.id);
-          // Also update local character store
           await useCharacterStore.getState().fetchCharacters();
         }
       }
 
-      // 2. Build sections
       const existingSections = useScriptStore.getState().sections;
-      const sectionMap = new Map<string, ScriptSection>(); // sectionName → section
+      const sectionMap = new Map<string, ScriptSection>();
       let sectionOrder = existingSections.length;
 
       if (importParseResult) {
         for (const sectionName of importParseResult.sectionNames) {
-          // Try to match existing section by name
           const existing = existingSections.find((s) => s.title === sectionName);
           if (existing) {
             sectionMap.set(sectionName, existing);
@@ -304,7 +304,6 @@ export default function ExportPanel() {
         ...[...sectionMap.values()].filter((s) => !existingSections.some((e) => e.id === s.id)),
       ];
 
-      // 3. Build script lines
       const existingLines = useScriptStore.getState().lines;
       let lineOrder = existingLines.length;
 
@@ -319,11 +318,8 @@ export default function ExportPanel() {
         section_id: parsed.sectionName ? (sectionMap.get(parsed.sectionName)?.id ?? null) : null,
       }));
 
-      // 4. Set into store and save
       useScriptStore.setState({ lines: [...existingLines, ...importedLines], sections: newSections, isDirty: true });
       await useScriptStore.getState().saveScript();
-
-      // 5. Reload project to sync
       await useProjectStore.getState().loadProject(projectId);
       await useCharacterStore.getState().fetchCharacters();
 
@@ -333,289 +329,369 @@ export default function ExportPanel() {
     }
   };
 
-  return (
-    <div className="px-6 py-8 space-y-6">
-      <h2 className="text-xl font-bold">{t('export.title')}</h2>
+  const audioReady = done && !!lastExportedAudioPath;
 
+  return (
+    <div className="mx-auto max-w-3xl px-6 py-8">
+      {/* Page header */}
+      <div className="mb-8">
+        <h2 className="text-xl font-bold tracking-tight">{t('export.title')}</h2>
+        <p className="text-sm text-muted-foreground mt-1">{t('export.videoNeedAudioFirst')}</p>
+      </div>
+
+      {/* Missing audio warning */}
       {missingLines.length > 0 && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="mb-6">
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>{t('export.missingAudio', { count: missingLines.length })}</AlertTitle>
           <AlertDescription>
-            <ul className="mt-1 space-y-0.5">
+            <ul className="mt-1 space-y-0.5 text-xs">
               {missingLines.slice(0, 5).map((l) => (
                 <li key={l.id}>{t('export.missingLine', { line: l.line_order + 1, text: l.text.slice(0, 40) })}</li>
               ))}
               {missingLines.length > 5 && <li>{t('export.missingMore', { count: missingLines.length - 5 })}</li>}
             </ul>
-            <p className="mt-2">{t('export.missingHint')}</p>
+            <p className="mt-2 text-xs">{t('export.missingHint')}</p>
           </AlertDescription>
         </Alert>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Music className="h-4 w-4" /> {t('export.bgm')}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex gap-2 items-center">
-            <Input
-              className="flex-1"
-              placeholder={t('export.bgmPlaceholder')}
-              value={bgmPath ?? ''}
-              onChange={(e) => {
-                setBgmPath(e.target.value || null);
-              }}
-            />
-            <Button variant="outline" size="icon" onClick={() => void handleBgmBrowse()} title={t('export.browse')}>
-              <FolderOpen className="h-4 w-4" />
-            </Button>
-            {bgmPath && (
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => void toggleBgmPreview()}
-                title={bgmPlaying ? t('editor.pause') : t('editor.play')}
-              >
-                {bgmPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              </Button>
+      {/* Pipeline Steps */}
+      <div className="space-y-4">
+        {/* ===== STEP 1: Audio Export ===== */}
+        <div className="relative rounded-xl border border-border bg-card overflow-hidden">
+          {/* Step header */}
+          <div className="flex items-center gap-3 px-5 py-3 border-b border-border/50 bg-muted/30">
+            <div
+              className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${audioReady ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400'}`}
+            >
+              {audioReady ? <CheckCircle className="h-4 w-4" /> : '1'}
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold">{t('export.exportButton')}</h3>
+            </div>
+            {audioReady && (
+              <span className="text-xs text-green-600 dark:text-green-400 font-medium">
+                {t('export.exportSuccess')}
+              </span>
             )}
           </div>
-          {bgmPath && (
-            <div className="space-y-2">
-              <Label>{t('export.bgmVolume', { percent: Math.round(bgmVolume * 100) })}</Label>
-              <Slider
-                min={0}
-                max={1}
-                step={0.05}
-                value={[bgmVolume]}
-                onValueChange={(v) => void handleBgmVolumeChange(v)}
+
+          {/* Step content */}
+          <div className="px-5 py-4 space-y-4">
+            {/* BGM section */}
+            <div className="space-y-3">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                {t('export.bgm')}
+              </Label>
+              <div className="flex gap-2 items-center">
+                <Input
+                  className="flex-1 h-9"
+                  placeholder={t('export.bgmPlaceholder')}
+                  value={bgmPath ?? ''}
+                  onChange={(e) => {
+                    setBgmPath(e.target.value || null);
+                  }}
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0"
+                  onClick={() => void handleBgmBrowse()}
+                  title={t('export.browse')}
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+                {bgmPath && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0"
+                    onClick={() => void toggleBgmPreview()}
+                    title={bgmPlaying ? t('editor.pause') : t('editor.play')}
+                  >
+                    {bgmPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                  </Button>
+                )}
+              </div>
+              {bgmPath && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">{t('export.bgmVolume', { percent: Math.round(bgmVolume * 100) })}</Label>
+                  <Slider
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={[bgmVolume]}
+                    onValueChange={(v) => void handleBgmVolumeChange(v)}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Output filename */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                {t('export.outputLabel')}
+              </Label>
+              <Input
+                className="h-9"
+                value={outputPath}
+                onChange={(e) => {
+                  setOutputPath(e.target.value);
+                }}
               />
             </div>
-          )}
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardContent className="space-y-2">
-          <Label>{t('export.outputLabel')}</Label>
-          <Input
-            value={outputPath}
-            onChange={(e) => {
-              setOutputPath(e.target.value);
-            }}
-          />
-        </CardContent>
-      </Card>
-
-      {exporting && progress && (
-        <Alert>
-          <Loader2 className="h-4 w-4 animate-spin" />
-          <AlertTitle>{progress.stage}</AlertTitle>
-          <AlertDescription className="space-y-2">
-            <Progress value={progress.percent} className="h-2" />
-            <p className="text-xs">{Math.round(progress.percent)}%</p>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {done && (
-        <Alert>
-          <CheckCircle className="h-4 w-4 text-green-500" />
-          <AlertTitle>{t('export.exportSuccess')}</AlertTitle>
-        </Alert>
-      )}
-
-      {error && (
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>{t('export.exportFailed')}</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {importError && (
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>{importError}</AlertTitle>
-        </Alert>
-      )}
-
-      {importSuccess && (
-        <Alert>
-          <CheckCircle className="h-4 w-4 text-green-500" />
-          <AlertTitle>{t('project.importSuccess')}</AlertTitle>
-        </Alert>
-      )}
-
-      <Button
-        size="lg"
-        onClick={() => void handleExport()}
-        disabled={exporting || missingLines.length > 0 || !outputPath.trim()}
-      >
-        <Download className="h-4 w-4" />
-        {exporting ? t('export.exporting') : t('export.exportButton')}
-      </Button>
-
-      {/* Video Export Section */}
-      <div className="pt-4 border-t">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Video className="h-4 w-4" /> {t('export.videoTitle')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {!lastExportedAudioPath && (
-              <p className="text-sm text-muted-foreground">{t('export.videoNeedAudioFirst')}</p>
+            {/* Progress */}
+            {exporting && progress && (
+              <div className="rounded-lg bg-muted/50 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>{progress.stage}</span>
+                  <span className="ml-auto font-mono">{Math.round(progress.percent)}%</span>
+                </div>
+                <Progress value={progress.percent} className="h-1.5" />
+              </div>
             )}
 
-            {lastExportedAudioPath && (
-              <>
-                <div className="space-y-2">
-                  <Label>{t('export.videoStyle')}</Label>
-                  <Select
-                    value={videoStyle}
-                    onValueChange={(v) => {
-                      setVideoStyle(v as VideoStyle);
+            {error && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>{t('export.exportFailed')}</AlertTitle>
+                <AlertDescription className="text-xs">{error}</AlertDescription>
+              </Alert>
+            )}
+
+            {/* Export button */}
+            <Button
+              className="w-full gap-2"
+              onClick={() => void handleExport()}
+              disabled={exporting || missingLines.length > 0 || !outputPath.trim()}
+            >
+              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {exporting ? t('export.exporting') : t('export.exportButton')}
+            </Button>
+          </div>
+        </div>
+
+        {/* Arrow connector */}
+        <div className="flex justify-center">
+          <div
+            className={`flex items-center gap-1.5 text-xs ${audioReady ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground/40'}`}
+          >
+            <ArrowRight className="h-4 w-4" />
+          </div>
+        </div>
+
+        {/* ===== STEP 2: Video Export ===== */}
+        <div
+          className={`relative rounded-xl border overflow-hidden transition-all duration-300 ${audioReady ? 'border-border bg-card' : 'border-border/40 bg-muted/20'}`}
+        >
+          {/* Locked overlay */}
+          {!audioReady && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60 backdrop-blur-[1px]">
+              <div className="flex flex-col items-center gap-2 text-center px-4">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+                  <Lock className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="text-xs text-muted-foreground max-w-[200px]">{t('export.videoNeedAudioFirst')}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Step header */}
+          <div className="flex items-center gap-3 px-5 py-3 border-b border-border/50 bg-muted/30">
+            <div
+              className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${videoDone ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' : audioReady ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400' : 'bg-muted text-muted-foreground'}`}
+            >
+              {videoDone ? <CheckCircle className="h-4 w-4" /> : '2'}
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold">{t('export.videoTitle')}</h3>
+            </div>
+            {videoDone && (
+              <span className="text-xs text-green-600 dark:text-green-400 font-medium">
+                {t('export.videoExportSuccess')}
+              </span>
+            )}
+          </div>
+
+          {/* Step content */}
+          <div className="px-5 py-4 space-y-4">
+            {/* Style selector */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                {t('export.videoStyle')}
+              </Label>
+              <Select
+                value={videoStyle}
+                onValueChange={(v) => {
+                  setVideoStyle(v as VideoStyle);
+                }}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="particles">{t('export.styleParticles')}</SelectItem>
+                  <SelectItem value="starfield">{t('export.styleStarfield')}</SelectItem>
+                  <SelectItem value="vinyl">{t('export.styleVinyl')}</SelectItem>
+                  <SelectItem value="fractal">{t('export.styleFractal')}</SelectItem>
+                  <SelectItem value="ink">{t('export.styleInk')}</SelectItem>
+                  <SelectItem value="showwaves">{t('export.styleShowwaves')}</SelectItem>
+                  <SelectItem value="showfreqs">{t('export.styleShowfreqs')}</SelectItem>
+                  <SelectItem value="avectorscope">{t('export.styleAvectorscope')}</SelectItem>
+                  <SelectItem value="showspectrum">{t('export.styleShowspectrum')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Colors */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs">{t('export.videoFgColor')}</Label>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">#</span>
+                  <Input
+                    className="flex-1 h-9"
+                    value={videoFgColor}
+                    onChange={(e) => {
+                      setVideoFgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
+                    }}
+                    maxLength={6}
+                  />
+                  <div className="w-9 h-9 rounded-md border shrink-0" style={{ backgroundColor: `#${videoFgColor}` }} />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">{t('export.videoBgColor')}</Label>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">#</span>
+                  <Input
+                    className="flex-1 h-9"
+                    value={videoBgColor}
+                    onChange={(e) => {
+                      setVideoBgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
+                    }}
+                    maxLength={6}
+                  />
+                  <div className="w-9 h-9 rounded-md border shrink-0" style={{ backgroundColor: `#${videoBgColor}` }} />
+                </div>
+              </div>
+            </div>
+
+            {/* Background image */}
+            <div className="space-y-1.5">
+              <Label className="text-xs">{t('export.videoBgImage')}</Label>
+              <div className="flex gap-2 items-center">
+                <Input
+                  className="flex-1 h-9"
+                  placeholder={t('export.videoBgImagePlaceholder')}
+                  value={videoBgImage ?? ''}
+                  readOnly
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0"
+                  onClick={() => void handleVideoBgImageBrowse()}
+                >
+                  <Image className="h-4 w-4" />
+                </Button>
+                {videoBgImage && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 shrink-0"
+                    onClick={() => {
+                      setVideoBgImage(null);
                     }}
                   >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="particles">{t('export.styleParticles')}</SelectItem>
-                      <SelectItem value="showwaves">{t('export.styleShowwaves')}</SelectItem>
-                      <SelectItem value="showfreqs">{t('export.styleShowfreqs')}</SelectItem>
-                      <SelectItem value="avectorscope">{t('export.styleAvectorscope')}</SelectItem>
-                      <SelectItem value="showspectrum">{t('export.styleShowspectrum')}</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>{t('export.videoFgColor')}</Label>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">#</span>
-                      <Input
-                        value={videoFgColor}
-                        onChange={(e) => {
-                          setVideoFgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
-                        }}
-                        className="flex-1"
-                        maxLength={6}
-                      />
-                      <div className="w-8 h-8 rounded border" style={{ backgroundColor: `#${videoFgColor}` }} />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>{t('export.videoBgColor')}</Label>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">#</span>
-                      <Input
-                        value={videoBgColor}
-                        onChange={(e) => {
-                          setVideoBgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
-                        }}
-                        className="flex-1"
-                        maxLength={6}
-                      />
-                      <div className="w-8 h-8 rounded border" style={{ backgroundColor: `#${videoBgColor}` }} />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>{t('export.videoBgImage')}</Label>
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      className="flex-1"
-                      placeholder={t('export.videoBgImagePlaceholder')}
-                      value={videoBgImage ?? ''}
-                      readOnly
-                    />
-                    <Button variant="outline" size="icon" onClick={() => void handleVideoBgImageBrowse()}>
-                      <Image className="h-4 w-4" />
-                    </Button>
-                    {videoBgImage && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setVideoBgImage(null);
-                        }}
-                      >
-                        ✕
-                      </Button>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground">{t('export.videoBgImageHint')}</p>
-                </div>
-
-                {videoExporting && videoProgress && (
-                  <Alert>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <AlertTitle>{videoProgress.stage}</AlertTitle>
-                    <AlertDescription className="space-y-2">
-                      <Progress value={videoProgress.percent} className="h-2" />
-                      <p className="text-xs">{Math.round(videoProgress.percent)}%</p>
-                    </AlertDescription>
-                  </Alert>
+                    ✕
+                  </Button>
                 )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">{t('export.videoBgImageHint')}</p>
+            </div>
 
-                {videoDone && (
-                  <Alert>
-                    <CheckCircle className="h-4 w-4 text-green-500" />
-                    <AlertTitle>{t('export.videoExportSuccess')}</AlertTitle>
-                  </Alert>
-                )}
-
-                {videoError && (
-                  <Alert variant="destructive">
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertTitle>{t('export.videoExportFailed')}</AlertTitle>
-                    <AlertDescription>{videoError}</AlertDescription>
-                  </Alert>
-                )}
-
-                <Button
-                  size="lg"
-                  variant="secondary"
-                  onClick={() => void handleExportVideo()}
-                  disabled={videoExporting}
-                >
-                  <Video className="h-4 w-4" />
-                  {videoExporting ? t('export.videoExporting') : t('export.videoExportButton')}
-                </Button>
-              </>
+            {/* Video progress */}
+            {videoExporting && videoProgress && (
+              <div className="rounded-lg bg-muted/50 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>{videoProgress.stage}</span>
+                  <span className="ml-auto font-mono">{Math.round(videoProgress.percent)}%</span>
+                </div>
+                <Progress value={videoProgress.percent} className="h-1.5" />
+              </div>
             )}
-          </CardContent>
-        </Card>
+
+            {videoError && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>{t('export.videoExportFailed')}</AlertTitle>
+                <AlertDescription className="text-xs">{videoError}</AlertDescription>
+              </Alert>
+            )}
+
+            {/* Video export button */}
+            <div className="flex gap-2">
+              <Button
+                className="flex-1 gap-2"
+                variant="secondary"
+                onClick={() => void handleExportVideo()}
+                disabled={videoExporting || !audioReady}
+              >
+                {videoExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
+                {videoExporting ? t('export.videoExporting') : t('export.videoExportButton')}
+              </Button>
+              {videoExporting && (
+                <Button
+                  variant="outline"
+                  className="gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+                  onClick={() => void handleCancelVideo()}
+                >
+                  {t('export.cancelVideo')}
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Import Script Section */}
-      <div className="pt-4 border-t">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileUp className="h-4 w-4" /> {t('project.importScript')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Button
-              variant="outline"
-              onClick={() => {
-                void handleImportSelect().catch(() => {});
-              }}
-            >
-              <FolderOpen className="h-4 w-4" />
-              {t('project.importSelectFile')}
-            </Button>
-          </CardContent>
-        </Card>
+      {/* Import section — secondary, below the pipeline */}
+      <div className="mt-10 pt-6 border-t border-border/50">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium">{t('project.importScript')}</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">{t('project.importSelectFile')}</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => {
+              void handleImportSelect().catch(() => {});
+            }}
+          >
+            <FileUp className="h-3.5 w-3.5" />
+            {t('project.importScript')}
+          </Button>
+        </div>
+
+        {importError && (
+          <Alert variant="destructive" className="mt-3">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>{importError}</AlertTitle>
+          </Alert>
+        )}
+
+        {importSuccess && (
+          <Alert className="mt-3">
+            <CheckCircle className="h-4 w-4 text-green-500" />
+            <AlertTitle>{t('project.importSuccess')}</AlertTitle>
+          </Alert>
+        )}
       </div>
 
       {/* Import Mapping Dialog */}

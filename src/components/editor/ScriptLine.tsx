@@ -11,26 +11,19 @@ import { useScriptStore } from '../../store/scriptStore';
 import { useToastStore } from '../../store/toastStore';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import { Card } from '../ui/card';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 
 import type { ScriptLine, AudioFragment } from '../../types';
-
-/* ---- no module-level drag state, all state lifted to parent ---- */
 
 interface ScriptLineProps {
   line: ScriptLine;
   index: number;
   totalLines?: number;
   isDragging?: boolean;
-  /** Where the insertion indicator should appear: 'before' or 'after' this card */
   dropPosition?: 'before' | 'after' | null;
-  /** Called when pointer is down on the grip (starts drag) */
   onDragStart?: (lineId: string, pointerId: number) => void;
-  /** Called when pointer moves during drag (to find drop target) */
   onDragMove?: (clientX: number, clientY: number) => void;
-  /** Called when pointer is released (completes drag) */
   onDragEnd?: () => void;
 }
 
@@ -53,7 +46,6 @@ function ScriptLineComponent({
     currentProject?.audio_fragments.find((a) => a.line_id === line.id) ?? null
   );
 
-  // Prevent text selection globally while any card is being dragged
   useEffect(() => {
     if (!isDragging) return;
     const handler = (e: Event) => {
@@ -65,7 +57,6 @@ function ScriptLineComponent({
     };
   }, [isDragging]);
 
-  // Sync local audioFragment with project store (e.g. after batch TTS)
   const audioFragments = currentProject?.audio_fragments;
 
   useEffect(() => {
@@ -73,7 +64,6 @@ function ScriptLineComponent({
     setAudioFragment(frag);
   }, [line.id, audioFragments]);
 
-  // Clear error when audio fragment appears
   useEffect(() => {
     if (audioFragment) setTtsError(null);
   }, [audioFragment]);
@@ -124,9 +114,7 @@ function ScriptLineComponent({
   const handleRemoveAudio = useCallback(async () => {
     if (!audioFragment) return;
     try {
-      // Only delete audio for this specific line, not the entire project
       await ipc.deleteAudioByLine(line.id);
-      // Update local project store
       const store = useProjectStore.getState();
       if (store.currentProject) {
         const newFrags = store.currentProject.audio_fragments.filter((a) => a.line_id !== line.id);
@@ -157,7 +145,6 @@ function ScriptLineComponent({
     }
   }, []);
 
-  /* ---- Pointer drag on grip handle ---- */
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0 || !onDragStart) return;
@@ -178,7 +165,7 @@ function ScriptLineComponent({
     onDragEnd?.();
   }, [onDragEnd]);
 
-  const characterName = characters.find((c) => c.id === line.character_id)?.name;
+  const _characterName = characters.find((c) => c.id === line.character_id)?.name;
   const UNASSIGNED = '__unassigned__';
 
   const insertIndicator = <div className="h-0.5 rounded-full bg-primary mx-1 transition-opacity" />;
@@ -186,105 +173,117 @@ function ScriptLineComponent({
   return (
     <div className="relative">
       {dropPosition === 'before' && insertIndicator}
-      <Card
+      <div
         data-line-id={line.id}
-        className={`flex-row items-start gap-2 p-3 group transition-all duration-150 ${isDragging ? 'opacity-40' : ''}`}
+        className={`group relative flex gap-0 rounded-lg border border-border/60 bg-card overflow-hidden transition-all duration-150 hover:border-border hover:shadow-sm ${isDragging ? 'opacity-40' : ''}`}
         style={isDragging ? { userSelect: 'none', WebkitUserSelect: 'none' } : undefined}
       >
-        {/* Drag handle: only this area initiates drag, text area remains fully selectable */}
-        <div
-          className="cursor-grab select-none pt-2 text-muted-foreground hover:text-foreground active:cursor-grabbing touch-none"
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-        >
-          <GripVertical className="h-4 w-4" />
+        {/* Left gutter: drag handle + line number */}
+        <div className="flex flex-col items-center gap-1 py-3 px-1.5 bg-muted/30 border-r border-border/40 shrink-0">
+          <div
+            className="cursor-grab text-muted-foreground/50 hover:text-muted-foreground active:cursor-grabbing touch-none transition-colors"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </div>
+          <span className="text-[10px] text-muted-foreground/60 font-mono tabular-nums">{index + 1}</span>
         </div>
 
-        <span className="pt-2 text-xs text-muted-foreground w-6 text-right shrink-0">{index + 1}</span>
+        {/* Main content area */}
+        <div className="flex-1 min-w-0 py-3 px-3 space-y-2">
+          {/* Row 1: Character + text */}
+          <div className="flex items-start gap-2">
+            <div className="shrink-0 pt-0.5">
+              <Select
+                value={line.character_id ?? UNASSIGNED}
+                onValueChange={(v) => {
+                  assignCharacter(line.id, v === UNASSIGNED ? '' : v);
+                }}
+              >
+                <SelectTrigger size="sm" className="h-6 text-xs min-w-[80px] max-w-[120px]">
+                  <SelectValue placeholder={t('editor.unassigned')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={UNASSIGNED}>{t('editor.unassigned')}</SelectItem>
+                  {characters.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex-1 min-w-0">
+              <textarea
+                className="auto-grow-textarea"
+                value={line.text}
+                onChange={(e) => {
+                  updateLine(line.id, e.target.value);
+                }}
+                placeholder={t('editor.linePlaceholder')}
+              />
+            </div>
+          </div>
 
-        <div className="flex-1 space-y-2">
-          {/* Auto-growing textarea using CSS field-sizing: content */}
-          <textarea
-            className="auto-grow-textarea"
-            value={line.text}
-            onChange={(e) => {
-              updateLine(line.id, e.target.value);
-            }}
-            placeholder={t('editor.linePlaceholder')}
-          />
+          {/* Row 2: Instructions (subtle, collapsible feel) */}
           <input
             type="text"
-            className="w-full rounded-md border border-purple-300/50 bg-purple-50/30 dark:bg-purple-900/10 px-3 py-1.5 text-xs text-purple-700 dark:text-purple-300 placeholder:text-purple-400/80 dark:placeholder:text-purple-300/70 focus-visible:border-purple-500 focus-visible:ring-2 focus-visible:ring-purple-500/30 outline-none"
+            className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 text-xs text-muted-foreground placeholder:text-muted-foreground/50 hover:border-purple-200 hover:bg-purple-50/30 focus:border-purple-300 focus:bg-purple-50/30 dark:hover:border-purple-800 dark:hover:bg-purple-900/10 dark:focus:border-purple-700 dark:focus:bg-purple-900/10 focus-visible:ring-1 focus-visible:ring-purple-500/30 outline-none transition-all"
             value={line.instructions}
             onChange={(e) => {
               setInstructions(line.id, e.target.value);
             }}
             placeholder={t('editor.instructionsPlaceholder')}
           />
-          <div className="flex items-center gap-3 flex-wrap">
-            <Select
-              value={line.character_id ?? UNASSIGNED}
-              onValueChange={(v) => {
-                assignCharacter(line.id, v === UNASSIGNED ? '' : v);
-              }}
-            >
-              <SelectTrigger size="sm">
-                <SelectValue placeholder={t('editor.unassigned')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={UNASSIGNED}>{t('editor.unassigned')}</SelectItem>
-                {characters.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
 
-            {characterName && <Badge variant="secondary">{characterName}</Badge>}
-
+          {/* Row 3: Audio controls + metadata */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Audio status badge */}
             {ttsError && (
-              <Badge variant="destructive" className="gap-1" title={ttsError}>
+              <Badge variant="destructive" className="gap-1 text-[11px]" title={ttsError}>
                 <AlertCircle className="h-3 w-3" /> {t('editor.generationFailed')}
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="h-4 w-4 p-0 text-destructive-foreground hover:text-destructive-foreground"
+                <button
+                  className="ml-0.5 hover:opacity-80"
                   onClick={() => void handleGenerateTts()}
                   aria-label={t('editor.retry')}
                 >
                   <RotateCcw className="h-3 w-3" />
-                </Button>
+                </button>
               </Badge>
             )}
 
             {audioFragment ? (
-              <Badge variant="outline" className="text-green-600 border-green-300 gap-1">
-                {audioFragment.source === 'recording' ? (
-                  <>
-                    <Mic className="h-3 w-3" /> {t('editor.recorded')}
-                  </>
-                ) : (
-                  <>
-                    <Volume2 className="h-3 w-3" /> {t('editor.generated')}
-                  </>
-                )}
+              <Badge
+                variant="outline"
+                className="text-green-600 dark:text-green-400 border-green-200 dark:border-green-800 gap-1 text-[11px]"
+              >
+                {audioFragment.source === 'recording' ? <Mic className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
+                {audioFragment.source === 'recording' ? t('editor.recorded') : t('editor.generated')}
                 {audioFragment.duration_ms != null && (
-                  <span className="text-xs opacity-70">({(audioFragment.duration_ms / 1000).toFixed(1)}s)</span>
+                  <span className="opacity-60">({(audioFragment.duration_ms / 1000).toFixed(1)}s)</span>
                 )}
               </Badge>
             ) : !ttsError ? (
-              <Badge variant="outline" className="text-muted-foreground">
+              <Badge variant="outline" className="text-muted-foreground/60 border-border/60 text-[11px]">
                 {t('editor.notGenerated')}
               </Badge>
             ) : null}
 
-            <Button size="xs" onClick={() => void handleGenerateTts()} disabled={generating || !line.text.trim()}>
+            {/* TTS generate button */}
+            <Button
+              size="xs"
+              variant="outline"
+              className="h-6 text-[11px] gap-1 border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+              onClick={() => void handleGenerateTts()}
+              disabled={generating || !line.text.trim()}
+            >
               {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Volume2 className="h-3 w-3" />}
               {generating ? t('editor.generatingTts') : t('editor.generateTts')}
             </Button>
 
+            {/* Recorder */}
             <AudioRecorder
               lineId={line.id}
               onSave={handleRecordingSave}
@@ -292,11 +291,12 @@ function ScriptLineComponent({
               hasExistingAudio={!!audioFragment}
             />
 
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            {/* Gap control */}
+            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/70 ml-auto">
               {t('editor.gap')}
               <Input
                 type="number"
-                className="w-24 h-6 text-xs text-center"
+                className="w-16 h-5 text-[11px] text-center px-1"
                 value={line.gap_after_ms}
                 onChange={(e) => {
                   setGap(line.id, parseInt(e.target.value) || 0);
@@ -307,23 +307,31 @@ function ScriptLineComponent({
               />
               ms
             </span>
-
-            {audioFragment && <AudioPlayer filePath={audioFragment.file_path} />}
           </div>
+
+          {/* Audio player (only when audio exists) */}
+          {audioFragment && (
+            <div className="pt-1">
+              <AudioPlayer filePath={audioFragment.file_path} />
+            </div>
+          )}
         </div>
 
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="pt-2 opacity-0 group-hover:opacity-100 transition hover:text-destructive"
-          onClick={() => {
-            deleteLine(line.id);
-          }}
-          aria-label="Delete line"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </Card>
+        {/* Right: delete button */}
+        <div className="flex items-start pt-3 pr-2 shrink-0">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
+            onClick={() => {
+              deleteLine(line.id);
+            }}
+            aria-label="Delete line"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
       {dropPosition === 'after' && insertIndicator}
     </div>
   );

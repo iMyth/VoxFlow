@@ -7,14 +7,21 @@
 //! - FFmpeg integration
 //! - Video export with audio visualization
 //! - Particle-based kaleidoscope visualization
+//! - Vinyl/CD disc visualization
+//! - Fractal zoom visualization
+//! - Ink diffusion visualization
 
 mod export;
 mod ffmpeg;
+pub mod fractal;
 mod import;
+pub mod ink;
 pub mod particles;
 mod player;
 mod utils;
 mod video;
+pub mod vinyl;
+pub mod starfield;
 
 // Re-export all public items from submodules (includes __cmd__ functions from #[tauri::command])
 pub use export::*;

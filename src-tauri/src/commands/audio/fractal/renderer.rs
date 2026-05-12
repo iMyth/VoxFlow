@@ -1,0 +1,392 @@
+//! Fractal zoom renderer — infinite Mandelbrot zoom with audio-reactive coloring.
+//!
+//! The camera continuously zooms into a carefully chosen deep point in the
+//! Mandelbrot set. Audio energy controls:
+//! - Zoom speed (bass = faster dive)
+//! - Color palette cycling (mid = hue rotation)
+//! - Iteration glow intensity (high = brighter edges)
+//!
+//! Performance optimizations:
+//! - Rayon parallel pixel computation per frame
+//! - Cardioid/period-2 bulb early-out
+//! - Smooth coloring with high bailout
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+
+use log::info;
+use rayon::prelude::*;
+
+use crate::commands::audio::ffmpeg::find_ffmpeg;
+use crate::commands::audio::particles::audio_analysis::extract_audio_features;
+use crate::core::error::AppError;
+use crate::core::models::MixProgress;
+
+/// Configuration for fractal video rendering.
+pub struct FractalVideoConfig {
+    pub audio_path: PathBuf,
+    pub output_path: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    /// Foreground/accent color as (r, g, b) — base palette color
+    pub fg_color: (u8, u8, u8),
+    /// Background color as (r, g, b) — color for points inside the set
+    pub bg_color: (u8, u8, u8),
+}
+
+/// A deep zoom target point in the Mandelbrot set.
+struct ZoomTarget {
+    cx: f64,
+    cy: f64,
+}
+
+/// Several interesting deep zoom targets.
+const ZOOM_TARGETS: &[ZoomTarget] = &[
+    // Seahorse valley spiral
+    ZoomTarget { cx: -0.743643887037158704752191506114774, cy: 0.131825904205311970493132056385139 },
+    // Elephant valley
+    ZoomTarget { cx: 0.281717921930775, cy: 0.5771052841488505 },
+    // Double spiral
+    ZoomTarget { cx: -0.8624011862235098, cy: 0.21478827404879898 },
+];
+
+/// Render a fractal zoom video from audio.
+pub fn render_fractal_video<F>(
+    config: &FractalVideoConfig,
+    on_progress: F,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<(), AppError>
+where
+    F: Fn(MixProgress),
+{
+    on_progress(MixProgress {
+        percent: 0.0,
+        stage: "正在分析音频特征".to_string(),
+    });
+
+    let features = extract_audio_features(&config.audio_path, config.fps)
+        .map_err(|e| AppError::FFmpeg(format!("Audio analysis failed: {}", e)))?;
+
+    let total_frames = features.len();
+    info!(
+        "[Fractal] {} frames to render at {}fps ({}x{})",
+        total_frames, config.fps, config.width, config.height
+    );
+
+    if total_frames == 0 {
+        return Err(AppError::FFmpeg("No audio frames to render".to_string()));
+    }
+
+    on_progress(MixProgress {
+        percent: 5.0,
+        stage: format!("准备完成，共 {} 帧", total_frames),
+    });
+
+    // Choose zoom target based on audio length (deterministic)
+    let target_idx = (total_frames / 100) % ZOOM_TARGETS.len();
+    let target = &ZOOM_TARGETS[target_idx];
+
+    // Render at half resolution for performance, FFmpeg upscales with lanczos
+    let render_width = config.width / 2;
+    let render_height = config.height / 2;
+    let scale_filter = format!("scale={}:{}:flags=lanczos", config.width, config.height);
+
+    // Start FFmpeg
+    let ffmpeg_bin = find_ffmpeg();
+    let mut child = Command::new(&ffmpeg_bin)
+        .args([
+            "-y",
+            "-f", "rawvideo",
+            "-pixel_format", "rgba",
+            "-video_size", &format!("{}x{}", render_width, render_height),
+            "-framerate", &config.fps.to_string(),
+            "-i", "pipe:0",
+            "-i", &config.audio_path.to_string_lossy(),
+            "-vf", &scale_filter,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "animation",
+            "-crf", "22",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            &config.output_path.to_string_lossy(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::FFmpeg("FFmpeg not found. Please install FFmpeg.".to_string())
+            } else {
+                AppError::FFmpeg(format!("Failed to start FFmpeg: {}", e))
+            }
+        })?;
+
+    let mut stdin = child.stdin.take()
+        .ok_or_else(|| AppError::FFmpeg("Failed to open FFmpeg stdin".to_string()))?;
+
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
+
+    let writer_handle = std::thread::spawn(move || -> Result<(), String> {
+        for frame_data in rx {
+            if stdin.write_all(&frame_data).is_err() {
+                break;
+            }
+        }
+        drop(stdin);
+        Ok(())
+    });
+
+    let width = render_width;
+    let height = render_height;
+    let fg_color = config.fg_color;
+    let bg_color = config.bg_color;
+
+    // Zoom state
+    let mut zoom: f64 = 0.5; // Start zoomed out
+    let base_zoom_speed: f64 = 1.008; // ~0.8% per frame base zoom
+    let mut smooth_rms: f32 = 0.0;
+    let mut smooth_low: f32 = 0.0;
+    let mut smooth_mid: f32 = 0.0;
+    let mut smooth_high: f32 = 0.0;
+    let mut hue_offset: f32 = 0.0;
+
+    for (frame_idx, frame_features) in features.iter().enumerate() {
+        if cancel_flag.load(Ordering::Relaxed) {
+            info!("[Fractal] Render cancelled at frame {}/{}", frame_idx, total_frames);
+            break;
+        }
+
+        // Smooth audio features
+        let smoothing = 0.12;
+        smooth_rms += (frame_features.rms - smooth_rms) * smoothing;
+        smooth_low += (frame_features.low_energy - smooth_low) * smoothing;
+        smooth_mid += (frame_features.mid_energy - smooth_mid) * smoothing;
+        smooth_high += (frame_features.high_energy - smooth_high) * smoothing;
+
+        // Audio-reactive zoom speed: bass makes it zoom faster
+        let zoom_multiplier = 1.0 + smooth_low as f64 * 0.015 + smooth_rms as f64 * 0.005;
+        zoom *= base_zoom_speed * zoom_multiplier;
+
+        // Hue rotation driven by mid frequencies
+        hue_offset += smooth_mid * 0.5 + 0.1;
+
+        // Max iterations increase with zoom depth, capped at 200 for performance
+        let max_iter = (80.0 + (zoom.ln() * 10.0).min(120.0)) as u32;
+
+        let frame_data = render_fractal_frame(
+            width,
+            height,
+            target.cx,
+            target.cy,
+            zoom,
+            max_iter,
+            fg_color,
+            bg_color,
+            hue_offset,
+            smooth_high,
+            smooth_rms,
+        );
+
+        if tx.send(frame_data).is_err() {
+            break;
+        }
+
+        if frame_idx % 30 == 0 || frame_idx == total_frames - 1 {
+            let pct = 5.0 + (frame_idx as f32 / total_frames as f32) * 90.0;
+            on_progress(MixProgress {
+                percent: pct,
+                stage: format!("渲染帧 {}/{}", frame_idx + 1, total_frames),
+            });
+        }
+    }
+
+    drop(tx);
+
+    writer_handle
+        .join()
+        .map_err(|_| AppError::FFmpeg("Writer thread panicked".to_string()))?
+        .map_err(|e| AppError::FFmpeg(e))?;
+
+    let output = child.wait_with_output()
+        .map_err(|e| AppError::FFmpeg(format!("FFmpeg wait failed: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::FFmpeg(format!(
+            "FFmpeg encoding failed: {}",
+            stderr.chars().take(500).collect::<String>()
+        )));
+    }
+
+    on_progress(MixProgress {
+        percent: 100.0,
+        stage: "视频生成完成".to_string(),
+    });
+
+    info!("[Fractal] Video rendered successfully: {:?}", config.output_path);
+    Ok(())
+}
+
+/// Render a single fractal frame using rayon parallel rows.
+fn render_fractal_frame(
+    width: u32,
+    height: u32,
+    center_x: f64,
+    center_y: f64,
+    zoom: f64,
+    max_iter: u32,
+    fg_color: (u8, u8, u8),
+    bg_color: (u8, u8, u8),
+    hue_offset: f32,
+    high_energy: f32,
+    rms: f32,
+) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+
+    let aspect = width as f64 / height as f64;
+    let scale = 2.0 / zoom;
+
+    let x_min = center_x - scale * aspect * 0.5;
+    let y_min = center_y - scale * 0.5;
+    let x_step = scale * aspect / width as f64;
+    let y_step = scale / height as f64;
+
+    // Glow intensity from high frequencies
+    let glow_intensity = 0.3 + high_energy * 0.7;
+    // Brightness boost from overall energy
+    let brightness_boost = 1.0 + rms * 0.3;
+
+    // Parallel row computation with rayon
+    let buf: Vec<u8> = (0..h)
+        .into_par_iter()
+        .flat_map_iter(move |py| {
+            let ci = y_min + py as f64 * y_step;
+            (0..w).flat_map(move |px| {
+                let cr = x_min + px as f64 * x_step;
+
+                let (iter, smooth_val) = mandelbrot_smooth(cr, ci, max_iter);
+
+                if iter >= max_iter {
+                    [bg_color.0, bg_color.1, bg_color.2, 255]
+                } else {
+                    let t = smooth_val / max_iter as f64;
+                    let (r, g, b) = fractal_palette(
+                        t,
+                        fg_color,
+                        hue_offset,
+                        glow_intensity,
+                        brightness_boost,
+                    );
+                    [r, g, b, 255]
+                }
+                .into_iter()
+            })
+        })
+        .collect();
+
+    buf
+}
+
+/// Mandelbrot iteration with smooth (continuous) escape value.
+/// Uses period detection (cycle checking) to early-exit points inside the set,
+/// which dramatically reduces computation for deep zooms.
+#[inline]
+fn mandelbrot_smooth(cr: f64, ci: f64, max_iter: u32) -> (u32, f64) {
+    let mut zr = 0.0_f64;
+    let mut zi = 0.0_f64;
+    let mut zr2 = 0.0_f64;
+    let mut zi2 = 0.0_f64;
+    let mut iter = 0u32;
+
+    // Cardioid / period-2 bulb check (skip expensive iteration)
+    let q = (cr - 0.25) * (cr - 0.25) + ci * ci;
+    if q * (q + (cr - 0.25)) <= 0.25 * ci * ci {
+        return (max_iter, 0.0);
+    }
+    if (cr + 1.0) * (cr + 1.0) + ci * ci <= 0.0625 {
+        return (max_iter, 0.0);
+    }
+
+    let bailout_sq = 65536.0;
+
+    // Period detection: remember a previous z value and check if we cycle back
+    let mut period_zr = 0.0_f64;
+    let mut period_zi = 0.0_f64;
+    let mut period_check = 8u32; // Check period every 8 iterations, doubling
+
+    while zr2 + zi2 <= bailout_sq && iter < max_iter {
+        zi = 2.0 * zr * zi + ci;
+        zr = zr2 - zi2 + cr;
+        zr2 = zr * zr;
+        zi2 = zi * zi;
+        iter += 1;
+
+        // Period detection: if z returns to a previous value, it's in the set
+        if zr == period_zr && zi == period_zi {
+            return (max_iter, 0.0);
+        }
+
+        // Update reference point at power-of-2 intervals
+        if iter & (period_check - 1) == 0 {
+            period_zr = zr;
+            period_zi = zi;
+            period_check = period_check.saturating_mul(2);
+        }
+    }
+
+    if iter >= max_iter {
+        (max_iter, 0.0)
+    } else {
+        let log_zn = (zr2 + zi2).ln() * 0.5;
+        let nu = (log_zn / std::f64::consts::LN_2).ln() / std::f64::consts::LN_2;
+        let smooth = iter as f64 + 1.0 - nu;
+        (iter, smooth.max(0.0))
+    }
+}
+
+/// Generate a color from the fractal palette.
+#[inline]
+fn fractal_palette(
+    t: f64,
+    fg_color: (u8, u8, u8),
+    hue_offset: f32,
+    glow_intensity: f32,
+    brightness_boost: f32,
+) -> (u8, u8, u8) {
+    let t = t as f32;
+    let phase = t * 4.0 + hue_offset * 0.01;
+
+    let base_r = fg_color.0 as f32 / 255.0;
+    let base_g = fg_color.1 as f32 / 255.0;
+    let base_b = fg_color.2 as f32 / 255.0;
+
+    let r = 0.5 + 0.5 * (std::f32::consts::TAU * (phase * 1.0 + base_r * 0.5)).cos();
+    let g = 0.5 + 0.5 * (std::f32::consts::TAU * (phase * 0.8 + base_g * 0.5 + 0.1)).cos();
+    let b = 0.5 + 0.5 * (std::f32::consts::TAU * (phase * 0.6 + base_b * 0.5 + 0.2)).cos();
+
+    let edge_glow = if t < 0.1 {
+        (1.0 - t * 10.0) * glow_intensity
+    } else {
+        0.0
+    };
+
+    let r = ((r + edge_glow) * brightness_boost).clamp(0.0, 1.0);
+    let g = ((g + edge_glow) * brightness_boost).clamp(0.0, 1.0);
+    let b = ((b + edge_glow) * brightness_boost).clamp(0.0, 1.0);
+
+    (
+        (r * 255.0) as u8,
+        (g * 255.0) as u8,
+        (b * 255.0) as u8,
+    )
+}

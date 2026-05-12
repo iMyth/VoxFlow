@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use tauri::Manager;
 
-use crate::core::cancel_token::CancellationToken;
+use crate::core::cancel_token::{CancellationToken, VideoCancelToken};
 use crate::core::db::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -45,6 +45,7 @@ pub fn run() {
             app.manage(Mutex::new(db));
             app.manage(commands::audio::AudioPlayer::new());
             app.manage(CancellationToken::default());
+            app.manage(VideoCancelToken::default());
 
             Ok(())
         })
@@ -81,6 +82,7 @@ pub fn run() {
             commands::delete_audio_by_line,
             commands::export_audio_mix,
             commands::export_video,
+            commands::cancel_video_export,
             commands::import_bgm,
             commands::play_audio,
             commands::stop_audio,

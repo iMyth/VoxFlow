@@ -1,8 +1,9 @@
 //! Video export — generates a visualization video from audio using FFmpeg filters.
 
 use log::info;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
+use crate::core::cancel_token::VideoCancelToken;
 use crate::core::error::AppError;
 use crate::core::models::MixProgress;
 
@@ -22,6 +23,14 @@ pub enum VideoStyle {
     Showspectrum,
     /// Particle kaleidoscope (audio-driven particles with symmetry)
     Particles,
+    /// Vinyl/CD spinning disc with cover image
+    Vinyl,
+    /// Starfield tunnel (classic Windows screensaver, audio-reactive)
+    Starfield,
+    /// Infinite Mandelbrot fractal zoom (audio-reactive colors and speed)
+    Fractal,
+    /// Ink diffusion / reaction-diffusion (audio-reactive organic patterns)
+    Ink,
 }
 
 /// Configuration for video export.
@@ -165,6 +174,18 @@ fn build_full_filter(
         VideoStyle::Particles => {
             unreachable!("Particles style is handled separately")
         }
+        VideoStyle::Vinyl => {
+            unreachable!("Vinyl style is handled separately")
+        }
+        VideoStyle::Starfield => {
+            unreachable!("Starfield style is handled separately")
+        }
+        VideoStyle::Fractal => {
+            unreachable!("Fractal style is handled separately")
+        }
+        VideoStyle::Ink => {
+            unreachable!("Ink style is handled separately")
+        }
     }
 }
 
@@ -205,6 +226,18 @@ fn build_wave_filter(
         VideoStyle::Particles => {
             unreachable!("Particles style is handled separately")
         }
+        VideoStyle::Vinyl => {
+            unreachable!("Vinyl style is handled separately")
+        }
+        VideoStyle::Starfield => {
+            unreachable!("Starfield style is handled separately")
+        }
+        VideoStyle::Fractal => {
+            unreachable!("Fractal style is handled separately")
+        }
+        VideoStyle::Ink => {
+            unreachable!("Ink style is handled separately")
+        }
     }
 }
 
@@ -217,6 +250,11 @@ pub async fn export_video(
         "[Video] export_video: audio={}, output={}, style={:?}",
         config.audio_path, config.output_path, config.style
     );
+
+    // Reset and get the cancel flag
+    let cancel_token = app.state::<VideoCancelToken>();
+    cancel_token.reset();
+    let cancel_flag = cancel_token.flag();
 
     // Validate audio file exists
     if !std::path::Path::new(&config.audio_path).exists() {
@@ -265,15 +303,150 @@ pub async fn export_video(
 
         let output_path = config.output_path.clone();
         let app_clone = app.clone();
+        let cancel = cancel_flag.clone();
 
         // Run in blocking thread since it's CPU-intensive
         tokio::task::spawn_blocking(move || {
             super::particles::render_particle_video(&particle_config, |progress| {
                 let _ = app_clone.emit("video-progress", progress);
-            })
+            }, &cancel)
         })
         .await
         .map_err(|e| AppError::FFmpeg(format!("Particle render task failed: {}", e)))??;
+
+        return Ok(output_path);
+    }
+
+    // Route to vinyl renderer for Vinyl style
+    if matches!(config.style, VideoStyle::Vinyl) {
+        let width = config.width.unwrap_or(1920);
+        let height = config.height.unwrap_or(1080);
+        let fps = config.fps.unwrap_or(30);
+        let fg_color = parse_hex_color(config.fg_color.as_deref().unwrap_or("6366f1"));
+        let bg_color = parse_hex_color(config.bg_color.as_deref().unwrap_or("1a1a2e"));
+
+        let vinyl_config = super::vinyl::renderer::VinylVideoConfig {
+            audio_path: std::path::PathBuf::from(&config.audio_path),
+            output_path: std::path::PathBuf::from(&config.output_path),
+            width,
+            height,
+            fps,
+            cover_image_path: config.bg_image_path.as_ref().map(|p| std::path::PathBuf::from(p)),
+            fg_color,
+            bg_color,
+        };
+
+        let output_path = config.output_path.clone();
+        let app_clone = app.clone();
+        let cancel = cancel_flag.clone();
+
+        tokio::task::spawn_blocking(move || {
+            super::vinyl::render_vinyl_video(&vinyl_config, |progress| {
+                let _ = app_clone.emit("video-progress", progress);
+            }, &cancel)
+        })
+        .await
+        .map_err(|e| AppError::FFmpeg(format!("Vinyl render task failed: {}", e)))??;
+
+        return Ok(output_path);
+    }
+
+    // Route to starfield renderer for Starfield style
+    if matches!(config.style, VideoStyle::Starfield) {
+        let width = config.width.unwrap_or(1920);
+        let height = config.height.unwrap_or(1080);
+        let fps = config.fps.unwrap_or(30);
+        let fg_color = parse_hex_color(config.fg_color.as_deref().unwrap_or("6366f1"));
+        let bg_color = parse_hex_color(config.bg_color.as_deref().unwrap_or("0a0a1a"));
+
+        let starfield_config = super::starfield::renderer::StarfieldVideoConfig {
+            audio_path: std::path::PathBuf::from(&config.audio_path),
+            output_path: std::path::PathBuf::from(&config.output_path),
+            width,
+            height,
+            fps,
+            fg_color,
+            bg_color,
+            bg_image_path: config.bg_image_path.as_ref().map(|p| std::path::PathBuf::from(p)),
+        };
+
+        let output_path = config.output_path.clone();
+        let app_clone = app.clone();
+        let cancel = cancel_flag.clone();
+
+        tokio::task::spawn_blocking(move || {
+            super::starfield::render_starfield_video(&starfield_config, |progress| {
+                let _ = app_clone.emit("video-progress", progress);
+            }, &cancel)
+        })
+        .await
+        .map_err(|e| AppError::FFmpeg(format!("Starfield render task failed: {}", e)))??;
+
+        return Ok(output_path);
+    }
+
+    // Route to fractal renderer for Fractal style
+    if matches!(config.style, VideoStyle::Fractal) {
+        let width = config.width.unwrap_or(1920);
+        let height = config.height.unwrap_or(1080);
+        let fps = config.fps.unwrap_or(30);
+        let fg_color = parse_hex_color(config.fg_color.as_deref().unwrap_or("6366f1"));
+        let bg_color = parse_hex_color(config.bg_color.as_deref().unwrap_or("0a0a12"));
+
+        let fractal_config = super::fractal::renderer::FractalVideoConfig {
+            audio_path: std::path::PathBuf::from(&config.audio_path),
+            output_path: std::path::PathBuf::from(&config.output_path),
+            width,
+            height,
+            fps,
+            fg_color,
+            bg_color,
+        };
+
+        let output_path = config.output_path.clone();
+        let app_clone = app.clone();
+        let cancel = cancel_flag.clone();
+
+        tokio::task::spawn_blocking(move || {
+            super::fractal::render_fractal_video(&fractal_config, |progress| {
+                let _ = app_clone.emit("video-progress", progress);
+            }, &cancel)
+        })
+        .await
+        .map_err(|e| AppError::FFmpeg(format!("Fractal render task failed: {}", e)))??;
+
+        return Ok(output_path);
+    }
+
+    // Route to ink diffusion renderer for Ink style
+    if matches!(config.style, VideoStyle::Ink) {
+        let width = config.width.unwrap_or(1920);
+        let height = config.height.unwrap_or(1080);
+        let fps = config.fps.unwrap_or(30);
+        let fg_color = parse_hex_color(config.fg_color.as_deref().unwrap_or("6366f1"));
+        let bg_color = parse_hex_color(config.bg_color.as_deref().unwrap_or("f5f0e8"));
+
+        let ink_config = super::ink::renderer::InkVideoConfig {
+            audio_path: std::path::PathBuf::from(&config.audio_path),
+            output_path: std::path::PathBuf::from(&config.output_path),
+            width,
+            height,
+            fps,
+            fg_color,
+            bg_color,
+        };
+
+        let output_path = config.output_path.clone();
+        let app_clone = app.clone();
+        let cancel = cancel_flag.clone();
+
+        tokio::task::spawn_blocking(move || {
+            super::ink::render_ink_video(&ink_config, |progress| {
+                let _ = app_clone.emit("video-progress", progress);
+            }, &cancel)
+        })
+        .await
+        .map_err(|e| AppError::FFmpeg(format!("Ink render task failed: {}", e)))??;
 
         return Ok(output_path);
     }
@@ -464,4 +637,11 @@ fn hex_to_hue(hex: &str) -> f32 {
     };
 
     if hue < 0.0 { hue + 360.0 } else { hue }
+}
+
+#[tauri::command]
+pub fn cancel_video_export(app: tauri::AppHandle) {
+    let cancel_token = app.state::<VideoCancelToken>();
+    cancel_token.cancel();
+    info!("[Video] Video export cancelled by user");
 }

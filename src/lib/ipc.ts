@@ -541,7 +541,16 @@ export function onMixProgress(callback: (progress: MixProgress) => void): Promis
 
 // ---- Video Export ----
 
-export type VideoStyle = 'showwaves' | 'showfreqs' | 'avectorscope' | 'showspectrum' | 'particles';
+export type VideoStyle =
+  | 'showwaves'
+  | 'showfreqs'
+  | 'avectorscope'
+  | 'showspectrum'
+  | 'particles'
+  | 'vinyl'
+  | 'starfield'
+  | 'fractal'
+  | 'ink';
 
 export interface VideoExportConfig {
   audio_path: string;
@@ -614,4 +623,8 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
 
 export async function installUpdate(): Promise<void> {
   return ipcCall<void>('install_update');
+}
+
+export async function cancelVideoExport(): Promise<void> {
+  return ipcCall<void>('cancel_video_export', {});
 }
