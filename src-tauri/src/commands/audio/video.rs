@@ -85,8 +85,8 @@ pub async fn export_video(
         })?;
     }
 
-    let width = config.width.unwrap_or(1920);
-    let height = config.height.unwrap_or(1080);
+    let width = config.width.unwrap_or(1280);
+    let height = config.height.unwrap_or(720);
     let fps = config.fps.unwrap_or(30);
     let output_path = config.output_path.clone();
 

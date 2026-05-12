@@ -3,12 +3,9 @@
 //! Handles audio analysis, FFmpeg pipeline, and frame loop.
 //! Delegates actual frame rendering to GPU (gpu.rs) or CPU (draw.rs).
 
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 
 use log::info;
 
@@ -16,7 +13,7 @@ use super::draw::render_vinyl_frame;
 use super::gpu::{GpuVinylRenderer, VinylParams};
 use super::texture::{generate_bokeh_particles, CoverTexture};
 use super::utils::precompute_vinyl_bg;
-use crate::commands::audio::ffmpeg::find_ffmpeg;
+use crate::commands::audio::ffmpeg::spawn_video_encoder;
 use crate::commands::audio::particles::audio_analysis::{extract_audio_features, FrameFeatures};
 use crate::core::error::AppError;
 use crate::core::models::MixProgress;
@@ -94,47 +91,14 @@ where
         on_progress(MixProgress { percent: 5.0, stage: format!("准备完成，共 {} 帧 (CPU 模式)", total_frames) });
     }
 
-    // Start FFmpeg
-    let scale_filter = format!("scale={}:{}:flags=lanczos", config.width, config.height);
-    let ffmpeg_bin = find_ffmpeg();
-    let mut child = Command::new(&ffmpeg_bin)
-        .args([
-            "-y", "-f", "rawvideo", "-pixel_format", "rgba",
-            "-video_size", &format!("{}x{}", render_width, render_height),
-            "-framerate", &config.fps.to_string(),
-            "-i", "pipe:0",
-            "-i", &config.audio_path.to_string_lossy(),
-            "-vf", &scale_filter,
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage",
-            "-crf", "23", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-            &config.output_path.to_string_lossy(),
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                AppError::FFmpeg("FFmpeg not found. Please install FFmpeg.".to_string())
-            } else {
-                AppError::FFmpeg(format!("Failed to start FFmpeg: {}", e))
-            }
-        })?;
-
-    let mut stdin = child.stdin.take()
-        .ok_or_else(|| AppError::FFmpeg("Failed to open FFmpeg stdin".to_string()))?;
-
-    // Writer thread
-    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
-    let writer_handle = std::thread::spawn(move || -> Result<(), String> {
-        for frame_data in rx {
-            if stdin.write_all(&frame_data).is_err() { break; }
-        }
-        drop(stdin);
-        Ok(())
-    });
+    // Start FFmpeg encoder pipeline
+    let (encoder, tx) = spawn_video_encoder(
+        render_width, render_height,
+        config.width, config.height,
+        config.fps,
+        &config.audio_path.to_string_lossy(),
+        &config.output_path.to_string_lossy(),
+    )?;
 
     let width = render_width;
     let height = render_height;
@@ -204,17 +168,7 @@ where
 
     drop(tx);
 
-    writer_handle.join()
-        .map_err(|_| AppError::FFmpeg("Writer thread panicked".to_string()))?
-        .map_err(|e| AppError::FFmpeg(e))?;
-
-    let output = child.wait_with_output()
-        .map_err(|e| AppError::FFmpeg(format!("FFmpeg wait failed: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::FFmpeg(format!("FFmpeg encoding failed: {}", stderr.chars().take(500).collect::<String>())));
-    }
+    encoder.finish()?;
 
     on_progress(MixProgress { percent: 100.0, stage: "视频生成完成".to_string() });
     info!("[Vinyl] Video rendered successfully (GPU={}): {:?}", use_gpu, config.output_path);
