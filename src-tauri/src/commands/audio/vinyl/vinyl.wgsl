@@ -34,7 +34,8 @@ struct Params {
     pulse_scale: f32,
     // EQ rotation offset
     eq_rotation: f32,
-    _pad1: f32,
+    // Motion blur: angular velocity (radians per frame)
+    angular_velocity: f32,
     _pad2: f32,
     _pad3: f32,
 };
@@ -187,26 +188,43 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    // ─── Layer 5: Spinning disc with texture ─────────────────────────────
+    // ─── Layer 5: Spinning disc with motion blur ───────────────────────
     if (dist < disc_r) {
-        // Rotate UV coordinates
-        let cos_a = cos(params.angle);
-        let sin_a = sin(params.angle);
+        // Motion blur: sample the disc texture at multiple sub-frame angles
+        // and average the results. This eliminates rotation judder at 30fps.
+        let num_samples: u32 = 5u; // 5 samples across the frame's rotation arc
         let inv_scale = 1.0 / params.pulse_scale;
         let udx = dx * inv_scale;
         let udy = dy * inv_scale;
-        let tex_u = (udx * cos_a + udy * sin_a) / (params.disc_radius * 2.0) + 0.5;
-        let tex_v = (-udx * sin_a + udy * cos_a) / (params.disc_radius * 2.0) + 0.5;
+        let disc_diam = params.disc_radius * 2.0;
 
-        if (tex_u >= 0.0 && tex_u <= 1.0 && tex_v >= 0.0 && tex_v <= 1.0) {
-            let tex_color = textureSampleLevel(disc_texture, disc_sampler, vec2<f32>(tex_u, tex_v), 0.0);
+        var blurred_color = vec3<f32>(0.0, 0.0, 0.0);
+        var blurred_alpha: f32 = 0.0;
 
-            if (tex_color.a > 0.0) {
-                // Anti-aliased disc edge
-                let edge_fade = clamp(disc_r - dist, 0.0, 1.5) / 1.5;
-                let final_alpha = tex_color.a * edge_fade;
-                color = mix(color, tex_color.rgb, final_alpha);
+        for (var si = 0u; si < num_samples; si = si + 1u) {
+            // Distribute samples evenly across the angular motion of this frame
+            let t = (f32(si) + 0.5) / f32(num_samples); // 0.1, 0.3, 0.5, 0.7, 0.9
+            let sub_angle = params.angle - params.angular_velocity * (1.0 - t);
+            let cos_a = cos(sub_angle);
+            let sin_a = sin(sub_angle);
+
+            let tex_u = (udx * cos_a + udy * sin_a) / disc_diam + 0.5;
+            let tex_v = (-udx * sin_a + udy * cos_a) / disc_diam + 0.5;
+
+            if (tex_u >= 0.0 && tex_u <= 1.0 && tex_v >= 0.0 && tex_v <= 1.0) {
+                let sample = textureSampleLevel(disc_texture, disc_sampler, vec2<f32>(tex_u, tex_v), 0.0);
+                blurred_color = blurred_color + sample.rgb;
+                blurred_alpha = blurred_alpha + sample.a;
             }
+        }
+
+        blurred_color = blurred_color / f32(num_samples);
+        blurred_alpha = blurred_alpha / f32(num_samples);
+
+        if (blurred_alpha > 0.0) {
+            let edge_fade = clamp(disc_r - dist, 0.0, 1.5) / 1.5;
+            let final_alpha = blurred_alpha * edge_fade;
+            color = mix(color, blurred_color, final_alpha);
         }
 
         // ─── Layer 6: Iridescent edge shimmer ────────────────────────────

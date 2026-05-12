@@ -29,7 +29,8 @@ pub struct VinylParams {
     pub frame_time: f32,
     pub pulse_scale: f32,
     pub eq_rotation: f32,
-    pub _pad1: f32,
+    /// Angular velocity (radians per frame) — used for motion blur
+    pub angular_velocity: f32,
     pub _pad2: f32,
     pub _pad3: f32,
 }

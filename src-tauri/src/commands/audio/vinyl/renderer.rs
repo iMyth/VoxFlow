@@ -147,7 +147,8 @@ where
                 frame_time: frame_idx as f32,
                 pulse_scale: 1.0 + smooth_low * 0.02,
                 eq_rotation: frame_idx as f32 * 0.002,
-                _pad1: 0.0, _pad2: 0.0, _pad3: 0.0,
+                angular_velocity: rotation_speed,
+                _pad2: 0.0, _pad3: 0.0,
             };
             gpu.render_frame(&params)
         } else {
