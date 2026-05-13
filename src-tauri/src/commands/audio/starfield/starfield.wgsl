@@ -113,7 +113,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     // ─── Layer 3: Stars ──────────────────────────────────────────────────
-    for (var i = 0u; i < params.num_stars; i = i + 1u) {
+    // Cap at 600 stars per pixel to bound GPU workload
+    let max_stars = min(params.num_stars, 600u);
+    for (var i = 0u; i < max_stars; i = i + 1u) {
         let star = stars[i];
 
         if (star.depth < 0.01) {

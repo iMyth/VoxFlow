@@ -191,9 +191,12 @@ impl Starfield {
         let focal = width as f32 * 0.6;
         let max_depth = self.max_depth;
 
-        self.stars
+        // Sort by z (nearest first) so the shader's 600-star cap keeps the most visible
+        let mut visible: Vec<&Star> = self.stars.iter().filter(|s| s.z > 0.01).collect();
+        visible.sort_unstable_by(|a, b| a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal));
+
+        visible
             .iter()
-            .filter(|s| s.z > 0.01)
             .take(2000)
             .map(|star| {
                 let inv_z = 1.0 / star.z;
