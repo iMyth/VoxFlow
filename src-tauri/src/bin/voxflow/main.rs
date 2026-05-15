@@ -222,7 +222,7 @@ enum CharacterCmd {
         #[arg(long)]
         voice: String,
         /// TTS model
-        #[arg(long, default_value = "qwen3-tts-instruct-flash")]
+        #[arg(long, default_value = "qwen3-tts-instruct-flash-realtime")]
         model: String,
         /// Speech speed (default 1.0)
         #[arg(long, default_value = "1.0")]

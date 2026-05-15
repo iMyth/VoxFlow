@@ -36,19 +36,62 @@ pub(crate) async fn call_tts(
         if is_http_model(model) {
             // HTTP: each chunk separate, merge with silence gaps
             let tmp_dir = std::env::temp_dir();
+            let session_id = uuid::Uuid::new_v4().to_string();
             let mut merged: Vec<(std::path::PathBuf, u32)> = Vec::new();
             for (i, chunk) in chunks.iter().enumerate() {
-                let audio =
-                    call_http_tts(&chunk.text, voice_config, instructions, api_key, model).await?;
-                let path = tmp_dir.join(format!("tts_chunk_{}.mp3", i));
+                // Retry each chunk up to 3 times with backoff
+                let mut last_err = String::new();
+                let mut audio_bytes: Option<Vec<u8>> = None;
+                for attempt in 1..=3 {
+                    match call_http_tts(&chunk.text, voice_config, instructions, api_key, model).await {
+                        Ok(bytes) => {
+                            audio_bytes = Some(bytes);
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = e.to_string();
+                            log::warn!(
+                                "[TTS][split] chunk {}/{} attempt {} failed: {}",
+                                i + 1,
+                                chunks.len(),
+                                attempt,
+                                last_err
+                            );
+                            if attempt < 3 {
+                                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+                            }
+                        }
+                    }
+                }
+                let audio = audio_bytes.ok_or_else(|| {
+                    for (p, _) in &merged {
+                        let _ = std::fs::remove_file(p);
+                    }
+                    AppError::TtsService(format!(
+                        "chunk {}/{} failed after 3 retries: {}",
+                        i + 1,
+                        chunks.len(),
+                        last_err
+                    ))
+                })?;
+                let path = tmp_dir.join(format!("tts_chunk_{}_{}.mp3", session_id, i));
                 std::fs::write(&path, &audio)
                     .map_err(|e| AppError::FileSystem(format!("write chunk: {}", e)))?;
                 merged.push((path, chunk.pause_ms));
+
+                // Small delay between chunks to avoid rate limiting
+                if i < chunks.len() - 1 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
             }
-            let merged_path = tmp_dir.join("tts_merged.mp3");
-            super::utils::merge_audio_with_silence(&merged, &merged_path)
-                .await
-                .map_err(|e| AppError::TtsService(format!("merge audio: {}", e)))?;
+            let merged_path = tmp_dir.join(format!("tts_merged_{}.mp3", session_id));
+            let merge_result = super::utils::merge_audio_with_silence(&merged, &merged_path).await;
+            if let Err(e) = merge_result {
+                for (p, _) in &merged {
+                    let _ = std::fs::remove_file(p);
+                }
+                return Err(AppError::TtsService(format!("merge audio: {}", e)));
+            }
             let audio = std::fs::read(&merged_path)
                 .map_err(|e| AppError::FileSystem(format!("read merged: {}", e)))?;
             for (p, _) in &merged {
@@ -113,18 +156,64 @@ pub(crate) async fn batch_tts_one(
         if is_http_model(model) {
             // HTTP: each chunk separate, merge with silence gaps
             let tmp_dir = std::env::temp_dir();
+            let session_id = uuid::Uuid::new_v4().to_string();
             let mut merged: Vec<(std::path::PathBuf, u32)> = Vec::new();
             for (i, chunk) in chunks.iter().enumerate() {
-                let audio = call_http_tts(&chunk.text, vc, instr, api_key, model).await?;
-                let path = tmp_dir.join(format!("tts_chunk_{}.mp3", i));
+                // Retry each chunk up to 3 times with backoff
+                let mut last_err = String::new();
+                let mut audio_bytes: Option<Vec<u8>> = None;
+                for attempt in 1..=3 {
+                    match call_http_tts(&chunk.text, vc, instr, api_key, model).await {
+                        Ok(bytes) => {
+                            audio_bytes = Some(bytes);
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = e.to_string();
+                            log::warn!(
+                                "[TTS][split][batch] chunk {}/{} attempt {} failed: {}",
+                                i + 1,
+                                chunks.len(),
+                                attempt,
+                                last_err
+                            );
+                            if attempt < 3 {
+                                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+                            }
+                        }
+                    }
+                }
+                let audio = audio_bytes.ok_or_else(|| {
+                    // Cleanup any previously written chunk files
+                    for (p, _) in &merged {
+                        let _ = std::fs::remove_file(p);
+                    }
+                    AppError::TtsService(format!(
+                        "chunk {}/{} failed after 3 retries: {}",
+                        i + 1,
+                        chunks.len(),
+                        last_err
+                    ))
+                })?;
+                let path = tmp_dir.join(format!("tts_chunk_{}_{}.mp3", session_id, i));
                 std::fs::write(&path, &audio)
                     .map_err(|e| AppError::FileSystem(format!("write chunk: {}", e)))?;
                 merged.push((path, chunk.pause_ms));
+
+                // Small delay between chunks to avoid rate limiting
+                if i < chunks.len() - 1 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
             }
-            let merged_path = tmp_dir.join("tts_merged.mp3");
-            super::utils::merge_audio_with_silence(&merged, &merged_path)
-                .await
-                .map_err(|e| AppError::TtsService(format!("merge audio: {}", e)))?;
+            let merged_path = tmp_dir.join(format!("tts_merged_{}.mp3", session_id));
+            let merge_result = super::utils::merge_audio_with_silence(&merged, &merged_path).await;
+            if let Err(e) = merge_result {
+                // Cleanup chunk files on merge failure
+                for (p, _) in &merged {
+                    let _ = std::fs::remove_file(p);
+                }
+                return Err(AppError::TtsService(format!("merge audio: {}", e)));
+            }
             let audio = std::fs::read(&merged_path)
                 .map_err(|e| AppError::FileSystem(format!("read merged: {}", e)))?;
             for (p, _) in &merged {

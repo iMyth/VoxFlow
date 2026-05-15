@@ -83,7 +83,7 @@ function ScriptLineComponent({
         line.id,
         line.text,
         {
-          tts_model: character?.tts_model ?? 'qwen3-tts-flash',
+          tts_model: character?.tts_model ?? 'qwen3-tts-instruct-flash-realtime',
           voice_name: character?.voice_name ?? 'Cherry',
           speed: character?.speed ?? 1.0,
           pitch: character?.pitch ?? 1.0,

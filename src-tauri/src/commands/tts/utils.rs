@@ -400,21 +400,26 @@ pub(crate) fn resolve_model(voice_config: &VoiceConfig, has_instructions: bool) 
         return "qwen3-tts-vc-realtime-2026-01-15".to_string();
     }
 
-    if has_instructions && cfg.starts_with("qwen") {
-        if cfg.ends_with("-realtime") {
-            return "qwen3-tts-instruct-flash-realtime".to_string();
-        }
-        // Non-realtime instruct falls back to HTTP
-        return "qwen3-tts-instruct-flash".to_string();
-    }
-
-    if cfg.is_empty() || cfg.starts_with("cosyvoice") {
-        // Default to Qwen TTS Realtime (CosyVoice no longer supported)
+    // If instructions are present, always use the instruct model
+    if has_instructions {
         return "qwen3-tts-instruct-flash-realtime".to_string();
     }
 
-    // If user configured a non-realtime qwen model, use it as-is
-    cfg.clone()
+    // If a valid realtime model is configured, use it
+    if cfg.ends_with("-realtime") && cfg.starts_with("qwen") {
+        return cfg.clone();
+    }
+
+    // Legacy non-realtime models: upgrade to their realtime equivalents
+    if cfg == "qwen3-tts-flash" {
+        return "qwen3-tts-flash-realtime".to_string();
+    }
+    if cfg == "qwen3-tts-instruct-flash" {
+        return "qwen3-tts-instruct-flash-realtime".to_string();
+    }
+
+    // Default (empty, cosyvoice, or unknown) → instruct flash realtime
+    "qwen3-tts-instruct-flash-realtime".to_string()
 }
 
 /// Returns true if the model should use the HTTP REST API

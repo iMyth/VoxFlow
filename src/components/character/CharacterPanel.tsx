@@ -476,8 +476,7 @@ export default function CharacterPanel() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="qwen3-tts-flash">Qwen3 TTS Flash</SelectItem>
-                    <SelectItem value="qwen3-tts-instruct-flash">Qwen3 TTS Instruct Flash</SelectItem>
+                    <SelectItem value="qwen3-tts-flash-realtime">Qwen3 TTS Flash Realtime</SelectItem>
                     <SelectItem value="qwen3-tts-instruct-flash-realtime">Qwen3 TTS Instruct Flash Realtime</SelectItem>
                     <SelectItem value={VC_TTS_MODEL} disabled>
                       Qwen3 TTS VC Realtime (Voice Cloning)

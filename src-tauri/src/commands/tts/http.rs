@@ -44,7 +44,7 @@ pub(crate) async fn call_http_tts(
     );
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| AppError::TtsService(format!("HTTP client error: {}", e)))?;
 

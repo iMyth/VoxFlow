@@ -24,7 +24,7 @@ pub fn save_settings(conn: &Connection, settings: &UserSettings) -> Result<(), A
 /// Load user settings from the database. If no settings exist, return defaults:
 /// - llm_endpoint: "https://api.openai.com/v1"
 /// - llm_model: "gpt-4"
-/// - default_tts_model: "qwen3-tts-flash"
+/// - default_tts_model: "qwen3-tts-instruct-flash-realtime"
 /// - default_voice_name: "Cherry"
 /// - default_speed: 1.0
 /// - default_pitch: 1.0
@@ -42,7 +42,7 @@ pub fn load_settings(conn: &Connection) -> Result<UserSettings, AppError> {
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(UserSettings {
             llm_endpoint: "https://api.openai.com/v1".to_string(),
             llm_model: "gpt-4".to_string(),
-            default_tts_model: "qwen3-tts-flash".to_string(),
+            default_tts_model: "qwen3-tts-instruct-flash-realtime".to_string(),
             default_voice_name: "Cherry".to_string(),
             default_speed: 1.0,
             default_pitch: 1.0,

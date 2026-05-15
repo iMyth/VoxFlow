@@ -66,7 +66,7 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
                 id          TEXT PRIMARY KEY,
                 project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 name        TEXT NOT NULL,
-                tts_model   TEXT NOT NULL DEFAULT 'qwen3-tts-flash',
+                tts_model   TEXT NOT NULL DEFAULT 'qwen3-tts-instruct-flash-realtime',
                 voice_name  TEXT NOT NULL,
                 speed       REAL NOT NULL DEFAULT 1.0,
                 pitch       REAL NOT NULL DEFAULT 1.0,

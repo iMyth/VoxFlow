@@ -318,6 +318,17 @@ export default function ScriptLines({
               <Plus className="h-6 w-6 text-muted-foreground/60" />
             </div>
             <p className="text-sm text-muted-foreground max-w-xs">{emptyHint}</p>
+            {workflow === 'manual' && (
+              <Button
+                variant="outline"
+                className="mt-4 border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+                onClick={() => {
+                  addLine(-1);
+                }}
+              >
+                <Plus className="h-4 w-4" /> {t('editor.addLine')}
+              </Button>
+            )}
           </div>
         )}
         {lines.map((line, index) => (

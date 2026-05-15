@@ -25,7 +25,7 @@ interface SettingsStore {
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   llmEndpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   llmModel: 'qwen3.6-plus',
-  defaultTtsModel: 'qwen3-tts-flash',
+  defaultTtsModel: 'qwen3-tts-instruct-flash-realtime',
   defaultVoiceName: 'Cherry',
   defaultSpeed: 1.0,
   defaultPitch: 1.0,
