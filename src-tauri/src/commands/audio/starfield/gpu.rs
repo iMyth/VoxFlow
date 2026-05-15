@@ -66,7 +66,7 @@ impl GpuStarfieldRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        }))?;
+        })).ok()?;
 
         info!(
             "[Starfield GPU] Using adapter: {:?} ({:?})",
@@ -80,8 +80,8 @@ impl GpuStarfieldRenderer {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
             },
-            None,
         ))
         .ok()?;
 
@@ -243,7 +243,7 @@ impl GpuStarfieldRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::Wait);
 
         match receiver.recv() {
             Ok(Ok(())) => {

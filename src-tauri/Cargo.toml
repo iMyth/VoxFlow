@@ -52,7 +52,7 @@ rand = "0.8"
 rayon = "1.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 arrayvec = "0.7"
-wgpu = "24"
+wgpu = "25"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 

@@ -91,7 +91,7 @@ impl GpuParticleRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        }))?;
+        })).ok()?;
 
         info!(
             "[Particles GPU] Using adapter: {:?} ({:?})",
@@ -105,8 +105,8 @@ impl GpuParticleRenderer {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
             },
-            None,
         ))
         .ok()?;
 
@@ -329,7 +329,7 @@ impl GpuParticleRenderer {
             let _ = sender.send(result);
         });
 
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::Wait);
 
         match receiver.recv() {
             Ok(Ok(())) => {
