@@ -1,0 +1,86 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          - platform: windows-latest
+            targets: ''
+          - platform: ubuntu-22.04
+            targets: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Cargo fmt check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check || true
+
+      - name: Cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --workspace 2>&1 || true
+
+      - name: Cargo check (native)
+        working-directory: src-tauri
+        run: cargo check --workspace
+
+      - name: Cargo check (x86_64-apple-darwin)
+        if: matrix.platform == 'macos-latest'
+        working-directory: src-tauri
+        run: cargo check -p voxflow --target x86_64-apple-darwin
+
+      - name: Cargo test
+        working-directory: src-tauri
+        run: cargo test --workspace
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend type check & build
+        run: pnpm build
