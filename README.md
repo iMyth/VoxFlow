@@ -4,7 +4,7 @@ VoxFlow AI is a desktop application designed to streamline the creation of audio
 
 > **Note:** This application uses the **Alibaba Cloud Bailian (DashScope)** platform for its Text-to-Speech (TTS) capabilities. You will need a valid API Key from the platform to use the synthesis features.
 
-[![VoxFlow Demo](./docs/demo-screenshot.png)](https://github.com/iMyth/VoxFlow)
+[![VoxFlow Demo](./docs/demo-screenshot.png)](./docs/demo-screenshot.png)
 
 ---
 
@@ -47,7 +47,6 @@ Follow these instructions to get a local copy of the project up and running.
 3. **Configure Bailian API:**
 
    Unlike many CLI tools, VoxFlow does not require you to set environment variables manually.
-
    - Launch the application (see [Development](#development) below).
    - Click the **Settings** (gear icon ⚙️).
    - Enter your **DashScope API Key** in the designated field.
@@ -78,11 +77,11 @@ npm run tauri:build
 
 ## 🛠️ Tech Stack
 
-| Layer            | Technologies                                          |
-|------------------|-------------------------------------------------------|
-| **Frontend**     | React 19, TypeScript, Vite, Tailwind CSS, Zustand     |
-| **Backend**      | Rust, Tauri 2.0, Tokio, Rusqlite (SQLite)             |
-| **AI Services**  | Alibaba Cloud Bailian (DashScope)                     |
+| Layer           | Technologies                                      |
+| --------------- | ------------------------------------------------- |
+| **Frontend**    | React 19, TypeScript, Vite, Tailwind CSS, Zustand |
+| **Backend**     | Rust, Tauri 2.0, Tokio, Rusqlite (SQLite)         |
+| **AI Services** | Alibaba Cloud Bailian (DashScope)                 |
 
 ---
 
