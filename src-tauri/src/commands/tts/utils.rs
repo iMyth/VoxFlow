@@ -37,7 +37,7 @@ pub(crate) fn split_text_for_tts(text: &str) -> Vec<TtsChunk> {
 
     // Step 1: split by paragraph (newlines)
     let paragraphs: Vec<&str> = text
-        .split(|c: char| c == '\n')
+        .split('\n')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
@@ -91,7 +91,7 @@ pub(crate) fn split_text_for_tts(text: &str) -> Vec<TtsChunk> {
     // Build TtsChunk vector
     chunk_texts
         .into_iter()
-        .zip(chunk_boundaries.into_iter())
+        .zip(chunk_boundaries)
         .map(|(text, pause_ms)| TtsChunk { text, pause_ms })
         .collect()
 }
@@ -144,10 +144,7 @@ fn split_sentence_with_boundaries(
 /// Merge multiple MP3 files into one by inserting silence between chunks.
 /// Group TtsChunks into sessions that each stay under `limit` characters.
 /// Prefers splitting at paragraph boundaries (higher pause_ms) over sentence boundaries.
-pub(crate) fn group_chunks_into_sessions(
-    chunks: &[TtsChunk],
-    limit: usize,
-) -> Vec<Vec<&TtsChunk>> {
+pub(crate) fn group_chunks_into_sessions(chunks: &[TtsChunk], limit: usize) -> Vec<Vec<&TtsChunk>> {
     if chunks.is_empty() {
         return vec![];
     }
@@ -199,8 +196,7 @@ pub(crate) async fn merge_audio_with_silence(
         let output = output.to_path_buf();
         let src = chunk_paths[0].0.clone();
         return tokio::task::spawn_blocking(move || {
-            std::fs::copy(&src, &output)
-                .map_err(|e| format!("copy single chunk: {}", e))?;
+            std::fs::copy(&src, &output).map_err(|e| format!("copy single chunk: {}", e))?;
             Ok(())
         })
         .await
@@ -226,11 +222,13 @@ pub(crate) async fn merge_audio_with_silence(
     let mut list_content = String::new();
     for p in &all_paths {
         let path_str = p.to_string_lossy().replace('\'', "'\\''");
-        list_content.push_str(&format!("file '{}'
-", path_str));
+        list_content.push_str(&format!(
+            "file '{}'
+",
+            path_str
+        ));
     }
-    std::fs::write(&concat_list, &list_content)
-        .map_err(|e| format!("write concat list: {}", e))?;
+    std::fs::write(&concat_list, &list_content).map_err(|e| format!("write concat list: {}", e))?;
 
     let output = output.to_path_buf();
     let concat_list_for_cleanup = concat_list.clone();
@@ -490,7 +488,8 @@ mod tests {
     #[test]
     fn test_split_long_paragraph_by_sentence() {
         // A long paragraph with sentence boundaries that needs splitting
-        let text = "他今天去了公园。天气很好。很多人在跑步。小鸟在树上唱歌。孩子们很开心。".repeat(8); // 37 * 8 = 296 chars — still short
+        let text =
+            "他今天去了公园。天气很好。很多人在跑步。小鸟在树上唱歌。孩子们很开心。".repeat(8); // 37 * 8 = 296 chars — still short
         let chunks = split_text_for_tts(&text);
         assert!(chunks.len() >= 1);
         for c in &chunks {
@@ -529,7 +528,8 @@ mod tests {
     #[test]
     fn test_split_preserves_sentence_boundary() {
         // Verify chunks end at sentence boundaries when possible
-        let text = "第一句。第二句。第三句。第四句。第五句。第六句。第七句。第八句。第九句。第十句。";
+        let text =
+            "第一句。第二句。第三句。第四句。第五句。第六句。第七句。第八句。第九句。第十句。";
         let chunks = split_text_for_tts(text);
         // Check that non-final chunks end with sentence-ending punctuation
         let boundaries: &[char] = &['.', '!', '?', '。', '！', '？', '；', ';'];

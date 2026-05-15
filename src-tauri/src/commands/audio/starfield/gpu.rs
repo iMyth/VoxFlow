@@ -66,7 +66,8 @@ impl GpuStarfieldRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        })).ok()?;
+        }))
+        .ok()?;
 
         info!(
             "[Starfield GPU] Using adapter: {:?} ({:?})",
@@ -74,15 +75,13 @@ impl GpuStarfieldRenderer {
             adapter.get_info().backend
         );
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("Starfield GPU Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Starfield GPU Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
         .ok()?;
 
         let shader_source = include_str!("starfield.wgsl");
@@ -184,11 +183,8 @@ impl GpuStarfieldRenderer {
 
     pub fn render_frame(&self, params: &StarfieldParams, gpu_stars: &[GpuStar]) -> Vec<u8> {
         if !gpu_stars.is_empty() {
-            self.queue.write_buffer(
-                &self.star_buffer,
-                0,
-                bytemuck::cast_slice(gpu_stars),
-            );
+            self.queue
+                .write_buffer(&self.star_buffer, 0, bytemuck::cast_slice(gpu_stars));
         }
 
         let uniform_buffer = self
@@ -231,7 +227,7 @@ impl GpuStarfieldRenderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups((self.width + 15) / 16, (self.height + 15) / 16, 1);
+            pass.dispatch_workgroups(self.width.div_ceil(16), self.height.div_ceil(16), 1);
         }
 
         let buffer_size = (self.width as u64) * (self.height as u64) * 4;

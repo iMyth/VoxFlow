@@ -4,8 +4,8 @@
 //! Performance: GPU-accelerated via wgpu, with CPU fallback.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use log::info;
 use rand::Rng;
@@ -267,8 +267,10 @@ where
 
     // Start FFmpeg encoder pipeline
     let (encoder, tx) = spawn_video_encoder(
-        render_width, render_height,
-        config.width, config.height,
+        render_width,
+        render_height,
+        config.width,
+        config.height,
         config.fps,
         &config.audio_path.to_string_lossy(),
         &config.output_path.to_string_lossy(),
@@ -283,7 +285,10 @@ where
     // ─── Frame Loop ──────────────────────────────────────────────────────
     for (frame_idx, frame_features) in features.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
-            info!("[Starfield] Render cancelled at frame {}/{}", frame_idx, total_frames);
+            info!(
+                "[Starfield] Render cancelled at frame {}/{}",
+                frame_idx, total_frames
+            );
             break;
         }
 
@@ -315,7 +320,9 @@ where
             render_starfield_frame_cpu(&starfield, render_width, render_height, bg_color)
         };
 
-        if tx.send(frame_data).is_err() { break; }
+        if tx.send(frame_data).is_err() {
+            break;
+        }
 
         if frame_idx % 30 == 0 || frame_idx == total_frames - 1 {
             let pct = 5.0 + (frame_idx as f32 / total_frames as f32) * 90.0;
@@ -335,7 +342,10 @@ where
         stage: "视频生成完成".to_string(),
     });
 
-    info!("[Starfield] Video rendered successfully (GPU={}): {:?}", use_gpu, config.output_path);
+    info!(
+        "[Starfield] Video rendered successfully (GPU={}): {:?}",
+        use_gpu, config.output_path
+    );
     Ok(())
 }
 
@@ -364,20 +374,24 @@ fn render_starfield_frame_cpu(
     let focal = width as f32 * 0.6;
 
     for star in &starfield.stars {
-        if star.z <= 0.01 { continue; }
+        if star.z <= 0.01 {
+            continue;
+        }
 
         let inv_z = 1.0 / star.z;
         let sx = (cx + star.x * focal * inv_z) as i32;
         let sy = (cy + star.y * focal * inv_z) as i32;
 
-        if sx < 0 || sx >= w as i32 || sy < 0 || sy >= h as i32 { continue; }
+        if sx < 0 || sx >= w as i32 || sy < 0 || sy >= h as i32 {
+            continue;
+        }
 
         let depth = 1.0 - (star.z / starfield.max_depth);
         let alpha = (depth * star.brightness * 255.0).min(255.0) as u32;
         let inv_a = 255 - alpha;
 
         let idx = (sy as usize * w + sx as usize) * 4;
-        buf[idx]     = ((255 * alpha + buf[idx] as u32 * inv_a) >> 8) as u8;
+        buf[idx] = ((255 * alpha + buf[idx] as u32 * inv_a) >> 8) as u8;
         buf[idx + 1] = ((255 * alpha + buf[idx + 1] as u32 * inv_a) >> 8) as u8;
         buf[idx + 2] = ((255 * alpha + buf[idx + 2] as u32 * inv_a) >> 8) as u8;
     }

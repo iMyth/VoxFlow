@@ -25,11 +25,8 @@ pub fn insert_story_kb(conn: &Connection, item: &StoryKnowledgeItem) -> Result<(
 
 /// Delete a knowledge item.
 pub fn delete_story_kb(conn: &Connection, id: &str) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM story_kb WHERE id = ?1",
-        rusqlite::params![id],
-    )
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    conn.execute("DELETE FROM story_kb WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| AppError::Database(e.to_string()))?;
     Ok(())
 }
 
@@ -103,7 +100,13 @@ pub fn delete_all_story_kb(conn: &Connection, project_id: &str) -> Result<(), Ap
 pub fn load_script_with_sections(
     conn: &Connection,
     project_id: &str,
-) -> Result<(Vec<crate::core::models::ScriptSection>, Vec<crate::core::models::ScriptLine>), AppError> {
+) -> Result<
+    (
+        Vec<crate::core::models::ScriptSection>,
+        Vec<crate::core::models::ScriptLine>,
+    ),
+    AppError,
+> {
     let sections = super::script::list_sections(conn, project_id)?;
     let lines = super::script::load_script(conn, project_id)?;
     Ok((sections, lines))

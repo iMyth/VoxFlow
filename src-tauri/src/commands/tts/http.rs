@@ -49,7 +49,9 @@ pub(crate) async fn call_http_tts(
         .map_err(|e| AppError::TtsService(format!("HTTP client error: {}", e)))?;
 
     let response = client
-        .post("https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
+        .post(
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+        )
         .header(CONTENT_TYPE, "application/json")
         .header("Authorization", format!("Bearer {}", api_key))
         .body(body.to_string())

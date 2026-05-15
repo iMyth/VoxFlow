@@ -28,7 +28,11 @@ pub struct LogEmitter {
 impl EventEmitter for LogEmitter {
     fn emit_json(&self, event: &str, payload: &serde_json::Value) {
         if self.verbose {
-            eprintln!("[{}] {}", event, serde_json::to_string_pretty(payload).unwrap_or_default());
+            eprintln!(
+                "[{}] {}",
+                event,
+                serde_json::to_string_pretty(payload).unwrap_or_default()
+            );
         }
 
         // Always print human-readable summaries for structured events

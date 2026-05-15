@@ -14,23 +14,36 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use super::error::AppError;
-use super::models::{AudioFragment, Character, Project, ProjectDetail, ProjectStats, ScriptLine, ScriptSection, StoryKnowledgeItem, UserSettings};
-
-pub use audio::{clear_audio_fragments, clear_tts_fragments, delete_audio_by_line, insert_bgm, list_audio_fragments, upsert_audio_fragment};
-pub use character::{
-    delete_character, get_character_by_id, get_character_project_id, insert_character, list_all_project_characters,
-    list_characters, update_character,
+use super::models::{
+    AudioFragment, Character, Project, ProjectDetail, ProjectStats, ScriptLine, ScriptSection,
+    StoryKnowledgeItem, UserSettings,
 };
-pub use project::{delete_project, get_project, insert_project, list_projects, save_project_outline};
-pub use script::{delete_sections, list_sections, load_script, load_script_lines, save_script, save_sections, ScriptLineWithMeta};
+
+pub use audio::{
+    clear_audio_fragments, clear_tts_fragments, delete_audio_by_line, insert_bgm,
+    list_audio_fragments, upsert_audio_fragment,
+};
+pub use character::{
+    delete_character, get_character_by_id, get_character_project_id, insert_character,
+    list_all_project_characters, list_characters, update_character,
+};
+pub use project::{
+    delete_project, get_project, insert_project, list_projects, save_project_outline,
+};
+pub use script::{
+    delete_sections, list_sections, load_script, load_script_lines, save_script, save_sections,
+    ScriptLineWithMeta,
+};
 pub use settings::{load_settings, save_settings};
-pub use story_kb::{delete_all_story_kb, delete_story_kb, insert_story_kb, list_story_kb, load_script_with_sections};
+pub use story_kb::{
+    delete_all_story_kb, delete_story_kb, insert_story_kb, list_story_kb, load_script_with_sections,
+};
 
 mod audio;
 mod character;
 mod project;
-mod script;
 mod schema;
+mod script;
 mod settings;
 mod story_kb;
 #[cfg(test)]
@@ -153,7 +166,9 @@ impl Database {
     }
 
     /// List all characters across all projects, grouped by (project_id, characters).
-    pub fn list_all_project_characters(&self) -> Result<Vec<(String, String, Vec<Character>)>, AppError> {
+    pub fn list_all_project_characters(
+        &self,
+    ) -> Result<Vec<(String, String, Vec<Character>)>, AppError> {
         character::list_all_project_characters(&self.conn)
     }
 
@@ -165,7 +180,12 @@ impl Database {
     // ---- Script Line operations ----
 
     /// Save script lines for a project using upsert to avoid cascade-deleting audio fragments.
-    pub fn save_script(&self, project_id: &str, lines: &[ScriptLine], sections: &[ScriptSection]) -> Result<(), AppError> {
+    pub fn save_script(
+        &self,
+        project_id: &str,
+        lines: &[ScriptLine],
+        sections: &[ScriptSection],
+    ) -> Result<(), AppError> {
         script::save_script(&self.conn, project_id, lines, sections)
     }
 
@@ -187,7 +207,11 @@ impl Database {
     }
 
     /// Save sections for a project.
-    pub fn save_sections(&self, project_id: &str, sections: &[ScriptSection]) -> Result<(), AppError> {
+    pub fn save_sections(
+        &self,
+        project_id: &str,
+        sections: &[ScriptSection],
+    ) -> Result<(), AppError> {
         script::save_sections(&self.conn, project_id, sections)
     }
 
@@ -252,7 +276,13 @@ impl Database {
     // ---- BGM operations ----
 
     /// Insert a BGM file record into the database.
-    pub fn insert_bgm(&self, id: &str, project_id: &str, file_path: &str, name: &str) -> Result<(), AppError> {
+    pub fn insert_bgm(
+        &self,
+        id: &str,
+        project_id: &str,
+        file_path: &str,
+        name: &str,
+    ) -> Result<(), AppError> {
         audio::insert_bgm(&self.conn, id, project_id, file_path, name)
     }
 
@@ -265,7 +295,9 @@ impl Database {
             .prepare("SELECT project_id, COUNT(*) as line_count FROM script_lines GROUP BY project_id ORDER BY project_id")
             .map_err(|e| AppError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+            })
             .map_err(|e| AppError::Database(e.to_string()))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| AppError::Database(e.to_string()))
@@ -312,7 +344,11 @@ impl Database {
     }
 
     /// List all knowledge items for a project.
-    pub fn list_story_kb(&self, project_id: &str, kb_type: Option<&str>) -> Result<Vec<StoryKnowledgeItem>, AppError> {
+    pub fn list_story_kb(
+        &self,
+        project_id: &str,
+        kb_type: Option<&str>,
+    ) -> Result<Vec<StoryKnowledgeItem>, AppError> {
         story_kb::list_story_kb(&self.conn, project_id, kb_type)
     }
 
@@ -322,7 +358,10 @@ impl Database {
     }
 
     /// Load script sections and lines together (for KB indexing).
-    pub fn load_script_with_sections(&self, project_id: &str) -> Result<(Vec<ScriptSection>, Vec<ScriptLine>), AppError> {
+    pub fn load_script_with_sections(
+        &self,
+        project_id: &str,
+    ) -> Result<(Vec<ScriptSection>, Vec<ScriptLine>), AppError> {
         story_kb::load_script_with_sections(&self.conn, project_id)
     }
 }

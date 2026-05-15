@@ -88,7 +88,8 @@ pub async fn do_character_extraction<E: EventEmitter>(
         return Err(AppError::LlmService(msg));
     }
 
-    let content = crate::core::agent::llm_stream::collect_streaming_content(emitter, response).await?;
+    let content =
+        crate::core::agent::llm_stream::collect_streaming_content(emitter, response).await?;
 
     emitter.emit_json("llm-complete", &json!(()));
 

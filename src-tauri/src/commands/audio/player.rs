@@ -4,7 +4,11 @@ use rodio::Source;
 use tauri::Emitter;
 
 enum AudioCommand {
-    Play(String, mpsc::Sender<Result<AudioFileInfo, String>>, Option<tauri::AppHandle>),
+    Play(
+        String,
+        mpsc::Sender<Result<AudioFileInfo, String>>,
+        Option<tauri::AppHandle>,
+    ),
     Stop,
     Seek(f64),
     SetVolume(f32),
@@ -31,7 +35,10 @@ pub struct AudioPlayer {
 unsafe impl Sync for AudioPlayer {}
 
 /// Reusable helper to open an audio file and build a decoder source.
-fn open_audio_source(path: &str, skip_ms: f64) -> Result<(impl Source<Item = f32> + Send, f64), String> {
+fn open_audio_source(
+    path: &str,
+    skip_ms: f64,
+) -> Result<(impl Source<Item = f32> + Send, f64), String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to open audio file '{}': {}", path, e))?;
     let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
@@ -72,9 +79,8 @@ impl AudioPlayer {
                         paused_at = None;
 
                         let result = (|| -> Result<(std::sync::Arc<rodio::Sink>, f64), String> {
-                            let (stream, stream_handle) =
-                                rodio::OutputStream::try_default()
-                                    .map_err(|e| format!("Failed to open audio output: {}", e))?;
+                            let (stream, stream_handle) = rodio::OutputStream::try_default()
+                                .map_err(|e| format!("Failed to open audio output: {}", e))?;
 
                             let sink = rodio::Sink::try_new(&stream_handle)
                                 .map_err(|e| format!("Failed to create audio sink: {}", e))?;
@@ -131,7 +137,8 @@ impl AudioPlayer {
                             let path = file_path.clone();
                             let seek = pos_ms;
 
-                            if let Ok((stream, stream_handle)) = rodio::OutputStream::try_default() {
+                            if let Ok((stream, stream_handle)) = rodio::OutputStream::try_default()
+                            {
                                 if let Ok(sink) = rodio::Sink::try_new(&stream_handle) {
                                     if let Ok((source, _dur)) = open_audio_source(&path, seek) {
                                         sink.append(source);
@@ -160,7 +167,7 @@ impl AudioPlayer {
                         }
                     }
                     AudioCommand::GetPosition(reply) => {
-                        let pos = if let Some(start) = playback_start {
+                        if let Some(start) = playback_start {
                             let elapsed = start.elapsed().as_millis() as f64;
                             if let Some(paused) = paused_at {
                                 reply.send(paused).ok();
@@ -171,7 +178,6 @@ impl AudioPlayer {
                         } else {
                             reply.send(0.0).ok();
                         };
-                        let _ = pos;
                     }
                     AudioCommand::GetDuration(reply) => {
                         let _ = reply.send(current_duration_ms);
@@ -184,7 +190,11 @@ impl AudioPlayer {
         AudioPlayer { tx }
     }
 
-    pub fn play(&self, file_path: &str, app: Option<tauri::AppHandle>) -> Result<AudioFileInfo, String> {
+    pub fn play(
+        &self,
+        file_path: &str,
+        app: Option<tauri::AppHandle>,
+    ) -> Result<AudioFileInfo, String> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
             .send(AudioCommand::Play(file_path.to_string(), reply_tx, app))
@@ -215,7 +225,9 @@ impl AudioPlayer {
     }
 
     pub fn set_volume(&self, volume: f32) {
-        let _ = self.tx.send(AudioCommand::SetVolume(volume.clamp(0.0, 1.0)));
+        let _ = self
+            .tx
+            .send(AudioCommand::SetVolume(volume.clamp(0.0, 1.0)));
     }
 }
 
@@ -231,7 +243,10 @@ pub fn play_audio(
     state: tauri::State<'_, AudioPlayer>,
     file_path: String,
 ) -> Result<(), crate::core::error::AppError> {
-    state.play(&file_path, Some(app)).map(|_| ()).map_err(crate::core::error::AppError::Audio)
+    state
+        .play(&file_path, Some(app))
+        .map(|_| ())
+        .map_err(crate::core::error::AppError::Audio)
 }
 
 #[tauri::command]
@@ -273,4 +288,3 @@ pub fn seek_audio(
     state.seek(position_ms);
     Ok(())
 }
-

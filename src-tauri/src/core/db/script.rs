@@ -49,9 +49,8 @@ pub fn save_script(
         .map_err(|e| AppError::Database(e.to_string()))?;
     } else {
         // Build dynamic parameterized placeholders for NOT IN clause
-        let placeholders: Vec<String> = (1..=new_ids.len())
-            .map(|i| format!("?{}", i + 1))
-            .collect();
+        let placeholders: Vec<String> =
+            (1..=new_ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "DELETE FROM script_lines WHERE project_id = ?1 AND id NOT IN ({})",
             placeholders.join(",")
@@ -95,8 +94,7 @@ pub fn save_script(
         .map_err(|e| AppError::Database(e.to_string()))?;
     }
 
-    tx.commit()
-        .map_err(|e| AppError::Database(e.to_string()))?;
+    tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(())
 }
@@ -181,9 +179,8 @@ pub fn save_sections(
         .map_err(|e| AppError::Database(e.to_string()))?;
     } else {
         // Build dynamic parameterized placeholders for NOT IN clause
-        let placeholders: Vec<String> = (1..=new_ids.len())
-            .map(|i| format!("?{}", i + 1))
-            .collect();
+        let placeholders: Vec<String> =
+            (1..=new_ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "DELETE FROM script_sections WHERE project_id = ?1 AND id NOT IN ({})",
             placeholders.join(",")
@@ -209,8 +206,7 @@ pub fn save_sections(
         .map_err(|e| AppError::Database(e.to_string()))?;
     }
 
-    tx.commit()
-        .map_err(|e| AppError::Database(e.to_string()))?;
+    tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(())
 }
@@ -218,7 +214,10 @@ pub fn save_sections(
 // ---- CLI query helpers ----
 
 /// Load all lines for a project, optionally with character/section info.
-pub fn load_script_lines(conn: &Connection, project_id: &str) -> Result<Vec<ScriptLineWithMeta>, AppError> {
+pub fn load_script_lines(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<ScriptLineWithMeta>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT sl.id, sl.project_id, sl.line_order, sl.text, sl.character_id, sl.gap_after_ms, sl.instructions, sl.section_id, \
          c.name as character_name, ss.title as section_title \
@@ -228,20 +227,22 @@ pub fn load_script_lines(conn: &Connection, project_id: &str) -> Result<Vec<Scri
          WHERE sl.project_id = ?1 \
          ORDER BY sl.line_order"
     ).map_err(|e| AppError::Database(e.to_string()))?;
-    let rows = stmt.query_map(rusqlite::params![project_id], |row| {
-        Ok(ScriptLineWithMeta {
-            id: row.get(0)?,
-            project_id: row.get(1)?,
-            line_order: row.get(2)?,
-            text: row.get(3)?,
-            character_id: row.get(4)?,
-            gap_after_ms: row.get(5)?,
-            instructions: row.get(6)?,
-            section_id: row.get(7)?,
-            character_name: row.get(8)?,
-            section_title: row.get(9)?,
+    let rows = stmt
+        .query_map(rusqlite::params![project_id], |row| {
+            Ok(ScriptLineWithMeta {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                line_order: row.get(2)?,
+                text: row.get(3)?,
+                character_id: row.get(4)?,
+                gap_after_ms: row.get(5)?,
+                instructions: row.get(6)?,
+                section_id: row.get(7)?,
+                character_name: row.get(8)?,
+                section_title: row.get(9)?,
+            })
         })
-    }).map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(|e| AppError::Database(e.to_string()))?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| AppError::Database(e.to_string()))
 }

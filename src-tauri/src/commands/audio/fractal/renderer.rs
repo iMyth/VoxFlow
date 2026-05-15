@@ -10,8 +10,8 @@
 //! Falls back to CPU (rayon) if GPU is unavailable.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use log::info;
 use rayon::prelude::*;
@@ -46,8 +46,8 @@ struct ZoomTarget {
 const ZOOM_TARGETS: &[ZoomTarget] = &[
     // Seahorse valley spiral
     ZoomTarget {
-        cx: -0.743643887037158704752191506114774,
-        cy: 0.131825904205311970493132056385139,
+        cx: -0.743_643_887_037_158_7,
+        cy: 0.131_825_904_205_311_98,
     },
     // Elephant valley
     ZoomTarget {
@@ -57,7 +57,7 @@ const ZOOM_TARGETS: &[ZoomTarget] = &[
     // Double spiral
     ZoomTarget {
         cx: -0.8624011862235098,
-        cy: 0.21478827404879898,
+        cy: 0.214_788_274_048_799,
     },
     // Mini-brot in antenna
     ZoomTarget {
@@ -135,8 +135,10 @@ where
 
     // Start FFmpeg encoder pipeline
     let (encoder, tx) = spawn_video_encoder(
-        render_width, render_height,
-        config.width, config.height,
+        render_width,
+        render_height,
+        config.width,
+        config.height,
         config.fps,
         &config.audio_path.to_string_lossy(),
         &config.output_path.to_string_lossy(),
@@ -322,13 +324,8 @@ fn render_fractal_frame_cpu(
                     [bg_color.0, bg_color.1, bg_color.2, 255]
                 } else {
                     let t = smooth_val / max_iter as f64;
-                    let (r, g, b) = fractal_palette(
-                        t,
-                        fg_color,
-                        hue_offset,
-                        glow_intensity,
-                        brightness_boost,
-                    );
+                    let (r, g, b) =
+                        fractal_palette(t, fg_color, hue_offset, glow_intensity, brightness_boost);
                     [r, g, b, 255]
                 }
                 .into_iter()

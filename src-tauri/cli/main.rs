@@ -301,10 +301,11 @@ struct CharacterInfo {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let emitter = LogEmitter { verbose: cli.verbose };
+    let emitter = LogEmitter {
+        verbose: cli.verbose,
+    };
 
-    let db = Database::open(&cli.db)
-        .map_err(|e| format!("Failed to open database: {}", e))?;
+    let db = Database::open(&cli.db).map_err(|e| format!("Failed to open database: {}", e))?;
     db.migrate()
         .map_err(|e| format!("Failed to run migrations: {}", e))?;
 
@@ -385,8 +386,10 @@ async fn main() -> Result<()> {
                     println!();
                     println!("Characters ({}):", characters.len());
                     for c in &characters {
-                        println!("  {}  voice={}  model={}  speed={}  pitch={}",
-                            c.name, c.voice_name, c.tts_model, c.speed, c.pitch);
+                        println!(
+                            "  {}  voice={}  model={}  speed={}  pitch={}",
+                            c.name, c.voice_name, c.tts_model, c.speed, c.pitch
+                        );
                     }
                     println!();
                     println!("Sections ({}):", sections.len());
@@ -440,8 +443,10 @@ async fn main() -> Result<()> {
                     println!("No characters found for project: {}", project_id);
                 } else {
                     for c in &characters {
-                        println!("{}\t{}\t{}\t{}\tspeed={}\tpitch={}",
-                            c.id, c.name, c.voice_name, c.tts_model, c.speed, c.pitch);
+                        println!(
+                            "{}\t{}\t{}\t{}\tspeed={}\tpitch={}",
+                            c.id, c.name, c.voice_name, c.tts_model, c.speed, c.pitch
+                        );
                     }
                 }
             }
@@ -514,7 +519,10 @@ async fn main() -> Result<()> {
                 to_project_id,
                 character_ids,
             } => {
-                let ids: Vec<String> = character_ids.split(',').map(|s| s.trim().to_string()).collect();
+                let ids: Vec<String> = character_ids
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect();
                 let db_lock = lock_db(&db)?;
                 let mut imported = Vec::new();
                 for char_id in &ids {
@@ -536,7 +544,11 @@ async fn main() -> Result<()> {
                 if cli.format == "json" {
                     println!("{}", serde_json::to_string_pretty(&imported)?);
                 } else {
-                    eprintln!("Imported {} characters into project: {}", imported.len(), to_project_id);
+                    eprintln!(
+                        "Imported {} characters into project: {}",
+                        imported.len(),
+                        to_project_id
+                    );
                 }
             }
 
@@ -569,8 +581,10 @@ async fn main() -> Result<()> {
                     for (pid, pname, chars) in &all {
                         eprintln!("[{}] {} ({} chars):", pid, pname, chars.len());
                         for c in chars {
-                            println!("  {}\t{}\t{}\tspeed={}\tpitch={}",
-                                c.id, c.name, c.voice_name, c.speed, c.pitch);
+                            println!(
+                                "  {}\t{}\t{}\tspeed={}\tpitch={}",
+                                c.id, c.name, c.voice_name, c.speed, c.pitch
+                            );
                         }
                     }
                 }
@@ -715,14 +729,14 @@ async fn main() -> Result<()> {
 
             // Load outline from file or project
             let outline_text = if let Some(path) = outline {
-                std::fs::read_to_string(&path)
+                std::fs::read_to_string(path)
                     .map_err(|e| format!("Failed to read outline file: {}", e))?
             } else {
                 let db_lock = lock_db(&db)?;
-                db_lock.get_project(&project_id)?.outline
+                db_lock.get_project(project_id)?.outline
             };
 
-            let characters = load_characters(&db, &project_id)?;
+            let characters = load_characters(&db, project_id)?;
 
             let section_indices: Option<Vec<usize>> = sections.as_ref().map(|s| {
                 s.split(',')
@@ -743,7 +757,7 @@ async fn main() -> Result<()> {
             let result = do_script_generation(
                 &emitter,
                 &db,
-                &project_id,
+                project_id,
                 &outline_text,
                 &characters,
                 endpoint,
@@ -803,11 +817,13 @@ async fn main() -> Result<()> {
             } else if !missing.is_empty() {
                 eprintln!("\nMissing audio for these lines:");
                 for line in &missing {
-                    let speaker = line
-                        .character_id
-                        .as_deref()
-                        .unwrap_or("Narrator");
-                    eprintln!("  [{}] {}: {}", speaker, line.id, line.text.chars().take(60).collect::<String>());
+                    let speaker = line.character_id.as_deref().unwrap_or("Narrator");
+                    eprintln!(
+                        "  [{}] {}: {}",
+                        speaker,
+                        line.id,
+                        line.text.chars().take(60).collect::<String>()
+                    );
                 }
             }
         }
@@ -834,10 +850,7 @@ async fn main() -> Result<()> {
             eprintln!("Export complete: {}", output_str);
         }
 
-        Commands::Script {
-            project_id,
-            format,
-        } => {
+        Commands::Script { project_id, format } => {
             let fmt = format.unwrap_or_else(|| cli.format.clone());
             let db_lock = lock_db(&db)?;
             let lines = db_lock
@@ -847,16 +860,19 @@ async fn main() -> Result<()> {
             if lines.is_empty() {
                 eprintln!("No script found for project '{}'.", project_id);
             } else if fmt == "json" {
-                let output: Vec<serde_json::Value> = lines.into_iter().map(|l| {
-                    json!({
-                        "order": l.line_order,
-                        "text": l.text,
-                        "character": l.character_name.unwrap_or_else(|| "Narrator".to_string()),
-                        "section": l.section_title,
-                        "instructions": l.instructions,
-                        "gap_ms": l.gap_after_ms,
+                let output: Vec<serde_json::Value> = lines
+                    .into_iter()
+                    .map(|l| {
+                        json!({
+                            "order": l.line_order,
+                            "text": l.text,
+                            "character": l.character_name.unwrap_or_else(|| "Narrator".to_string()),
+                            "section": l.section_title,
+                            "instructions": l.instructions,
+                            "gap_ms": l.gap_after_ms,
+                        })
                     })
-                }).collect();
+                    .collect();
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 let mut current_section = String::new();
@@ -881,7 +897,10 @@ async fn main() -> Result<()> {
             let existing_ids: HashSet<&str> =
                 fragments.iter().map(|f| f.line_id.as_str()).collect();
 
-            let generated = lines.iter().filter(|l| existing_ids.contains(l.id.as_str())).count();
+            let generated = lines
+                .iter()
+                .filter(|l| existing_ids.contains(l.id.as_str()))
+                .count();
             let missing = lines.len() - generated;
 
             if cli.format == "json" {
@@ -942,10 +961,7 @@ fn load_characters(db: &Mutex<Database>, project_id: &str) -> Result<Vec<Charact
 }
 
 /// Resolve text content from either a direct string (with optional @file prefix) or a file path.
-fn resolve_text_or_file(
-    text: Option<&str>,
-    file: Option<&PathBuf>,
-) -> Result<String> {
+fn resolve_text_or_file(text: Option<&str>, file: Option<&PathBuf>) -> Result<String> {
     if let Some(f) = file {
         return std::fs::read_to_string(f)
             .map_err(|e| format!("Failed to read file {}: {}", f.display(), e).into());
@@ -1017,18 +1033,13 @@ fn mix_audio_cli(
 
     if has_bgm {
         // Concat voice tracks
-        let concat_inputs: String = (0..input_count)
-            .map(|i| format!("[{}:a]", i))
-            .collect();
+        let concat_inputs: String = (0..input_count).map(|i| format!("[{}:a]", i)).collect();
         filter_parts.push(format!(
             "{}concat=n={}:v=0:a=1[out_voice]",
             concat_inputs, input_count
         ));
         // BGM volume
-        filter_parts.push(format!(
-            "[{}:a]volume={}[bgm]",
-            input_count, bgm_volume
-        ));
+        filter_parts.push(format!("[{}:a]volume={}[bgm]", input_count, bgm_volume));
         // Mix
         filter_parts.push(
             "[out_voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[out]".to_string(),
@@ -1038,9 +1049,7 @@ fn mix_audio_cli(
         cmd.arg("-map").arg("[out]");
     } else {
         // Just concat audio files
-        let concat_inputs: String = (0..input_count)
-            .map(|i| format!("[{}:a]", i))
-            .collect();
+        let concat_inputs: String = (0..input_count).map(|i| format!("[{}:a]", i)).collect();
         filter_parts.push(format!(
             "{}concat=n={}:v=0:a=1[out]",
             concat_inputs, input_count
@@ -1054,10 +1063,16 @@ fn mix_audio_cli(
     cmd.arg("-y");
     cmd.arg(output_path);
 
-    let output = cmd.output().map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffmpeg failed: {}", stderr.lines().take(5).collect::<Vec<_>>().join("\n")).into());
+        return Err(format!(
+            "ffmpeg failed: {}",
+            stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+        )
+        .into());
     }
 
     Ok(())

@@ -111,9 +111,13 @@ pub async fn export_video(
             let cancel = cancel_flag.clone();
 
             tokio::task::spawn_blocking(move || {
-                super::particles::render_particle_video(&particle_config, |progress| {
-                    let _ = app_clone.emit("video-progress", progress);
-                }, &cancel)
+                super::particles::render_particle_video(
+                    &particle_config,
+                    |progress| {
+                        let _ = app_clone.emit("video-progress", progress);
+                    },
+                    &cancel,
+                )
             })
             .await
             .map_err(|e| AppError::FFmpeg(format!("Particle render task failed: {}", e)))??;
@@ -129,7 +133,7 @@ pub async fn export_video(
                 width,
                 height,
                 fps,
-                cover_image_path: config.bg_image_path.as_ref().map(|p| std::path::PathBuf::from(p)),
+                cover_image_path: config.bg_image_path.as_ref().map(std::path::PathBuf::from),
                 fg_color,
                 bg_color,
             };
@@ -138,9 +142,13 @@ pub async fn export_video(
             let cancel = cancel_flag.clone();
 
             tokio::task::spawn_blocking(move || {
-                super::vinyl::render_vinyl_video(&vinyl_config, |progress| {
-                    let _ = app_clone.emit("video-progress", progress);
-                }, &cancel)
+                super::vinyl::render_vinyl_video(
+                    &vinyl_config,
+                    |progress| {
+                        let _ = app_clone.emit("video-progress", progress);
+                    },
+                    &cancel,
+                )
             })
             .await
             .map_err(|e| AppError::FFmpeg(format!("Vinyl render task failed: {}", e)))??;
@@ -158,16 +166,20 @@ pub async fn export_video(
                 fps,
                 fg_color,
                 bg_color,
-                bg_image_path: config.bg_image_path.as_ref().map(|p| std::path::PathBuf::from(p)),
+                bg_image_path: config.bg_image_path.as_ref().map(std::path::PathBuf::from),
             };
 
             let app_clone = app.clone();
             let cancel = cancel_flag.clone();
 
             tokio::task::spawn_blocking(move || {
-                super::starfield::render_starfield_video(&starfield_config, |progress| {
-                    let _ = app_clone.emit("video-progress", progress);
-                }, &cancel)
+                super::starfield::render_starfield_video(
+                    &starfield_config,
+                    |progress| {
+                        let _ = app_clone.emit("video-progress", progress);
+                    },
+                    &cancel,
+                )
             })
             .await
             .map_err(|e| AppError::FFmpeg(format!("Starfield render task failed: {}", e)))??;
@@ -191,14 +203,17 @@ pub async fn export_video(
             let cancel = cancel_flag.clone();
 
             tokio::task::spawn_blocking(move || {
-                super::fractal::render_fractal_video(&fractal_config, |progress| {
-                    let _ = app_clone.emit("video-progress", progress);
-                }, &cancel)
+                super::fractal::render_fractal_video(
+                    &fractal_config,
+                    |progress| {
+                        let _ = app_clone.emit("video-progress", progress);
+                    },
+                    &cancel,
+                )
             })
             .await
             .map_err(|e| AppError::FFmpeg(format!("Fractal render task failed: {}", e)))??;
         }
-
     }
 
     info!("[Video] export_video done: {}", output_path);
@@ -250,5 +265,9 @@ fn hex_to_hue(hex: &str) -> f32 {
         60.0 * (((rf - gf) / delta) + 4.0)
     };
 
-    if hue < 0.0 { hue + 360.0 } else { hue }
+    if hue < 0.0 {
+        hue + 360.0
+    } else {
+        hue
+    }
 }

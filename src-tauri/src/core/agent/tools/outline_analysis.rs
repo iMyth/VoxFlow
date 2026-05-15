@@ -2,10 +2,8 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::core::agent::llm_stream::{collect_streaming_content, parse_json_with_fallback};
 use crate::core::agent::AgentPlan;
-use crate::core::agent::llm_stream::{
-    collect_streaming_content, parse_json_with_fallback,
-};
 use crate::core::error::AppError;
 use crate::core::event_emitter::EventEmitter;
 use crate::core::models::Character;
@@ -59,10 +57,13 @@ pub async fn do_outline_analysis<E: EventEmitter>(
     model: &str,
     enable_thinking: bool,
 ) -> Result<AgentPlan, AppError> {
-    emitter.emit_json("agent-tool-call", &json!({
-        "tool": "outline_analysis",
-        "outline": outline.chars().take(100).collect::<String>()
-    }));
+    emitter.emit_json(
+        "agent-tool-call",
+        &json!({
+            "tool": "outline_analysis",
+            "outline": outline.chars().take(100).collect::<String>()
+        }),
+    );
 
     let existing_char_names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
     let existing_chars_section = if existing_char_names.is_empty() {
@@ -137,15 +138,19 @@ pub async fn do_outline_analysis<E: EventEmitter>(
         api_key,
         model,
         enable_thinking,
-    ).await?;
+    )
+    .await?;
 
     // Emit TTS suggestions based on character roles
     emit_tts_suggestions(emitter, &plan.suggested_characters, &plan.character_notes);
 
-    emitter.emit_json("agent-tool-result", &json!({
-        "tool": "outline_analysis",
-        "results_count": plan.chapters.len()
-    }));
+    emitter.emit_json(
+        "agent-tool-result",
+        &json!({
+            "tool": "outline_analysis",
+            "results_count": plan.chapters.len()
+        }),
+    );
 
     Ok(plan)
 }
@@ -179,11 +184,14 @@ async fn parse_outline_with_retry<E: EventEmitter>(
             )));
         }
 
-        emitter.emit_json("agent-retry", &json!({
-            "attempt": attempt,
-            "max_retries": max_retries,
-            "reason": "JSON parse failed, retrying with correction"
-        }));
+        emitter.emit_json(
+            "agent-retry",
+            &json!({
+                "attempt": attempt,
+                "max_retries": max_retries,
+                "reason": "JSON parse failed, retrying with correction"
+            }),
+        );
 
         let url = format!("{}/chat/completions", api_endpoint.trim_end_matches('/'));
         let body = json!({
@@ -241,37 +249,65 @@ fn emit_tts_suggestions<E: EventEmitter>(
     notes: &str,
 ) {
     let notes_lower = notes.to_lowercase();
-    let suggestions: Vec<TtsSuggestion> = characters.iter().map(|ch| {
-        let role_lower = ch.role.to_lowercase();
-        let (speed, pitch, reason) = match () {
-            _ if role_lower.contains("child") || role_lower.contains("young") || role_lower.contains("小孩") || role_lower.contains("少年") => {
-                (1.1, 1.2, "Young/child character — faster pace, higher pitch")
+    let suggestions: Vec<TtsSuggestion> = characters
+        .iter()
+        .map(|ch| {
+            let role_lower = ch.role.to_lowercase();
+            let (speed, pitch, reason) = match () {
+                _ if role_lower.contains("child")
+                    || role_lower.contains("young")
+                    || role_lower.contains("小孩")
+                    || role_lower.contains("少年") =>
+                {
+                    (
+                        1.1,
+                        1.2,
+                        "Young/child character — faster pace, higher pitch",
+                    )
+                }
+                _ if role_lower.contains("old")
+                    || role_lower.contains("elder")
+                    || role_lower.contains("老人")
+                    || role_lower.contains("老年") =>
+                {
+                    (0.85, 0.8, "Elderly character — slower pace, lower pitch")
+                }
+                _ if role_lower.contains("antagonist")
+                    || role_lower.contains("villain")
+                    || role_lower.contains("反派") =>
+                {
+                    (
+                        0.95,
+                        0.85,
+                        "Antagonist — slightly slower, deeper voice for dramatic effect",
+                    )
+                }
+                _ if role_lower.contains("narrator")
+                    || role_lower.contains("旁白")
+                    || role_lower.contains("叙述") =>
+                {
+                    (1.0, 1.0, "Narrator — neutral, clear pacing")
+                }
+                _ if notes_lower.contains(&ch.name.to_lowercase()) => {
+                    (1.0, 1.0, "Default — no specific voice traits detected")
+                }
+                _ => (1.0, 1.0, "Default pacing and pitch"),
+            };
+            TtsSuggestion {
+                character_name: ch.name.clone(),
+                suggested_speed: speed,
+                suggested_pitch: pitch,
+                reason: reason.to_string(),
             }
-            _ if role_lower.contains("old") || role_lower.contains("elder") || role_lower.contains("老人") || role_lower.contains("老年") => {
-                (0.85, 0.8, "Elderly character — slower pace, lower pitch")
-            }
-            _ if role_lower.contains("antagonist") || role_lower.contains("villain") || role_lower.contains("反派") => {
-                (0.95, 0.85, "Antagonist — slightly slower, deeper voice for dramatic effect")
-            }
-            _ if role_lower.contains("narrator") || role_lower.contains("旁白") || role_lower.contains("叙述") => {
-                (1.0, 1.0, "Narrator — neutral, clear pacing")
-            }
-            _ if notes_lower.contains(&ch.name.to_lowercase()) => {
-                (1.0, 1.0, "Default — no specific voice traits detected")
-            }
-            _ => (1.0, 1.0, "Default pacing and pitch"),
-        };
-        TtsSuggestion {
-            character_name: ch.name.clone(),
-            suggested_speed: speed,
-            suggested_pitch: pitch,
-            reason: reason.to_string(),
-        }
-    }).collect();
+        })
+        .collect();
 
     if !suggestions.is_empty() {
-        emitter.emit_json("agent-tts-suggestions", &json!({
-            "suggestions": suggestions
-        }));
+        emitter.emit_json(
+            "agent-tts-suggestions",
+            &json!({
+                "suggestions": suggestions
+            }),
+        );
     }
 }

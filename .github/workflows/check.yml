@@ -50,11 +50,11 @@ jobs:
 
       - name: Cargo fmt check
         working-directory: src-tauri
-        run: cargo fmt --all -- --check || true
+        run: cargo fmt --all -- --check
 
       - name: Cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --workspace 2>&1 || true
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Cargo check (native)
         working-directory: src-tauri

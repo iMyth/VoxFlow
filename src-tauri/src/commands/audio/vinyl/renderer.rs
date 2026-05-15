@@ -4,8 +4,8 @@
 //! Delegates actual frame rendering to GPU (gpu.rs) or CPU (draw.rs).
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use log::info;
 
@@ -78,23 +78,33 @@ where
 
     // Try GPU renderer
     let gpu_renderer = GpuVinylRenderer::new(
-        render_width, render_height,
-        &cover_texture.pixels, cover_texture.size,
+        render_width,
+        render_height,
+        &cover_texture.pixels,
+        cover_texture.size,
     );
     let use_gpu = gpu_renderer.is_some();
 
     if use_gpu {
         info!("[Vinyl] Using GPU-accelerated rendering");
-        on_progress(MixProgress { percent: 5.0, stage: "GPU 加速已启用，准备渲染".to_string() });
+        on_progress(MixProgress {
+            percent: 5.0,
+            stage: "GPU 加速已启用，准备渲染".to_string(),
+        });
     } else {
         info!("[Vinyl] GPU unavailable, falling back to CPU (rayon)");
-        on_progress(MixProgress { percent: 5.0, stage: format!("准备完成，共 {} 帧 (CPU 模式)", total_frames) });
+        on_progress(MixProgress {
+            percent: 5.0,
+            stage: format!("准备完成，共 {} 帧 (CPU 模式)", total_frames),
+        });
     }
 
     // Start FFmpeg encoder pipeline
     let (encoder, tx) = spawn_video_encoder(
-        render_width, render_height,
-        config.width, config.height,
+        render_width,
+        render_height,
+        config.width,
+        config.height,
         config.fps,
         &config.audio_path.to_string_lossy(),
         &config.output_path.to_string_lossy(),
@@ -116,7 +126,10 @@ where
     // ─── Frame Loop ──────────────────────────────────────────────────────
     for (frame_idx, frame_features) in features.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
-            info!("[Vinyl] Render cancelled at frame {}/{}", frame_idx, total_frames);
+            info!(
+                "[Vinyl] Render cancelled at frame {}/{}",
+                frame_idx, total_frames
+            );
             break;
         }
 
@@ -138,32 +151,54 @@ where
         let frame_data = if let Some(ref gpu) = gpu_renderer {
             let disc_radius = cover_texture.size as f32 / 2.0;
             let params = VinylParams {
-                width: width as f32, height: height as f32,
-                disc_radius, angle,
-                rms: smooth_rms, low_energy: smooth_low,
-                mid_energy: smooth_mid, high_energy: smooth_high,
-                fg_r: fg_color.0 as f32 / 255.0, fg_g: fg_color.1 as f32 / 255.0, fg_b: fg_color.2 as f32 / 255.0,
-                bg_r: bg_color.0 as f32 / 255.0, bg_g: bg_color.1 as f32 / 255.0, bg_b: bg_color.2 as f32 / 255.0,
+                width: width as f32,
+                height: height as f32,
+                disc_radius,
+                angle,
+                rms: smooth_rms,
+                low_energy: smooth_low,
+                mid_energy: smooth_mid,
+                high_energy: smooth_high,
+                fg_r: fg_color.0 as f32 / 255.0,
+                fg_g: fg_color.1 as f32 / 255.0,
+                fg_b: fg_color.2 as f32 / 255.0,
+                bg_r: bg_color.0 as f32 / 255.0,
+                bg_g: bg_color.1 as f32 / 255.0,
+                bg_b: bg_color.2 as f32 / 255.0,
                 frame_time: frame_idx as f32,
                 pulse_scale: 1.0 + smooth_low * 0.02,
                 eq_rotation: frame_idx as f32 * 0.002,
                 angular_velocity: rotation_speed,
-                _pad2: 0.0, _pad3: 0.0,
+                _pad2: 0.0,
+                _pad3: 0.0,
             };
             gpu.render_frame(&params)
         } else {
             render_vinyl_frame(
-                width, height, &cover_texture, angle,
-                &smoothed, frame_features, fg_color, bg_color,
-                frame_idx as u32, &bg_frame, &bokeh_particles,
+                width,
+                height,
+                &cover_texture,
+                angle,
+                &smoothed,
+                frame_features,
+                fg_color,
+                bg_color,
+                frame_idx as u32,
+                &bg_frame,
+                &bokeh_particles,
             )
         };
 
-        if tx.send(frame_data).is_err() { break; }
+        if tx.send(frame_data).is_err() {
+            break;
+        }
 
         if frame_idx % 30 == 0 || frame_idx == total_frames - 1 {
             let pct = 5.0 + (frame_idx as f32 / total_frames as f32) * 90.0;
-            on_progress(MixProgress { percent: pct, stage: format!("渲染帧 {}/{}", frame_idx + 1, total_frames) });
+            on_progress(MixProgress {
+                percent: pct,
+                stage: format!("渲染帧 {}/{}", frame_idx + 1, total_frames),
+            });
         }
     }
 
@@ -171,7 +206,13 @@ where
 
     encoder.finish()?;
 
-    on_progress(MixProgress { percent: 100.0, stage: "视频生成完成".to_string() });
-    info!("[Vinyl] Video rendered successfully (GPU={}): {:?}", use_gpu, config.output_path);
+    on_progress(MixProgress {
+        percent: 100.0,
+        stage: "视频生成完成".to_string(),
+    });
+    info!(
+        "[Vinyl] Video rendered successfully (GPU={}): {:?}",
+        use_gpu, config.output_path
+    );
     Ok(())
 }

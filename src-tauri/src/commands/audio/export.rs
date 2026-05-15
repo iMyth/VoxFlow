@@ -57,7 +57,7 @@ pub async fn export_audio_mix(
             processed += 1;
 
             // Emit per-clip verification progress (0-15%)
-            if processed % 5 == 0 || processed == total_clips {
+            if processed.is_multiple_of(5) || processed == total_clips {
                 let pct = (processed as f64 / total_clips as f64) * 15.0;
                 let _ = app.emit(
                     "mix-progress",
@@ -79,10 +79,7 @@ pub async fn export_audio_mix(
     // Verify BGM file exists if provided
     if let Some(ref bgm) = bgm_path {
         if !std::path::Path::new(bgm).exists() {
-            return Err(AppError::FileSystem(format!(
-                "BGM file not found: {}",
-                bgm
-            )));
+            return Err(AppError::FileSystem(format!("BGM file not found: {}", bgm)));
         }
     }
 

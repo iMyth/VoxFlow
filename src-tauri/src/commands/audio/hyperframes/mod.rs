@@ -132,11 +132,10 @@ pub async fn export_hyperframes(
 
         generate_composition(&timeline_entries, &llm_config, Some(on_progress))
             .await
-            .map_err(|e| AppError::LlmService(e))?
+            .map_err(AppError::LlmService)?
     } else {
         // Fixed template path
-        generate_html(&template, &timeline_entries)
-            .map_err(|e| AppError::FileSystem(e))?
+        generate_html(&template, &timeline_entries).map_err(AppError::FileSystem)?
     };
 
     let _ = app.emit(
@@ -151,14 +150,12 @@ pub async fn export_hyperframes(
     let output_path = std::path::Path::new(&output_dir);
 
     // Create output directory and assets subdirectory
-    std::fs::create_dir_all(output_path.join("assets")).map_err(|e| {
-        AppError::FileSystem(format!("无法创建输出目录: {}", e))
-    })?;
+    std::fs::create_dir_all(output_path.join("assets"))
+        .map_err(|e| AppError::FileSystem(format!("无法创建输出目录: {}", e)))?;
 
     // Write index.html
-    std::fs::write(output_path.join("index.html"), &html).map_err(|e| {
-        AppError::FileSystem(format!("无法写入 index.html: {}", e))
-    })?;
+    std::fs::write(output_path.join("index.html"), &html)
+        .map_err(|e| AppError::FileSystem(format!("无法写入 index.html: {}", e)))?;
 
     // Write meta.json
     let total_duration = timeline_entries
@@ -166,9 +163,8 @@ pub async fn export_hyperframes(
         .map(|e| e.start_time + e.duration)
         .fold(0.0_f64, f64::max);
     let meta_json = generate_meta_json(&template, &project_id, total_duration);
-    std::fs::write(output_path.join("meta.json"), &meta_json).map_err(|e| {
-        AppError::FileSystem(format!("无法写入 meta.json: {}", e))
-    })?;
+    std::fs::write(output_path.join("meta.json"), &meta_json)
+        .map_err(|e| AppError::FileSystem(format!("无法写入 meta.json: {}", e)))?;
 
     // Copy audio file if requested
     if include_audio {
@@ -176,9 +172,8 @@ pub async fn export_hyperframes(
             let src = std::path::Path::new(src_audio_path);
             if src.exists() {
                 let dest = output_path.join("assets").join("audio.mp3");
-                std::fs::copy(src, &dest).map_err(|e| {
-                    AppError::FileSystem(format!("无法复制音频文件: {}", e))
-                })?;
+                std::fs::copy(src, &dest)
+                    .map_err(|e| AppError::FileSystem(format!("无法复制音频文件: {}", e)))?;
                 info!("[Hyperframes] Copied audio: {:?} -> {:?}", src, dest);
             } else {
                 info!("[Hyperframes] Audio file not found: {:?}", src);
@@ -199,4 +194,3 @@ pub async fn export_hyperframes(
     info!("[Hyperframes] Export complete: {}", output_dir);
     Ok(output_dir)
 }
-

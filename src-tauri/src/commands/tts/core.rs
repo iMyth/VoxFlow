@@ -2,9 +2,9 @@ use crate::core::error::AppError;
 use crate::core::models::VoiceConfig;
 use log::info;
 
+use super::http::call_http_tts;
 use super::utils::{group_chunks_into_sessions, is_http_model, split_text_for_tts};
 use super::websocket::{ws_realtime_connect, ws_realtime_run_task};
-use super::http::call_http_tts;
 
 /// Unified TTS call: routes to HTTP or WebSocket based on model.
 /// If text exceeds TTS_CHUNK_MAX_CHARS, it is split into chunks.
@@ -43,7 +43,9 @@ pub(crate) async fn call_tts(
                 let mut last_err = String::new();
                 let mut audio_bytes: Option<Vec<u8>> = None;
                 for attempt in 1..=3 {
-                    match call_http_tts(&chunk.text, voice_config, instructions, api_key, model).await {
+                    match call_http_tts(&chunk.text, voice_config, instructions, api_key, model)
+                        .await
+                    {
                         Ok(bytes) => {
                             audio_bytes = Some(bytes);
                             break;
@@ -58,7 +60,10 @@ pub(crate) async fn call_tts(
                                 last_err
                             );
                             if attempt < 3 {
-                                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    2 * attempt as u64,
+                                ))
+                                .await;
                             }
                         }
                     }
@@ -178,7 +183,10 @@ pub(crate) async fn batch_tts_one(
                                 last_err
                             );
                             if attempt < 3 {
-                                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    2 * attempt as u64,
+                                ))
+                                .await;
                             }
                         }
                     }

@@ -104,13 +104,22 @@ pub(super) fn render_frame_cpu(
     // Draw rings (behind particles)
     for ring in &system.rings {
         draw_ring_fast(
-            &mut buf, w, h, cx, cy, scale,
-            ring.radius, ring.thickness, ring.hue, ring.life * ring.brightness,
+            &mut buf,
+            w,
+            h,
+            cx,
+            cy,
+            scale,
+            ring.radius,
+            ring.thickness,
+            ring.hue,
+            ring.life * ring.brightness,
         );
     }
 
     // Generate draw commands in parallel
-    let draw_commands: Vec<DrawCmd> = system.particles
+    let draw_commands: Vec<DrawCmd> = system
+        .particles
         .par_iter()
         .filter_map(|particle| {
             let alpha_f = particle.life * particle.brightness;
@@ -134,7 +143,7 @@ pub(super) fn render_frame_cpu(
                 ParticleKind::Dot => 0.5 + features.rms * 0.5,
             };
             let size = particle.current_size() * size_mult;
-            let radius = (size as u32).min(24).max(1);
+            let radius = (size as u32).clamp(1, 24);
             let is_glow = particle.kind == ParticleKind::Glow;
 
             let mut cmds: arrayvec::ArrayVec<DrawCmd, 32> = arrayvec::ArrayVec::new();
@@ -149,8 +158,10 @@ pub(super) fn render_frame_cpu(
                     let screen_y = cy + py * scale;
 
                     let rf = radius as f32;
-                    if screen_x < -rf || screen_x > width as f32 + rf
-                        || screen_y < -rf || screen_y > height as f32 + rf
+                    if screen_x < -rf
+                        || screen_x > width as f32 + rf
+                        || screen_y < -rf
+                        || screen_y > height as f32 + rf
                     {
                         continue;
                     }
@@ -160,7 +171,11 @@ pub(super) fn render_frame_cpu(
                             screen_x: screen_x as i32,
                             screen_y: screen_y as i32,
                             radius,
-                            r, g, b, alpha, is_glow,
+                            r,
+                            g,
+                            b,
+                            alpha,
+                            is_glow,
                         });
                     }
                 }
@@ -175,9 +190,33 @@ pub(super) fn render_frame_cpu(
         if cmd.is_glow {
             let glow_alpha = (cmd.alpha as u32 * 60 / 100) as u8;
             let glow_radius = (cmd.radius * 3 / 2).min(24);
-            draw_circle_fast(&mut buf, w, h, cmd.screen_x, cmd.screen_y, glow_radius, cmd.r, cmd.g, cmd.b, glow_alpha, circle_templates);
+            draw_circle_fast(
+                &mut buf,
+                w,
+                h,
+                cmd.screen_x,
+                cmd.screen_y,
+                glow_radius,
+                cmd.r,
+                cmd.g,
+                cmd.b,
+                glow_alpha,
+                circle_templates,
+            );
         }
-        draw_circle_fast(&mut buf, w, h, cmd.screen_x, cmd.screen_y, cmd.radius, cmd.r, cmd.g, cmd.b, cmd.alpha, circle_templates);
+        draw_circle_fast(
+            &mut buf,
+            w,
+            h,
+            cmd.screen_x,
+            cmd.screen_y,
+            cmd.radius,
+            cmd.r,
+            cmd.g,
+            cmd.b,
+            cmd.alpha,
+            circle_templates,
+        );
     }
 
     // Center glow
@@ -188,9 +227,33 @@ pub(super) fn render_frame_cpu(
         let glow_alpha = (glow_intensity * 100.0).clamp(0.0, 100.0) as u8;
         let time_hue = (base_hue + frame_idx as f32 * 0.5) % 360.0;
         let (gr, gg, gb) = hsl_to_rgb(time_hue, 0.7, 0.65);
-        draw_circle_fast(&mut buf, w, h, cx as i32, cy as i32, glow_radius, gr, gg, gb, glow_alpha, circle_templates);
+        draw_circle_fast(
+            &mut buf,
+            w,
+            h,
+            cx as i32,
+            cy as i32,
+            glow_radius,
+            gr,
+            gg,
+            gb,
+            glow_alpha,
+            circle_templates,
+        );
         let core_alpha = (glow_intensity * 150.0).clamp(0.0, 150.0) as u8;
-        draw_circle_fast(&mut buf, w, h, cx as i32, cy as i32, (glow_radius / 3).max(2), 255, 255, 255, core_alpha, circle_templates);
+        draw_circle_fast(
+            &mut buf,
+            w,
+            h,
+            cx as i32,
+            cy as i32,
+            (glow_radius / 3).max(2),
+            255,
+            255,
+            255,
+            core_alpha,
+            circle_templates,
+        );
     }
 
     buf
@@ -219,7 +282,7 @@ pub(super) fn precompute_bg_gradient(w: usize, h: usize, bg_color: (u8, u8, u8))
             let dist_sq = dx * dx + dy_sq;
             let t = (dist_sq / max_dist_sq).min(1.0);
             let idx = (y * w + x) * 4;
-            buf[idx]     = lerp_u8(center_r, bg_r, t);
+            buf[idx] = lerp_u8(center_r, bg_r, t);
             buf[idx + 1] = lerp_u8(center_g, bg_g, t);
             buf[idx + 2] = lerp_u8(center_b, bg_b, t);
             buf[idx + 3] = 255;
@@ -278,7 +341,7 @@ fn draw_ring_fast(
                     let inv_a = 255 - fa;
 
                     let idx = (y * w + x) * 4;
-                    buf[idx]     = ((r as u32 * fa + buf[idx] as u32 * inv_a) >> 8) as u8;
+                    buf[idx] = ((r as u32 * fa + buf[idx] as u32 * inv_a) >> 8) as u8;
                     buf[idx + 1] = ((g as u32 * fa + buf[idx + 1] as u32 * inv_a) >> 8) as u8;
                     buf[idx + 2] = ((b as u32 * fa + buf[idx + 2] as u32 * inv_a) >> 8) as u8;
                 }
@@ -319,7 +382,7 @@ fn draw_circle_fast(
         let final_alpha = (a * edge_alpha as u32) >> 8;
         let inv_alpha = 255 - final_alpha;
 
-        buf[idx]     = ((r as u32 * final_alpha + buf[idx] as u32 * inv_alpha) >> 8) as u8;
+        buf[idx] = ((r as u32 * final_alpha + buf[idx] as u32 * inv_alpha) >> 8) as u8;
         buf[idx + 1] = ((g as u32 * final_alpha + buf[idx + 1] as u32 * inv_alpha) >> 8) as u8;
         buf[idx + 2] = ((b as u32 * final_alpha + buf[idx + 2] as u32 * inv_alpha) >> 8) as u8;
     }

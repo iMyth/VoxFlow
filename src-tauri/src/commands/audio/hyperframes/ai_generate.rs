@@ -76,8 +76,7 @@ pub async fn call_llm(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result
-            .map_err(|e| format!("Failed to read LLM response: {}", e))?;
+        let chunk = chunk_result.map_err(|e| format!("Failed to read LLM response: {}", e))?;
 
         let body_str = String::from_utf8_lossy(&chunk);
         for line in body_str.lines() {
@@ -113,7 +112,10 @@ pub fn extract_html(response: &str) -> Result<String, String> {
     let trimmed = response.trim();
 
     // If it starts with <!DOCTYPE or <html, it's already raw HTML
-    if trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<html") || trimmed.starts_with("<!doctype") {
+    if trimmed.starts_with("<!DOCTYPE")
+        || trimmed.starts_with("<html")
+        || trimmed.starts_with("<!doctype")
+    {
         return Ok(trimmed.to_string());
     }
 
@@ -126,7 +128,10 @@ pub fn extract_html(response: &str) -> Result<String, String> {
                 .strip_suffix("```")
                 .unwrap_or(after_fence)
                 .trim();
-            if content.starts_with("<!DOCTYPE") || content.starts_with("<html") || content.starts_with("<!doctype") {
+            if content.starts_with("<!DOCTYPE")
+                || content.starts_with("<html")
+                || content.starts_with("<!doctype")
+            {
                 return Ok(content.to_string());
             }
         }
@@ -203,8 +208,7 @@ pub async fn generate_composition(
                     user_prompt, error_list
                 );
 
-                let retry_response =
-                    call_llm(&system_prompt, &retry_prompt, config, None).await?;
+                let retry_response = call_llm(&system_prompt, &retry_prompt, config, None).await?;
                 html = extract_html(&retry_response)?;
             }
         }

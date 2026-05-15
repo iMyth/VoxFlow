@@ -19,22 +19,15 @@ pub fn import_bgm(
         .app_data_dir()
         .map_err(|e| AppError::FileSystem(e.to_string()))?;
 
-    let bgm_dir = app_data_dir
-        .join("projects")
-        .join(&project_id)
-        .join("bgm");
+    let bgm_dir = app_data_dir.join("projects").join(&project_id).join("bgm");
 
     // Ensure bgm directory exists
-    std::fs::create_dir_all(&bgm_dir).map_err(|e| {
-        AppError::FileSystem(format!("Failed to create BGM directory: {}", e))
-    })?;
+    std::fs::create_dir_all(&bgm_dir)
+        .map_err(|e| AppError::FileSystem(format!("Failed to create BGM directory: {}", e)))?;
 
     // Determine destination filename
     let source = std::path::Path::new(&source_path);
-    let extension = source
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("mp3");
+    let extension = source.extension().and_then(|e| e.to_str()).unwrap_or("mp3");
     let dest_filename = format!("{}.{}", name, extension);
     let dest_path = bgm_dir.join(&dest_filename);
 
@@ -48,9 +41,9 @@ pub fn import_bgm(
         .map_err(|e| AppError::FileSystem(format!("Cannot resolve app data dir: {}", e)))?;
 
     // Canonicalize source path for validation
-    let canonical_source = source
-        .canonicalize()
-        .map_err(|e| AppError::FileSystem(format!("Cannot resolve source path {}: {}", source_path, e)))?;
+    let canonical_source = source.canonicalize().map_err(|e| {
+        AppError::FileSystem(format!("Cannot resolve source path {}: {}", source_path, e))
+    })?;
 
     if !canonical_source.starts_with(&canonical_app_data) {
         return Err(AppError::FileSystem(format!(
@@ -60,9 +53,8 @@ pub fn import_bgm(
     }
 
     // Copy file
-    std::fs::copy(&canonical_source, &dest_path).map_err(|e| {
-        AppError::FileSystem(format!("Failed to copy BGM file: {}", e))
-    })?;
+    std::fs::copy(&canonical_source, &dest_path)
+        .map_err(|e| AppError::FileSystem(format!("Failed to copy BGM file: {}", e)))?;
 
     // Record in database
     let id = uuid::Uuid::new_v4().to_string();
@@ -121,7 +113,8 @@ pub async fn import_audio(
         .map_err(|e| AppError::FileSystem(format!("write recording: {}", e)))?;
 
     // Try to get duration via FFmpeg (ffprobe handles webm fine)
-    let duration_ms = crate::commands::tts::get_audio_duration(std::path::Path::new(&file_path)).await;
+    let duration_ms =
+        crate::commands::tts::get_audio_duration(std::path::Path::new(&file_path)).await;
 
     log::info!("[Recording] duration_ms={:?}", duration_ms);
 

@@ -57,7 +57,8 @@ impl GpuFractalRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        })).ok()?;
+        }))
+        .ok()?;
 
         info!(
             "[Fractal GPU] Using adapter: {:?} ({:?})",
@@ -65,15 +66,13 @@ impl GpuFractalRenderer {
             adapter.get_info().backend
         );
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("Fractal GPU Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Fractal GPU Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
         .ok()?;
 
         let shader_source = include_str!("fractal.wgsl");
@@ -199,8 +198,8 @@ impl GpuFractalRenderer {
             pass.set_bind_group(0, &bind_group, &[]);
 
             // Dispatch workgroups: ceil(width/16) x ceil(height/16)
-            let wg_x = (self.width + 15) / 16;
-            let wg_y = (self.height + 15) / 16;
+            let wg_x = self.width.div_ceil(16);
+            let wg_y = self.height.div_ceil(16);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
 

@@ -33,9 +33,7 @@ pub async fn check_for_updates(updater: State<'_, Updater>) -> Result<UpdateInfo
 }
 
 #[tauri::command]
-pub async fn install_update(
-    updater: State<'_, Updater>,
-) -> Result<(), AppError> {
+pub async fn install_update(updater: State<'_, Updater>) -> Result<(), AppError> {
     let update = updater
         .check()
         .await

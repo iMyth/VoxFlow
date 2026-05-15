@@ -45,7 +45,8 @@ pub fn build_ffmpeg_args(
                 let gap_sec = gap as f64 / 1000.0;
                 filter.push_str(&format!(
                     "anullsrc=r=44100:cl=stereo[sil{s}];[sil{s}]atrim=0:{dur}[gap{s}];",
-                    s = i, dur = gap_sec
+                    s = i,
+                    dur = gap_sec
                 ));
                 gap_count += 1;
             }
@@ -182,7 +183,8 @@ pub fn spawn_video_encoder(
     fps: u32,
     audio_path: &str,
     output_path: &str,
-) -> Result<(FfmpegVideoEncoder, std::sync::mpsc::SyncSender<Vec<u8>>), crate::core::error::AppError> {
+) -> Result<(FfmpegVideoEncoder, std::sync::mpsc::SyncSender<Vec<u8>>), crate::core::error::AppError>
+{
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -192,13 +194,20 @@ pub fn spawn_video_encoder(
     let fps_str = fps.to_string();
     let mut args: Vec<String> = vec![
         "-y".into(),
-        "-f".into(), "rawvideo".into(),
-        "-pixel_format".into(), "rgba".into(),
-        "-video_size".into(), render_size,
-        "-framerate".into(), fps_str,
-        "-i".into(), "pipe:0".into(),
-        "-i".into(), audio_path.into(),
-        "-vf".into(), scale_filter,
+        "-f".into(),
+        "rawvideo".into(),
+        "-pixel_format".into(),
+        "rgba".into(),
+        "-video_size".into(),
+        render_size,
+        "-framerate".into(),
+        fps_str,
+        "-i".into(),
+        "pipe:0".into(),
+        "-i".into(),
+        audio_path.into(),
+        "-vf".into(),
+        scale_filter,
     ];
 
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -206,25 +215,36 @@ pub fn spawn_video_encoder(
         // ~40% smaller than H.264 at same quality, zero CPU overhead.
         // -q:v 1-100 (lower = better). 55 gives excellent quality at small size.
         args.extend_from_slice(&[
-            "-c:v".into(), "hevc_videotoolbox".into(),
-            "-q:v".into(), "55".into(),
-            "-tag:v".into(), "hvc1".into(), // Required for YouTube/Apple compatibility
-            "-allow_sw".into(), "1".into(),
+            "-c:v".into(),
+            "hevc_videotoolbox".into(),
+            "-q:v".into(),
+            "55".into(),
+            "-tag:v".into(),
+            "hvc1".into(), // Required for YouTube/Apple compatibility
+            "-allow_sw".into(),
+            "1".into(),
         ]);
     } else {
         // Intel Mac / Windows / Linux: software x264 (libx265 is too slow)
         args.extend_from_slice(&[
-            "-c:v".into(), "libx264".into(),
-            "-preset".into(), "slow".into(),
-            "-tune".into(), "stillimage".into(),
-            "-crf".into(), "26".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "slow".into(),
+            "-tune".into(),
+            "stillimage".into(),
+            "-crf".into(),
+            "26".into(),
         ]);
     }
 
     args.extend_from_slice(&[
-        "-pix_fmt".into(), "yuv420p".into(),
-        "-c:a".into(), "aac".into(),
-        "-b:a".into(), "192k".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "192k".into(),
         "-shortest".into(),
         output_path.into(),
     ]);
@@ -237,7 +257,9 @@ pub fn spawn_video_encoder(
         .spawn()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                crate::core::error::AppError::FFmpeg("FFmpeg not found. Please install FFmpeg.".to_string())
+                crate::core::error::AppError::FFmpeg(
+                    "FFmpeg not found. Please install FFmpeg.".to_string(),
+                )
             } else {
                 crate::core::error::AppError::FFmpeg(format!("Failed to start FFmpeg: {}", e))
             }

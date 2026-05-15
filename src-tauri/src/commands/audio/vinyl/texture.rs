@@ -10,8 +10,7 @@ pub(super) struct CoverTexture {
 
 impl CoverTexture {
     pub fn load(path: &PathBuf, target_size: u32) -> Result<Self, String> {
-        let img = image::open(path)
-            .map_err(|e| format!("Failed to load cover image: {}", e))?;
+        let img = image::open(path).map_err(|e| format!("Failed to load cover image: {}", e))?;
 
         let resized = img.resize_to_fill(
             target_size,
@@ -116,9 +115,13 @@ pub(super) struct BokehParticle {
     pub hue_offset: f32,
 }
 
-pub(super) fn generate_bokeh_particles(width: u32, height: u32, count: usize) -> Vec<BokehParticle> {
+pub(super) fn generate_bokeh_particles(
+    width: u32,
+    height: u32,
+    count: usize,
+) -> Vec<BokehParticle> {
     let mut particles = Vec::with_capacity(count);
-    let phi = 1.618033988749895_f32;
+    let phi = 1.618_034_f32;
     for i in 0..count {
         let t = i as f32 * phi;
         let x = ((t * 127.1).sin() * 0.5 + 0.5) * width as f32;
@@ -128,7 +131,15 @@ pub(super) fn generate_bokeh_particles(width: u32, height: u32, count: usize) ->
         let radius = 3.0 + ((t * 17.1).sin().abs()) * 12.0;
         let alpha = 0.03 + ((t * 7.3).cos().abs()) * 0.06;
         let hue_offset = (t * 53.1) % 60.0 - 30.0;
-        particles.push(BokehParticle { x, y, vx, vy, radius, alpha, hue_offset });
+        particles.push(BokehParticle {
+            x,
+            y,
+            vx,
+            vy,
+            radius,
+            alpha,
+            hue_offset,
+        });
     }
     particles
 }

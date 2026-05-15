@@ -63,7 +63,10 @@ pub fn get_character_project_id(conn: &Connection, character_id: &str) -> Result
 /// Delete a character by ID.
 pub fn delete_character(conn: &Connection, id: &str) -> Result<(), AppError> {
     let affected = conn
-        .execute("DELETE FROM characters WHERE id = ?1", rusqlite::params![id])
+        .execute(
+            "DELETE FROM characters WHERE id = ?1",
+            rusqlite::params![id],
+        )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
     if affected == 0 {

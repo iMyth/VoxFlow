@@ -28,8 +28,8 @@ pub struct FrameFeatures {
 /// Extract per-frame audio features from an audio file.
 /// Returns one FrameFeatures per video frame at the given fps.
 pub fn extract_audio_features(audio_path: &Path, fps: u32) -> Result<Vec<FrameFeatures>, String> {
-    let file = std::fs::File::open(audio_path)
-        .map_err(|e| format!("Failed to open audio: {}", e))?;
+    let file =
+        std::fs::File::open(audio_path).map_err(|e| format!("Failed to open audio: {}", e))?;
 
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -39,7 +39,12 @@ pub fn extract_audio_features(audio_path: &Path, fps: u32) -> Result<Vec<FrameFe
     }
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| format!("Failed to probe audio format: {}", e))?;
 
     let mut format = probed.format;
@@ -118,7 +123,7 @@ pub fn extract_audio_features(audio_path: &Path, fps: u32) -> Result<Vec<FrameFe
 
     // Calculate samples per frame
     let samples_per_frame = sample_rate as usize / fps as usize;
-    let total_frames = (all_samples.len() + samples_per_frame - 1) / samples_per_frame;
+    let total_frames = all_samples.len().div_ceil(samples_per_frame);
 
     let mut features = Vec::with_capacity(total_frames);
     let mut max_rms: f32 = 0.0;

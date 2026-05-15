@@ -2,9 +2,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::core::agent::llm_stream::{
-    collect_streaming_content, extract_json,
-};
+use crate::core::agent::llm_stream::{collect_streaming_content, extract_json};
 use crate::core::db::Database;
 use crate::core::error::AppError;
 use crate::core::event_emitter::EventEmitter;
@@ -93,15 +91,21 @@ pub async fn do_script_generation<E: EventEmitter>(
     extra_instructions: Option<&str>,
     enable_thinking: bool,
 ) -> Result<ScriptGenerationResponse, AppError> {
-    emitter.emit_json("agent-tool-call", &json!({
-        "tool": "script_generation",
-        "outline": outline.chars().take(100).collect::<String>()
-    }));
+    emitter.emit_json(
+        "agent-tool-call",
+        &json!({
+            "tool": "script_generation",
+            "outline": outline.chars().take(100).collect::<String>()
+        }),
+    );
 
-    emitter.emit_json("agent-step", &json!({
-        "step": "script_generation",
-        "status": "started"
-    }));
+    emitter.emit_json(
+        "agent-step",
+        &json!({
+            "step": "script_generation",
+            "status": "started"
+        }),
+    );
 
     let char_list: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
     let chars_section = if char_list.is_empty() {
@@ -110,15 +114,21 @@ pub async fn do_script_generation<E: EventEmitter>(
         format!("\nAvailable characters: {}\n", char_list.join(", "))
     };
 
-    let plan_context = plan.map(|p| {
-        let ch_descs: Vec<String> = p.chapters.iter().map(|ch| {
-            format!(
-                "- \"{}\" (~{} lines, mood: {})",
-                ch.title, ch.estimated_lines, ch.mood
-            )
-        }).collect();
-        format!("\nPlan:\n{}\n", ch_descs.join("\n"))
-    }).unwrap_or_default();
+    let plan_context = plan
+        .map(|p| {
+            let ch_descs: Vec<String> = p
+                .chapters
+                .iter()
+                .map(|ch| {
+                    format!(
+                        "- \"{}\" (~{} lines, mood: {})",
+                        ch.title, ch.estimated_lines, ch.mood
+                    )
+                })
+                .collect();
+            format!("\nPlan:\n{}\n", ch_descs.join("\n"))
+        })
+        .unwrap_or_default();
 
     let extra = extra_instructions
         .filter(|s| !s.trim().is_empty())
@@ -153,7 +163,8 @@ pub async fn do_script_generation<E: EventEmitter>(
         api_key,
         model,
         enable_thinking,
-    ).await?;
+    )
+    .await?;
 
     // Convert to DB model and save, emitting per-section events
     let mut all_lines = Vec::new();
@@ -198,32 +209,38 @@ pub async fn do_script_generation<E: EventEmitter>(
         all_lines.extend(section_lines);
 
         // Emit per-section event so frontend can display in real-time
-        emitter.emit_json("agent-section-generated", &json!({
-            "section_index": section_idx,
-            "section_id": section_id,
-            "title": section.title,
-            "line_count": section.lines.len(),
-            "characters": section_chars,
-        }));
+        emitter.emit_json(
+            "agent-section-generated",
+            &json!({
+                "section_index": section_idx,
+                "section_id": section_id,
+                "title": section.title,
+                "line_count": section.lines.len(),
+                "characters": section_chars,
+            }),
+        );
     }
 
-    let db_lock = db.lock().map_err(|e| {
-        AppError::LlmService(format!("Database lock poisoned: {}", e))
-    })?;
-    db_lock.save_script(project_id, &all_lines, &sections).map_err(|e| {
-        AppError::LlmService(format!("Failed to save script: {}", e))
-    })?;
+    let db_lock = db
+        .lock()
+        .map_err(|e| AppError::LlmService(format!("Database lock poisoned: {}", e)))?;
+    db_lock
+        .save_script(project_id, &all_lines, &sections)
+        .map_err(|e| AppError::LlmService(format!("Failed to save script: {}", e)))?;
 
     // Validate and emit report
     let validation = validate_script(&script_resp.sections, characters);
     emitter.emit_json("agent-validation", &json!(validation));
 
-    emitter.emit_json("agent-step", &json!({
-        "step": "script_generation",
-        "status": "completed",
-        "total_lines": validation.total_lines,
-        "total_sections": validation.total_sections
-    }));
+    emitter.emit_json(
+        "agent-step",
+        &json!({
+            "step": "script_generation",
+            "status": "completed",
+            "total_lines": validation.total_lines,
+            "total_sections": validation.total_sections
+        }),
+    );
 
     Ok(script_resp)
 }
@@ -252,11 +269,14 @@ async fn stream_and_parse_script<E: EventEmitter>(
 
         // On retry, add correction message
         if attempt > 1 {
-            emitter.emit_json("agent-retry", &json!({
-                "attempt": attempt,
-                "max_retries": max_retries + 1,
-                "reason": "JSON parse failed, retrying with correction"
-            }));
+            emitter.emit_json(
+                "agent-retry",
+                &json!({
+                    "attempt": attempt,
+                    "max_retries": max_retries + 1,
+                    "reason": "JSON parse failed, retrying with correction"
+                }),
+            );
 
             messages.push(json!({
                 "role": "user",
@@ -318,10 +338,7 @@ async fn stream_and_parse_script<E: EventEmitter>(
 }
 
 /// Validate the generated script and return a report.
-fn validate_script(
-    sections: &[GeneratedSection],
-    characters: &[Character],
-) -> ScriptValidation {
+fn validate_script(sections: &[GeneratedSection], characters: &[Character]) -> ScriptValidation {
     let mut unmatched: Vec<String> = Vec::new();
     let mut section_stats = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -330,10 +347,10 @@ fn validate_script(
     for section in sections {
         let mut chars_in_section: Vec<String> = Vec::new();
         for line in &section.lines {
-            if !characters.iter().any(|c| c.name == line.character) {
-                if !unmatched.contains(&line.character) {
-                    unmatched.push(line.character.clone());
-                }
+            if !characters.iter().any(|c| c.name == line.character)
+                && !unmatched.contains(&line.character)
+            {
+                unmatched.push(line.character.clone());
             }
             if !chars_in_section.contains(&line.character) {
                 chars_in_section.push(line.character.clone());
@@ -350,7 +367,11 @@ fn validate_script(
             warnings.push(format!("Section '{}' has no lines", section.title));
         }
         if section.lines.len() < 3 {
-            warnings.push(format!("Section '{}' has only {} lines — may be too short", section.title, section.lines.len()));
+            warnings.push(format!(
+                "Section '{}' has only {} lines — may be too short",
+                section.title,
+                section.lines.len()
+            ));
         }
     }
 
@@ -361,8 +382,11 @@ fn validate_script(
         warnings.push("Script has no sections at all".to_string());
     }
     if !unmatched.is_empty() {
-        warnings.push(format!("{} characters not matched to existing: {}",
-            unmatched.len(), unmatched.join(", ")));
+        warnings.push(format!(
+            "{} characters not matched to existing: {}",
+            unmatched.len(),
+            unmatched.join(", ")
+        ));
     }
 
     ScriptValidation {

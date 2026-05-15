@@ -16,9 +16,7 @@ pub(crate) async fn ws_realtime_connect(
     api_key: &str,
     model: &str,
 ) -> Result<
-    tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     AppError,
 > {
     let url = format!(
@@ -59,9 +57,7 @@ pub(crate) async fn ws_realtime_run_task<S>(
 ) -> Result<Vec<u8>, AppError>
 where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
-        + futures_util::Stream<
-            Item = Result<Message, tokio_tungstenite::tungstenite::Error>,
-        >
+        + futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + Unpin,
 {
     use serde_json::json;
@@ -185,10 +181,7 @@ where
                             debug!("[TTS][ws-realtime] response.audio.done");
                         }
                         "response.done" => {
-                            info!(
-                                "[TTS][ws-realtime] response.done: {} bytes",
-                                audio.len()
-                            );
+                            info!("[TTS][ws-realtime] response.done: {} bytes", audio.len());
                             // Start idle timer — if no new response within 5s, we're done
                             if finished_sending {
                                 idle_deadline = Some(
@@ -198,10 +191,7 @@ where
                             }
                         }
                         "session.finished" => {
-                            info!(
-                                "[TTS][ws-realtime] session.finished: {} bytes",
-                                audio.len()
-                            );
+                            info!("[TTS][ws-realtime] session.finished: {} bytes", audio.len());
                             break;
                         }
                         "error" => {

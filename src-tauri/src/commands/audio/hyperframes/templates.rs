@@ -245,7 +245,7 @@ fn generate_dialogue_cards(entries: &[TimelineEntry]) -> String {
         let color = colors[color_idx];
 
         // Alternate left/right alignment based on character
-        let align_class = if color_idx % 2 == 0 {
+        let align_class = if color_idx.is_multiple_of(2) {
             "align-left"
         } else {
             "align-right"
@@ -270,7 +270,7 @@ fn generate_dialogue_cards(entries: &[TimelineEntry]) -> String {
         ));
 
         // Slide in from the side
-        let x_from = if color_idx % 2 == 0 { -60 } else { 60 };
+        let x_from = if color_idx.is_multiple_of(2) { -60 } else { 60 };
         let selector = format!("#{} .card-bubble", clip_id);
         tweens.push_str(&tween_from(
             &selector,
@@ -413,7 +413,7 @@ fn generate_chapter_sections(entries: &[TimelineEntry]) -> String {
         // For the very first section, show title for 2s at the start
         // For subsequent sections, show title 2s before the first line
         let (title_start, title_duration) = if *entry_idx == 0 {
-            (0.0, 2.0_f64.min(entry.start_time.max(2.0)))
+            (0.0, 2.0_f64.min(entry.start_time))
         } else {
             let ts = if entry.start_time >= 2.0 {
                 entry.start_time - 2.0
@@ -475,7 +475,12 @@ fn generate_chapter_sections(entries: &[TimelineEntry]) -> String {
         let char_name_html = entry
             .character_name
             .as_deref()
-            .map(|n| format!("<span class=\"speaker\">{}</span>\n        ", escape_html(n)))
+            .map(|n| {
+                format!(
+                    "<span class=\"speaker\">{}</span>\n        ",
+                    escape_html(n)
+                )
+            })
             .unwrap_or_default();
 
         clips.push_str(&format!(

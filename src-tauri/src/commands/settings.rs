@@ -17,28 +17,19 @@ pub fn save_settings(
 }
 
 #[tauri::command]
-pub fn load_settings(
-    db: tauri::State<'_, Mutex<Database>>,
-) -> Result<UserSettings, AppError> {
+pub fn load_settings(db: tauri::State<'_, Mutex<Database>>) -> Result<UserSettings, AppError> {
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
     db.load_settings()
 }
 
 #[tauri::command]
-pub fn save_api_key(
-    app: tauri::AppHandle,
-    service: String,
-    key: String,
-) -> Result<(), AppError> {
+pub fn save_api_key(app: tauri::AppHandle, service: String, key: String) -> Result<(), AppError> {
     let config = ConfigManager::new(app);
     config.save_api_key(&service, &key)
 }
 
 #[tauri::command]
-pub fn load_api_key(
-    app: tauri::AppHandle,
-    service: String,
-) -> Result<Option<String>, AppError> {
+pub fn load_api_key(app: tauri::AppHandle, service: String) -> Result<Option<String>, AppError> {
     let config = ConfigManager::new(app);
     config.load_api_key(&service)
 }
@@ -79,7 +70,6 @@ pub fn read_audio_file(app: tauri::AppHandle, file_path: String) -> Result<Strin
 /// Used for importing script text files chosen by the user.
 #[tauri::command]
 pub fn read_text_file(file_path: String) -> Result<String, AppError> {
-    std::fs::read_to_string(&file_path).map_err(|e| {
-        AppError::FileSystem(format!("Failed to read text file {}: {}", file_path, e))
-    })
+    std::fs::read_to_string(&file_path)
+        .map_err(|e| AppError::FileSystem(format!("Failed to read text file {}: {}", file_path, e)))
 }

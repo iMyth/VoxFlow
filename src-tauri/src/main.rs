@@ -2,6 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    env_logger::init(); 
+    env_logger::init();
     vox_flow_lib::run()
 }

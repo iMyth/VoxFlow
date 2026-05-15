@@ -32,8 +32,7 @@ impl<R: Runtime> ConfigManager<R> {
             .map_err(|e| AppError::Config(format!("无法打开配置存储: {e}")))?;
 
         let store_key = format!("api_key_{service}");
-        store
-            .set(store_key, Value::String(key.to_string()));
+        store.set(store_key, Value::String(key.to_string()));
 
         store
             .save()

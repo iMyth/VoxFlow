@@ -64,7 +64,8 @@ impl GpuVinylRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        })).ok()?;
+        }))
+        .ok()?;
 
         info!(
             "[Vinyl GPU] Using adapter: {:?} ({:?})",
@@ -72,15 +73,13 @@ impl GpuVinylRenderer {
             adapter.get_info().backend
         );
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("Vinyl GPU Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Vinyl GPU Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
         .ok()?;
 
         // Create disc texture
@@ -280,8 +279,8 @@ impl GpuVinylRenderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
 
-            let wg_x = (self.width + 15) / 16;
-            let wg_y = (self.height + 15) / 16;
+            let wg_x = self.width.div_ceil(16);
+            let wg_y = self.height.div_ceil(16);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
 

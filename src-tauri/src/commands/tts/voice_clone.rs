@@ -19,7 +19,6 @@ pub async fn create_voice(
     preferred_name: String,
     _target_model: String, // Kept for API compatibility, but we use fixed model
 ) -> Result<String, AppError> {
-
     info!(
         "[VoiceClone] create_voice: project={}, name={}, received_model={}",
         project_id, preferred_name, _target_model
@@ -42,7 +41,10 @@ pub async fn create_voice(
     // Use it directly so the MIME type is preserved correctly.
     // Previously this was hardcoded to audio/mpeg which caused DashScope to
     // report "No audio data received" when the recording was in MP4/AAC format.
-    info!("[VoiceClone] Data URI length: {} chars", audio_data_base64.len());
+    info!(
+        "[VoiceClone] Data URI length: {} chars",
+        audio_data_base64.len()
+    );
 
     // Validate it's actually a data URI
     if !audio_data_base64.starts_with("data:") {
@@ -51,7 +53,10 @@ pub async fn create_voice(
 
     // Log preview for debugging
     let preview_end = audio_data_base64.len().min(150);
-    info!("[VoiceClone] Data URI preview: {}...", &audio_data_base64[..preview_end]);
+    info!(
+        "[VoiceClone] Data URI preview: {}...",
+        &audio_data_base64[..preview_end]
+    );
 
     let data_uri = audio_data_base64.clone();
 
@@ -67,9 +72,16 @@ pub async fn create_voice(
     });
     // Log the full payload for debugging
     let payload_str = payload.to_string();
-    info!("[VoiceClone] Request payload length: {} chars", payload_str.len());
+    info!(
+        "[VoiceClone] Request payload length: {} chars",
+        payload_str.len()
+    );
     if payload_str.len() > 500 {
-        info!("[VoiceClone] Payload preview: {}...{} (truncated)", &payload_str[..200], &payload_str[payload_str.len()-100..]);
+        info!(
+            "[VoiceClone] Payload preview: {}...{} (truncated)",
+            &payload_str[..200],
+            &payload_str[payload_str.len() - 100..]
+        );
     } else {
         info!("[VoiceClone] Payload: {}", payload_str);
     }
@@ -94,30 +106,32 @@ pub async fn create_voice(
     let status = resp.status();
     info!("[VoiceClone] Response status: {}", status);
 
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| {
-            warn!("[VoiceClone] Read response body failed: {}", e);
-            AppError::TtsService(format!("Read response body failed: {}", e))
-        })?;
+    let body = resp.text().await.map_err(|e| {
+        warn!("[VoiceClone] Read response body failed: {}", e);
+        AppError::TtsService(format!("Read response body failed: {}", e))
+    })?;
     debug!("[VoiceClone] Response body: {}", body);
 
     if !status.is_success() {
-        warn!("[VoiceClone] Voice enrollment failed: status={}, body={}", status, body);
+        warn!(
+            "[VoiceClone] Voice enrollment failed: status={}, body={}",
+            status, body
+        );
         return Err(AppError::TtsService(format!(
             "Voice enrollment failed ({}): {}",
             status, body
         )));
     }
 
-    let output: VoiceEnrollmentOutput = serde_json::from_str(&body)
-        .map_err(|e| {
-            warn!("[VoiceClone] Parse response failed: {}, body: {}", e, body);
-            AppError::TtsService(format!("Parse response failed: {}, body: {}", e, body))
-        })?;
+    let output: VoiceEnrollmentOutput = serde_json::from_str(&body).map_err(|e| {
+        warn!("[VoiceClone] Parse response failed: {}, body: {}", e, body);
+        AppError::TtsService(format!("Parse response failed: {}, body: {}", e, body))
+    })?;
 
-    info!("[VoiceClone] Voice created successfully: {}", output.output.voice);
+    info!(
+        "[VoiceClone] Voice created successfully: {}",
+        output.output.voice
+    );
     Ok(output.output.voice)
 }
 
@@ -179,30 +193,35 @@ pub async fn preview_voice(
     };
 
     let preview_text = "你好，这是我的专属声音";
-    info!("[VoiceClone] preview_voice: Connecting to WebSocket for model: {}", target_model);
+    info!(
+        "[VoiceClone] preview_voice: Connecting to WebSocket for model: {}",
+        target_model
+    );
 
     let audio_bytes = {
-        let ws = ws_realtime_connect(&api_key, target_model).await.map_err(|e| {
-            warn!("[VoiceClone] preview_voice: WebSocket connection failed: {}", e);
-            e
-        })?;
+        let ws = ws_realtime_connect(&api_key, target_model)
+            .await
+            .map_err(|e| {
+                warn!(
+                    "[VoiceClone] preview_voice: WebSocket connection failed: {}",
+                    e
+                );
+                e
+            })?;
         let mut ws = ws;
         info!("[VoiceClone] preview_voice: WebSocket connected, running TTS task");
-        ws_realtime_run_task(
-            &mut ws,
-            &[preview_text],
-            &voice_config,
-            None,
-            target_model,
-        )
-        .await
-        .map_err(|e| {
-            warn!("[VoiceClone] preview_voice: TTS task failed: {}", e);
-            e
-        })?
+        ws_realtime_run_task(&mut ws, &[preview_text], &voice_config, None, target_model)
+            .await
+            .map_err(|e| {
+                warn!("[VoiceClone] preview_voice: TTS task failed: {}", e);
+                e
+            })?
     };
 
-    info!("[VoiceClone] preview_voice: Received {} bytes of audio", audio_bytes.len());
+    info!(
+        "[VoiceClone] preview_voice: Received {} bytes of audio",
+        audio_bytes.len()
+    );
 
     std::fs::write(&file_path, &audio_bytes)
         .map_err(|e| AppError::FileSystem(format!("write preview: {}", e)))?;

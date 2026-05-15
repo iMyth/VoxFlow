@@ -91,7 +91,8 @@ impl GpuParticleRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        })).ok()?;
+        }))
+        .ok()?;
 
         info!(
             "[Particles GPU] Using adapter: {:?} ({:?})",
@@ -99,15 +100,13 @@ impl GpuParticleRenderer {
             adapter.get_info().backend
         );
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("Particles GPU Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Particles GPU Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
         .ok()?;
 
         let shader_source = include_str!("particles.wgsl");
@@ -242,14 +241,14 @@ impl GpuParticleRenderer {
         let start = system.particles.len().saturating_sub(particle_count);
         let gpu_particles: Vec<GpuParticle> = system.particles[start..]
             .iter()
-            .map(|p| particle_to_gpu(p))
+            .map(particle_to_gpu)
             .collect();
 
         let gpu_rings: Vec<GpuRing> = system
             .rings
             .iter()
             .take(MAX_RINGS)
-            .map(|r| ring_to_gpu(r))
+            .map(ring_to_gpu)
             .collect();
 
         // Upload particle data
@@ -313,8 +312,8 @@ impl GpuParticleRenderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
 
-            let wg_x = (self.width + 15) / 16;
-            let wg_y = (self.height + 15) / 16;
+            let wg_x = self.width.div_ceil(16);
+            let wg_y = self.height.div_ceil(16);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
 

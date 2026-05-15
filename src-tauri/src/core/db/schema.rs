@@ -131,8 +131,16 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
 
     let alter_migrations: &[(i32, &str, &[(&str, &str, &str)])] = &[
         // (version, extra_sql_before, &[(table, column, definition)])
-        (2, "", &[("projects", "outline", "TEXT NOT NULL DEFAULT ''")]),
-        (3, "", &[("script_lines", "instructions", "TEXT NOT NULL DEFAULT ''")]),
+        (
+            2,
+            "",
+            &[("projects", "outline", "TEXT NOT NULL DEFAULT ''")],
+        ),
+        (
+            3,
+            "",
+            &[("script_lines", "instructions", "TEXT NOT NULL DEFAULT ''")],
+        ),
         (
             4,
             "CREATE TABLE IF NOT EXISTS script_sections (
@@ -141,7 +149,11 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
                 title         TEXT NOT NULL,
                 section_order INTEGER NOT NULL
             );",
-            &[("script_lines", "section_id", "TEXT REFERENCES script_sections(id) ON DELETE SET NULL")],
+            &[(
+                "script_lines",
+                "section_id",
+                "TEXT REFERENCES script_sections(id) ON DELETE SET NULL",
+            )],
         ),
         (
             5,
@@ -158,7 +170,11 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
             CREATE INDEX IF NOT EXISTS idx_story_kb_type ON story_kb(kb_type);",
             &[],
         ),
-        (6, "", &[("audio_fragments", "source", "TEXT NOT NULL DEFAULT 'tts'")]),
+        (
+            6,
+            "",
+            &[("audio_fragments", "source", "TEXT NOT NULL DEFAULT 'tts'")],
+        ),
     ];
 
     for (version, extra_sql, columns) in alter_migrations {
@@ -173,7 +189,10 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
 
         for (table, column, col_def) in *columns {
             add_column_if_not_exists(conn, table, column, col_def).map_err(|e| {
-                AppError::Database(format!("Migration {} failed adding {}.{}: {}", version, table, column, e))
+                AppError::Database(format!(
+                    "Migration {} failed adding {}.{}: {}",
+                    version, table, column, e
+                ))
             })?;
         }
 

@@ -8,8 +8,8 @@ use super::super::models::UserSettings;
 /// Save user settings by serializing the entire UserSettings struct as JSON
 /// and storing it under the "user_settings" key in the user_settings table.
 pub fn save_settings(conn: &Connection, settings: &UserSettings) -> Result<(), AppError> {
-    let json = serde_json::to_string(settings)
-        .map_err(|e| AppError::Serialization(e.to_string()))?;
+    let json =
+        serde_json::to_string(settings).map_err(|e| AppError::Serialization(e.to_string()))?;
 
     conn.execute(
         "INSERT INTO user_settings (key, value) VALUES ('user_settings', ?1)
@@ -36,9 +36,7 @@ pub fn load_settings(conn: &Connection) -> Result<UserSettings, AppError> {
     );
 
     match result {
-        Ok(json) => {
-            serde_json::from_str(&json).map_err(|e| AppError::Serialization(e.to_string()))
-        }
+        Ok(json) => serde_json::from_str(&json).map_err(|e| AppError::Serialization(e.to_string())),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(UserSettings {
             llm_endpoint: "https://api.openai.com/v1".to_string(),
             llm_model: "gpt-4".to_string(),

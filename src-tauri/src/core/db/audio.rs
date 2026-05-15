@@ -33,8 +33,7 @@ pub fn upsert_audio_fragment(conn: &Connection, fragment: &AudioFragment) -> Res
     )
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    tx.commit()
-        .map_err(|e| AppError::Database(e.to_string()))?;
+    tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(())
 }
@@ -76,7 +75,10 @@ pub fn clear_tts_fragments(conn: &Connection, project_id: &str) -> Result<Vec<St
 }
 
 /// List all audio fragments for a given project.
-pub fn list_audio_fragments(conn: &Connection, project_id: &str) -> Result<Vec<AudioFragment>, AppError> {
+pub fn list_audio_fragments(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<AudioFragment>, AppError> {
     let mut stmt = conn
         .prepare("SELECT id, project_id, line_id, file_path, duration_ms, source FROM audio_fragments WHERE project_id = ?1")
         .map_err(|e| AppError::Database(e.to_string()))?;

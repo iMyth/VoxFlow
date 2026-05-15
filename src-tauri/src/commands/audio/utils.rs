@@ -7,10 +7,8 @@ pub fn detect_missing_audio(
     script_line_ids: &[String],
     audio_fragment_line_ids: &[String],
 ) -> Vec<String> {
-    let audio_set: std::collections::HashSet<&str> = audio_fragment_line_ids
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
+    let audio_set: std::collections::HashSet<&str> =
+        audio_fragment_line_ids.iter().map(|s| s.as_str()).collect();
 
     script_line_ids
         .iter()
@@ -59,11 +57,7 @@ mod tests {
 
     #[test]
     fn test_detect_missing_audio_preserves_order() {
-        let script_ids = vec![
-            "l3".to_string(),
-            "l1".to_string(),
-            "l2".to_string(),
-        ];
+        let script_ids = vec!["l3".to_string(), "l1".to_string(), "l2".to_string()];
         let audio_ids = vec!["l1".to_string()];
         let missing = detect_missing_audio(&script_ids, &audio_ids);
         assert_eq!(missing, vec!["l3".to_string(), "l2".to_string()]);

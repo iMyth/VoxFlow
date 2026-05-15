@@ -1,5 +1,5 @@
-pub mod tools;
 mod llm_stream;
+pub mod tools;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -75,15 +75,15 @@ use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
 
+use crate::core::agent::tools::outline_analysis::do_outline_analysis;
+use crate::core::agent::tools::script_generation::do_script_generation;
+use crate::core::agent::tools::story_memory::{do_story_memory, StoryMemoryArgs};
+use crate::core::agent::tools::story_recall::{do_story_recall, StoryRecallArgs};
 use crate::core::cancel_token::CancellationToken;
 use crate::core::db::Database;
 use crate::core::error::AppError;
-use crate::core::event_emitter::{EventEmitter, EmitExt};
+use crate::core::event_emitter::{EmitExt, EventEmitter};
 use crate::core::models::Character;
-use crate::core::agent::tools::outline_analysis::do_outline_analysis;
-use crate::core::agent::tools::script_generation::do_script_generation;
-use crate::core::agent::tools::story_recall::{do_story_recall, StoryRecallArgs};
-use crate::core::agent::tools::story_memory::{do_story_memory, StoryMemoryArgs};
 
 /// Configuration for the agent pipeline.
 pub struct AgentConfig {
@@ -107,10 +107,13 @@ pub async fn run_analysis_step<E: EventEmitter>(
 ) -> Result<AgentPlan, AppError> {
     cancel_token.reset();
 
-    emitter.emit("agent-pipeline-started", &json!({
-        "project_id": config.project_id,
-        "phase": "analysis"
-    }));
+    emitter.emit(
+        "agent-pipeline-started",
+        &json!({
+            "project_id": config.project_id,
+            "phase": "analysis"
+        }),
+    );
 
     let plan = do_outline_analysis(
         emitter,
@@ -120,13 +123,17 @@ pub async fn run_analysis_step<E: EventEmitter>(
         &config.api_key,
         &config.model,
         config.enable_thinking,
-    ).await?;
+    )
+    .await?;
 
-    emitter.emit("agent-step-complete", &json!({
-        "phase": "analysis",
-        "plan": plan,
-        "project_id": config.project_id
-    }));
+    emitter.emit(
+        "agent-step-complete",
+        &json!({
+            "phase": "analysis",
+            "plan": plan,
+            "project_id": config.project_id
+        }),
+    );
 
     Ok(plan)
 }
@@ -146,10 +153,13 @@ pub async fn run_generation_step<E: EventEmitter>(
 ) -> Result<(), AppError> {
     cancel_token.reset();
 
-    emitter.emit("agent-pipeline-started", &json!({
-        "project_id": config.project_id,
-        "phase": "generation"
-    }));
+    emitter.emit(
+        "agent-pipeline-started",
+        &json!({
+            "project_id": config.project_id,
+            "phase": "generation"
+        }),
+    );
 
     do_script_generation(
         emitter,
@@ -163,12 +173,16 @@ pub async fn run_generation_step<E: EventEmitter>(
         plan,
         extra_instructions,
         config.enable_thinking,
-    ).await?;
+    )
+    .await?;
 
-    emitter.emit("agent-step-complete", &json!({
-        "phase": "generation",
-        "project_id": config.project_id
-    }));
+    emitter.emit(
+        "agent-step-complete",
+        &json!({
+            "phase": "generation",
+            "project_id": config.project_id
+        }),
+    );
 
     Ok(())
 }
@@ -188,15 +202,19 @@ pub async fn run_revision_step<E: EventEmitter>(
 ) -> Result<(), AppError> {
     cancel_token.reset();
 
-    emitter.emit("agent-pipeline-started", &json!({
-        "project_id": config.project_id,
-        "phase": "revision",
-        "sections": revision.section_indices
-    }));
+    emitter.emit(
+        "agent-pipeline-started",
+        &json!({
+            "project_id": config.project_id,
+            "phase": "revision",
+            "sections": revision.section_indices
+        }),
+    );
 
     let sections_hint = if let Some(indices) = &revision.section_indices {
         if let Some(plan) = existing_plan {
-            let hints: Vec<String> = indices.iter()
+            let hints: Vec<String> = indices
+                .iter()
                 .filter_map(|&i| plan.chapters.get(i).map(|ch| &ch.title))
                 .map(|t| format!("- \"{}\"", t))
                 .collect();
@@ -227,12 +245,16 @@ pub async fn run_revision_step<E: EventEmitter>(
         existing_plan,
         Some(&extra),
         config.enable_thinking,
-    ).await?;
+    )
+    .await?;
 
-    emitter.emit("agent-step-complete", &json!({
-        "phase": "revision",
-        "project_id": config.project_id
-    }));
+    emitter.emit(
+        "agent-step-complete",
+        &json!({
+            "phase": "revision",
+            "project_id": config.project_id
+        }),
+    );
 
     Ok(())
 }
@@ -241,7 +263,10 @@ pub async fn run_revision_step<E: EventEmitter>(
 
 /// Run the full agent pipeline: analyze outline → generate script.
 /// This is the one-shot entry point for backward compatibility.
-#[deprecated(since = "0.1.5", note = "Use individual step functions (run_analysis_step, run_generation_step, run_revision_step) instead")]
+#[deprecated(
+    since = "0.1.5",
+    note = "Use individual step functions (run_analysis_step, run_generation_step, run_revision_step) instead"
+)]
 pub async fn run_agent_pipeline<E: EventEmitter>(
     emitter: &E,
     cancel_token: &CancellationToken,
@@ -254,15 +279,15 @@ pub async fn run_agent_pipeline<E: EventEmitter>(
 ) -> Result<(), AppError> {
     cancel_token.reset();
 
-    emitter.emit("agent-pipeline-started", &json!({
-        "project_id": config.project_id
-    }));
-
-    let system_prompt = build_agent_system_prompt(
-        characters.as_slice(),
-        agent_plan,
-        extra_instructions,
+    emitter.emit(
+        "agent-pipeline-started",
+        &json!({
+            "project_id": config.project_id
+        }),
     );
+
+    let system_prompt =
+        build_agent_system_prompt(characters.as_slice(), agent_plan, extra_instructions);
 
     let mut messages = build_initial_messages(&system_prompt, outline);
 
@@ -273,19 +298,26 @@ pub async fn run_agent_pipeline<E: EventEmitter>(
         &mut messages,
         &characters,
         db,
-    ).await;
+    )
+    .await;
 
     if result.is_ok() {
-        emitter.emit("agent-pipeline-complete", &json!({
-            "project_id": config.project_id,
-            "success": true
-        }));
+        emitter.emit(
+            "agent-pipeline-complete",
+            &json!({
+                "project_id": config.project_id,
+                "success": true
+            }),
+        );
     } else if let Err(ref e) = result {
-        emitter.emit("agent-pipeline-complete", &json!({
-            "project_id": config.project_id,
-            "success": false,
-            "error": e.to_string()
-        }));
+        emitter.emit(
+            "agent-pipeline-complete",
+            &json!({
+                "project_id": config.project_id,
+                "success": false,
+                "error": e.to_string()
+            }),
+        );
     }
 
     result
@@ -304,16 +336,32 @@ fn build_agent_system_prompt(
         format!("Available characters: {}", names.join(", "))
     };
 
-    let plan_context = agent_plan.map(|p| {
-        let ch_descs: Vec<String> = p.chapters.iter().map(|ch| {
+    let plan_context = agent_plan
+        .map(|p| {
+            let ch_descs: Vec<String> = p
+                .chapters
+                .iter()
+                .map(|ch| {
+                    format!(
+                        "- \"{}\" ~{} lines, mood: {}, characters: {}",
+                        ch.title,
+                        ch.estimated_lines,
+                        ch.mood,
+                        if ch.characters.is_empty() {
+                            "unspecified".to_string()
+                        } else {
+                            ch.characters.join(", ")
+                        }
+                    )
+                })
+                .collect();
             format!(
-                "- \"{}\" ~{} lines, mood: {}, characters: {}",
-                ch.title, ch.estimated_lines, ch.mood,
-                if ch.characters.is_empty() { "unspecified".to_string() } else { ch.characters.join(", ") }
+                "Confirmed plan:\n{}\n\nTotal estimated lines: {}",
+                ch_descs.join("\n"),
+                p.chapters.iter().map(|ch| ch.estimated_lines).sum::<u32>()
             )
-        }).collect();
-        format!("Confirmed plan:\n{}\n\nTotal estimated lines: {}", ch_descs.join("\n"), p.chapters.iter().map(|ch| ch.estimated_lines).sum::<u32>())
-    }).unwrap_or_default();
+        })
+        .unwrap_or_default();
 
     let extra = extra_instructions
         .filter(|s| !s.trim().is_empty())
@@ -361,7 +409,10 @@ async fn agent_loop<E: EventEmitter>(
     characters: &[Character],
     db: &Mutex<Database>,
 ) -> Result<(), AppError> {
-    let url = format!("{}/chat/completions", config.api_endpoint.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        config.api_endpoint.trim_end_matches('/')
+    );
     let client = reqwest::Client::new();
     let max_turns = 10;
     let mut turn = 0;
@@ -408,16 +459,19 @@ async fn agent_loop<E: EventEmitter>(
         let (tool_calls, _assistant_text) = process_streaming_response(emitter, response).await?;
 
         let assistant_message = if !tool_calls.is_empty() {
-            let tool_calls_array: Vec<serde_json::Value> = tool_calls.iter().map(|tc| {
-                json!({
-                    "id": tc.call_id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": tc.arguments.to_string()
-                    }
+            let tool_calls_array: Vec<serde_json::Value> = tool_calls
+                .iter()
+                .map(|tc| {
+                    json!({
+                        "id": tc.call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments.to_string()
+                        }
+                    })
                 })
-            }).collect();
+                .collect();
 
             json!({
                 "role": "assistant",
@@ -439,7 +493,15 @@ async fn agent_loop<E: EventEmitter>(
 
         let mut results: Vec<Result<String, AppError>> = Vec::new();
         for tc in &tool_calls {
-            let result = execute_tool(emitter, db, characters, config, &tc.name, tc.arguments.clone()).await;
+            let result = execute_tool(
+                emitter,
+                db,
+                characters,
+                config,
+                &tc.name,
+                tc.arguments.clone(),
+            )
+            .await;
             results.push(result);
         }
 
@@ -531,7 +593,9 @@ async fn process_streaming_response<E: EventEmitter>(
             }
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                    if let Some(reasoning) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
+                    if let Some(reasoning) =
+                        parsed["choices"][0]["delta"]["reasoning_content"].as_str()
+                    {
                         emitter.emit_json("llm-thinking", &json!(reasoning));
                     }
                     if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
@@ -540,21 +604,41 @@ async fn process_streaming_response<E: EventEmitter>(
                     }
                     if let Some(tc_array) = parsed["choices"][0]["delta"]["tool_calls"].as_array() {
                         for tc in tc_array {
-                            let index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let index =
+                                tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                             let entry = tool_calls_map.entry(index).or_insert_with(|| {
                                 (
-                                    tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                    tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                    tc.get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    tc.get("function")
+                                        .and_then(|f| f.get("name"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
                                     String::new(),
                                 )
                             });
                             if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                                if !id.is_empty() { entry.0 = id.to_string(); }
+                                if !id.is_empty() {
+                                    entry.0 = id.to_string();
+                                }
                             }
-                            if let Some(name) = tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()) {
-                                if !name.is_empty() { entry.1 = name.to_string(); }
+                            if let Some(name) = tc
+                                .get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|v| v.as_str())
+                            {
+                                if !name.is_empty() {
+                                    entry.1 = name.to_string();
+                                }
                             }
-                            if let Some(args) = tc.get("function").and_then(|f| f.get("arguments")).and_then(|v| v.as_str()) {
+                            if let Some(args) = tc
+                                .get("function")
+                                .and_then(|f| f.get("arguments"))
+                                .and_then(|v| v.as_str())
+                            {
                                 entry.2.push_str(args);
                             }
                         }
@@ -567,12 +651,22 @@ async fn process_streaming_response<E: EventEmitter>(
     let tool_calls: Vec<ParsedToolCall> = tool_calls_map
         .into_values()
         .filter_map(|(call_id, name, args_str)| {
-            if call_id.is_empty() || name.is_empty() { return None; }
-            let arguments: serde_json::Value = serde_json::from_str(&args_str).unwrap_or_else(|e| {
-                eprintln!("[agent] Warning: failed to parse tool call args for '{}': {}", name, e);
-                serde_json::Value::Null
-            });
-            Some(ParsedToolCall { call_id, name, arguments })
+            if call_id.is_empty() || name.is_empty() {
+                return None;
+            }
+            let arguments: serde_json::Value =
+                serde_json::from_str(&args_str).unwrap_or_else(|e| {
+                    eprintln!(
+                        "[agent] Warning: failed to parse tool call args for '{}': {}",
+                        name, e
+                    );
+                    serde_json::Value::Null
+                });
+            Some(ParsedToolCall {
+                call_id,
+                name,
+                arguments,
+            })
         })
         .collect();
 
@@ -580,7 +674,10 @@ async fn process_streaming_response<E: EventEmitter>(
 }
 
 /// Build tool result messages for the conversation.
-fn build_tool_result_message(tool_calls: &[ParsedToolCall], results: &[Result<String, AppError>]) -> serde_json::Value {
+fn build_tool_result_message(
+    tool_calls: &[ParsedToolCall],
+    results: &[Result<String, AppError>],
+) -> serde_json::Value {
     let content: Vec<serde_json::Value> = tool_calls
         .iter()
         .zip(results.iter())
@@ -619,7 +716,8 @@ async fn execute_tool<E: EventEmitter>(
 ) -> Result<String, AppError> {
     match tool_name {
         "outline_analysis" => {
-            let outline = arguments.get("outline")
+            let outline = arguments
+                .get("outline")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -632,12 +730,18 @@ async fn execute_tool<E: EventEmitter>(
                 &config.api_key,
                 &config.model,
                 config.enable_thinking,
-            ).await.map(|plan| {
-                format!("Plan generated successfully:\n{}", serde_json::to_string_pretty(&plan).unwrap_or_default())
+            )
+            .await
+            .map(|plan| {
+                format!(
+                    "Plan generated successfully:\n{}",
+                    serde_json::to_string_pretty(&plan).unwrap_or_default()
+                )
             })
         }
         "character_extraction" => {
-            let text = arguments.get("text")
+            let text = arguments
+                .get("text")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -649,20 +753,25 @@ async fn execute_tool<E: EventEmitter>(
                 &config.api_key,
                 &config.model,
                 config.enable_thinking,
-            ).await.map(|chars| {
-                format!("Extracted {} characters:\n{}",
+            )
+            .await
+            .map(|chars| {
+                format!(
+                    "Extracted {} characters:\n{}",
                     chars.len(),
                     serde_json::to_string_pretty(&chars).unwrap_or_default()
                 )
             })
         }
         "script_generation" => {
-            let outline = arguments.get("outline")
+            let outline = arguments
+                .get("outline")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            let extra = arguments.get("extra_instructions")
+            let extra = arguments
+                .get("extra_instructions")
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
@@ -678,9 +787,13 @@ async fn execute_tool<E: EventEmitter>(
                 None,
                 extra.as_deref(),
                 config.enable_thinking,
-            ).await?;
+            )
+            .await?;
 
-            Ok(format!("Script generated and saved for project {}.", config.project_id))
+            Ok(format!(
+                "Script generated and saved for project {}.",
+                config.project_id
+            ))
         }
         "story_recall" => {
             let args: StoryRecallArgs = serde_json::from_value(arguments.clone())
@@ -694,14 +807,22 @@ async fn execute_tool<E: EventEmitter>(
                 &config.api_key,
                 &config.model,
                 &args,
-            ).await.map(|resp| {
+            )
+            .await
+            .map(|resp| {
                 if resp.results.is_empty() {
                     "No relevant knowledge found.".to_string()
                 } else {
-                    let texts: Vec<String> = resp.results.iter().map(|r| {
-                        format!("[{:.3}] {}\n{}", r.score, r.kb_type, r.text)
-                    }).collect();
-                    format!("Found {} results:\n\n{}", resp.results.len(), texts.join("\n\n"))
+                    let texts: Vec<String> = resp
+                        .results
+                        .iter()
+                        .map(|r| format!("[{:.3}] {}\n{}", r.score, r.kb_type, r.text))
+                        .collect();
+                    format!(
+                        "Found {} results:\n\n{}",
+                        resp.results.len(),
+                        texts.join("\n\n")
+                    )
                 }
             })
         }
@@ -717,16 +838,17 @@ async fn execute_tool<E: EventEmitter>(
                 &config.api_key,
                 &config.model,
                 &args,
-            ).await.map(|resp| {
-                match &resp.items {
-                    Some(items) => {
-                        let lines: Vec<String> = items.iter().map(|i| {
-                            format!("- [{}] {}: {}", i.kb_type, i.id, i.text)
-                        }).collect();
-                        format!("{}\n\n{}", resp.message, lines.join("\n"))
-                    }
-                    None => resp.message.clone(),
+            )
+            .await
+            .map(|resp| match &resp.items {
+                Some(items) => {
+                    let lines: Vec<String> = items
+                        .iter()
+                        .map(|i| format!("- [{}] {}: {}", i.kb_type, i.id, i.text))
+                        .collect();
+                    format!("{}\n\n{}", resp.message, lines.join("\n"))
                 }
+                None => resp.message.clone(),
             })
         }
         _ => Err(AppError::LlmService(format!("Unknown tool: {}", tool_name))),

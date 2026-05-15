@@ -47,43 +47,34 @@ pub fn validate_composition(html: &str) -> Result<(), Vec<String>> {
         // Verify clip elements have required data attributes
         // We check that data-track-index exists somewhere (clips should have it)
         if !html.contains("data-track-index=") {
-            errors.push(
-                "Clip elements missing data-track-index attribute".to_string(),
-            );
+            errors.push("Clip elements missing data-track-index attribute".to_string());
         }
     }
 
     // Rule 5: GSAP timelines must be created with { paused: true }
-    if html.contains("gsap.timeline(") && !html.contains("paused: true") && !html.contains("paused:true") {
-        errors.push(
-            "GSAP timeline must be created with { paused: true }".to_string(),
-        );
+    if html.contains("gsap.timeline(")
+        && !html.contains("paused: true")
+        && !html.contains("paused:true")
+    {
+        errors.push("GSAP timeline must be created with { paused: true }".to_string());
     }
 
     // Rule 6: GSAP timelines must be registered to window.__timelines
     if !html.contains("window.__timelines") {
-        errors.push(
-            "Missing window.__timelines registration".to_string(),
-        );
+        errors.push("Missing window.__timelines registration".to_string());
     }
 
     // Rule 7: No Math.random() or Date.now() (deterministic rendering)
     if html.contains("Math.random()") {
-        errors.push(
-            "Forbidden pattern: Math.random() (non-deterministic rendering)".to_string(),
-        );
+        errors.push("Forbidden pattern: Math.random() (non-deterministic rendering)".to_string());
     }
     if html.contains("Date.now()") {
-        errors.push(
-            "Forbidden pattern: Date.now() (non-deterministic rendering)".to_string(),
-        );
+        errors.push("Forbidden pattern: Date.now() (non-deterministic rendering)".to_string());
     }
 
     // Rule 8: No repeat: -1 (infinite loops)
     if html.contains("repeat: -1") || html.contains("repeat:-1") {
-        errors.push(
-            "Forbidden pattern: repeat: -1 (infinite animation loop)".to_string(),
-        );
+        errors.push("Forbidden pattern: repeat: -1 (infinite animation loop)".to_string());
     }
 
     // Rule 9: Valid HTML structure (basic checks)

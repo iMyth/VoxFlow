@@ -135,7 +135,7 @@ pub struct StoryKnowledgeItem {
     pub text: String,
     /// JSON array of f32 values representing the embedding vector.
     pub embedding: String,
-    pub kb_type: String, // "plot", "character", "setting", "foreshadow"
+    pub kb_type: String,  // "plot", "character", "setting", "foreshadow"
     pub metadata: String, // JSON string for extra context
     pub created_at: String,
 }

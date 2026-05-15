@@ -4,8 +4,8 @@
 //! Delegates actual frame rendering to GPU (gpu.rs) or CPU (draw.rs).
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use log::info;
 
@@ -67,8 +67,10 @@ where
 
     // Start FFmpeg encoder pipeline
     let (encoder, tx) = spawn_video_encoder(
-        render_width, render_height,
-        config.width, config.height,
+        render_width,
+        render_height,
+        config.width,
+        config.height,
         config.fps,
         &config.audio_path.to_string_lossy(),
         &config.output_path.to_string_lossy(),
@@ -117,7 +119,10 @@ where
     // ─── Frame Loop ──────────────────────────────────────────────────────
     for (frame_idx, frame_features) in features.iter().enumerate() {
         if cancel_flag.load(Ordering::Relaxed) {
-            info!("[Particles] Render cancelled at frame {}/{}", frame_idx, total_frames);
+            info!(
+                "[Particles] Render cancelled at frame {}/{}",
+                frame_idx, total_frames
+            );
             break;
         }
 
@@ -145,9 +150,19 @@ where
             gpu.render_frame(&params, &system)
         } else {
             render_frame_cpu(
-                &system, width, height, cx, cy, scale,
-                &fold_angles, bg_color, base_hue,
-                frame_features, &circle_templates, frame_idx as u32, &bg_base,
+                &system,
+                width,
+                height,
+                cx,
+                cy,
+                scale,
+                &fold_angles,
+                bg_color,
+                base_hue,
+                frame_features,
+                &circle_templates,
+                frame_idx as u32,
+                &bg_base,
             )
         };
 
@@ -173,6 +188,9 @@ where
         stage: "视频生成完成".to_string(),
     });
 
-    info!("[Particles] Video rendered successfully (GPU={}): {:?}", use_gpu, config.output_path);
+    info!(
+        "[Particles] Video rendered successfully (GPU={}): {:?}",
+        use_gpu, config.output_path
+    );
     Ok(())
 }

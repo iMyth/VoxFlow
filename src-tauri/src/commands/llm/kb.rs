@@ -60,22 +60,22 @@ pub async fn build_story_kb(
 
     // Load existing script
     let (sections, lines) = {
-        let db_lock = db.lock().map_err(|e| {
-            AppError::LlmService(format!("Database lock poisoned: {}", e))
-        })?;
-        db_lock.load_script_with_sections(&project_id).map_err(|e| {
-            AppError::LlmService(format!("Failed to load script: {}", e))
-        })?
+        let db_lock = db
+            .lock()
+            .map_err(|e| AppError::LlmService(format!("Database lock poisoned: {}", e)))?;
+        db_lock
+            .load_script_with_sections(&project_id)
+            .map_err(|e| AppError::LlmService(format!("Failed to load script: {}", e)))?
     };
 
     // Clear existing KB for this project
     {
-        let db_lock = db.lock().map_err(|e| {
-            AppError::LlmService(format!("Database lock poisoned: {}", e))
-        })?;
-        db_lock.delete_all_story_kb(&project_id).map_err(|e| {
-            AppError::LlmService(format!("Failed to clear KB: {}", e))
-        })?;
+        let db_lock = db
+            .lock()
+            .map_err(|e| AppError::LlmService(format!("Database lock poisoned: {}", e)))?;
+        db_lock
+            .delete_all_story_kb(&project_id)
+            .map_err(|e| AppError::LlmService(format!("Failed to clear KB: {}", e)))?;
     }
 
     // Index each section as a chunk
@@ -117,12 +117,12 @@ pub async fn build_story_kb(
         };
 
         {
-            let db_lock = db.lock().map_err(|e| {
-                AppError::LlmService(format!("Database lock poisoned: {}", e))
-            })?;
-            db_lock.insert_story_kb(&item).map_err(|e| {
-                AppError::LlmService(format!("Failed to index section: {}", e))
-            })?;
+            let db_lock = db
+                .lock()
+                .map_err(|e| AppError::LlmService(format!("Database lock poisoned: {}", e)))?;
+            db_lock
+                .insert_story_kb(&item)
+                .map_err(|e| AppError::LlmService(format!("Failed to index section: {}", e)))?;
         }
 
         emitter.emit_json(

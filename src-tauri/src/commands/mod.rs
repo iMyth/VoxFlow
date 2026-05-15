@@ -1,15 +1,15 @@
-pub mod project;
+pub mod audio;
 pub mod character;
 pub mod llm;
-pub mod tts;
-pub mod audio;
+pub mod project;
 pub mod settings;
+pub mod tts;
 pub mod updater;
 
-pub use project::*;
+pub use audio::*;
 pub use character::*;
 pub use llm::*;
-pub use tts::*;
-pub use audio::*;
+pub use project::*;
 pub use settings::*;
+pub use tts::*;
 pub use updater::*;

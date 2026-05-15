@@ -24,7 +24,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         norm_b += b[i] * b[i];
     }
     let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 { 0.0 } else { dot / denom }
+    if denom == 0.0 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 /// Fetch embeddings from the LLM API's /embeddings endpoint.
@@ -44,7 +48,10 @@ pub async fn fetch_embedding(
     let response = client
         .post(&url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", api_key))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", api_key),
+        )
         .body(body.to_string())
         .send()
         .await
@@ -53,20 +60,30 @@ pub async fn fetch_embedding(
     if !response.status().is_success() {
         let status = response.status();
         let body_text = response.text().await.unwrap_or_default();
-        return Err(AppError::LlmService(
-            format!("Embedding API error {}: {}", status, body_text)
-        ));
+        return Err(AppError::LlmService(format!(
+            "Embedding API error {}: {}",
+            status, body_text
+        )));
     }
 
-    let resp_body: serde_json::Value = response.json().await
+    let resp_body: serde_json::Value = response
+        .json()
+        .await
         .map_err(|e| AppError::LlmService(format!("Failed to parse embedding response: {}", e)))?;
 
     let embedding = resp_body["data"][0]["embedding"]
         .as_array()
-        .ok_or_else(|| AppError::LlmService("Embedding response missing 'data[0].embedding'".to_string()))?;
+        .ok_or_else(|| {
+            AppError::LlmService("Embedding response missing 'data[0].embedding'".to_string())
+        })?;
 
-    let vec: Result<Vec<f32>, _> = embedding.iter()
-        .map(|v| v.as_f64().map(|f| f as f32).ok_or_else(|| AppError::LlmService("Invalid embedding value".to_string())))
+    let vec: Result<Vec<f32>, _> = embedding
+        .iter()
+        .map(|v| {
+            v.as_f64()
+                .map(|f| f as f32)
+                .ok_or_else(|| AppError::LlmService("Invalid embedding value".to_string()))
+        })
         .collect();
 
     vec
@@ -93,7 +110,11 @@ pub fn semantic_search(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(top_k);
     scored
 }

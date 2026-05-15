@@ -5,7 +5,7 @@
 pub(super) fn alpha_blend(buf: &mut [u8], idx: usize, r: u8, g: u8, b: u8, alpha: u8) {
     let a = alpha as u32;
     let inv_a = 255 - a;
-    buf[idx]     = ((r as u32 * a + buf[idx] as u32 * inv_a) >> 8) as u8;
+    buf[idx] = ((r as u32 * a + buf[idx] as u32 * inv_a) >> 8) as u8;
     buf[idx + 1] = ((g as u32 * a + buf[idx + 1] as u32 * inv_a) >> 8) as u8;
     buf[idx + 2] = ((b as u32 * a + buf[idx + 2] as u32 * inv_a) >> 8) as u8;
 }

@@ -88,18 +88,22 @@ pub async fn do_story_memory<E: EventEmitter>(
                 AppError::LlmService("'text' is required for action 'add'".to_string())
             })?;
 
-            emitter.emit_json("agent-tool-call", &json!({
-                "tool": "story_memory",
-                "action": "add",
-                "text": text
-            }));
+            emitter.emit_json(
+                "agent-tool-call",
+                &json!({
+                    "tool": "story_memory",
+                    "action": "add",
+                    "text": text
+                }),
+            );
 
             let kb_type = args.kb_type.as_deref().unwrap_or("plot");
 
             // Fetch embedding for the stored text
             let embedding = fetch_embedding(api_endpoint, api_key, model, text).await?;
-            let embedding_json = serde_json::to_string(&embedding)
-                .map_err(|e| AppError::LlmService(format!("Failed to serialize embedding: {}", e)))?;
+            let embedding_json = serde_json::to_string(&embedding).map_err(|e| {
+                AppError::LlmService(format!("Failed to serialize embedding: {}", e))
+            })?;
 
             let item = StoryKnowledgeItem {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -111,18 +115,21 @@ pub async fn do_story_memory<E: EventEmitter>(
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
 
-            let db_lock = db.lock().map_err(|e| {
-                AppError::LlmService(format!("Database lock poisoned: {}", e))
-            })?;
-            db_lock.insert_story_kb(&item).map_err(|e| {
-                AppError::LlmService(format!("Failed to store memory: {}", e))
-            })?;
+            let db_lock = db
+                .lock()
+                .map_err(|e| AppError::LlmService(format!("Database lock poisoned: {}", e)))?;
+            db_lock
+                .insert_story_kb(&item)
+                .map_err(|e| AppError::LlmService(format!("Failed to store memory: {}", e)))?;
 
-            emitter.emit_json("agent-tool-result", &json!({
-                "tool": "story_memory",
-                "action": "add",
-                "id": item.id
-            }));
+            emitter.emit_json(
+                "agent-tool-result",
+                &json!({
+                    "tool": "story_memory",
+                    "action": "add",
+                    "id": item.id
+                }),
+            );
 
             Ok(StoryMemoryResponse {
                 action: "add".to_string(),
@@ -131,19 +138,22 @@ pub async fn do_story_memory<E: EventEmitter>(
             })
         }
         "list" => {
-            let db_lock = db.lock().map_err(|e| {
-                AppError::LlmService(format!("Database lock poisoned: {}", e))
-            })?;
-            let items = db_lock.list_story_kb(project_id, None).map_err(|e| {
-                AppError::LlmService(format!("Failed to list memories: {}", e))
-            })?;
+            let db_lock = db
+                .lock()
+                .map_err(|e| AppError::LlmService(format!("Database lock poisoned: {}", e)))?;
+            let items = db_lock
+                .list_story_kb(project_id, None)
+                .map_err(|e| AppError::LlmService(format!("Failed to list memories: {}", e)))?;
 
-            let stored: Vec<StoredMemory> = items.into_iter().map(|i| StoredMemory {
-                id: i.id,
-                text: i.text,
-                kb_type: i.kb_type,
-                metadata: i.metadata,
-            }).collect();
+            let stored: Vec<StoredMemory> = items
+                .into_iter()
+                .map(|i| StoredMemory {
+                    id: i.id,
+                    text: i.text,
+                    kb_type: i.kb_type,
+                    metadata: i.metadata,
+                })
+                .collect();
 
             Ok(StoryMemoryResponse {
                 action: "list".to_string(),
@@ -156,12 +166,12 @@ pub async fn do_story_memory<E: EventEmitter>(
                 AppError::LlmService("'item_id' is required for action 'delete'".to_string())
             })?;
 
-            let db_lock = db.lock().map_err(|e| {
-                AppError::LlmService(format!("Database lock poisoned: {}", e))
-            })?;
-            db_lock.delete_story_kb(item_id).map_err(|e| {
-                AppError::LlmService(format!("Failed to delete memory: {}", e))
-            })?;
+            let db_lock = db
+                .lock()
+                .map_err(|e| AppError::LlmService(format!("Database lock poisoned: {}", e)))?;
+            db_lock
+                .delete_story_kb(item_id)
+                .map_err(|e| AppError::LlmService(format!("Failed to delete memory: {}", e)))?;
 
             Ok(StoryMemoryResponse {
                 action: "delete".to_string(),
@@ -169,8 +179,9 @@ pub async fn do_story_memory<E: EventEmitter>(
                 items: None,
             })
         }
-        other => Err(AppError::LlmService(
-            format!("Unknown action for story_memory: {}", other)
-        )),
+        other => Err(AppError::LlmService(format!(
+            "Unknown action for story_memory: {}",
+            other
+        ))),
     }
 }

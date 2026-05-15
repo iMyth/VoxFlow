@@ -30,10 +30,7 @@ pub async fn stream_llm_response<E: EventEmitter>(
     emitter: &E,
     config: LlmStreamConfig<'_>,
 ) -> Result<LlmStreamResult, AppError> {
-    let url = format!(
-        "{}/chat/completions",
-        config.endpoint.trim_end_matches('/')
-    );
+    let url = format!("{}/chat/completions", config.endpoint.trim_end_matches('/'));
 
     let body = json!({
         "model": config.model,
@@ -95,7 +92,9 @@ pub async fn collect_streaming_content<E: EventEmitter>(
             }
             if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                    if let Some(reasoning) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
+                    if let Some(reasoning) =
+                        parsed["choices"][0]["delta"]["reasoning_content"].as_str()
+                    {
                         emitter.emit_json("llm-thinking", &json!(reasoning));
                     }
                     if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
@@ -111,14 +110,17 @@ pub async fn collect_streaming_content<E: EventEmitter>(
 }
 
 /// Extract JSON from text that may contain surrounding prose or markdown fences.
-pub fn extract_json<'a>(text: &'a str) -> Option<&'a str> {
+pub fn extract_json(text: &str) -> Option<&str> {
     let trimmed = text.trim();
 
     // Handle markdown code fences: ```json, ```JSON, ```\n, etc.
     let stripped = if trimmed.starts_with("```") {
         if let Some(first_newline) = trimmed.find('\n') {
             let after_fence = &trimmed[first_newline + 1..];
-            after_fence.trim().strip_suffix("```").unwrap_or(after_fence.trim())
+            after_fence
+                .trim()
+                .strip_suffix("```")
+                .unwrap_or(after_fence.trim())
         } else {
             // ``` without newline — just strip the fences
             trimmed.trim_start_matches('`').trim_end_matches('`').trim()

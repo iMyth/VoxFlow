@@ -81,9 +81,8 @@ pub fn build_user_prompt(entries: &[TimelineEntry]) -> String {
 
     let json = serde_json::to_string_pretty(&timeline_data).unwrap_or_default();
 
-    let mut prompt = format!(
-        "请根据以下有声书时间轴数据，为每个片段创作对应的视觉画面。\n\n{json}"
-    );
+    let mut prompt =
+        format!("请根据以下有声书时间轴数据，为每个片段创作对应的视觉画面。\n\n{json}");
 
     if entries.len() > 50 {
         prompt.push_str(
@@ -314,12 +313,22 @@ mod tests {
             spec_chars
         );
         // Full prompt should be reasonable (not excessively long)
-        assert!(prompt.len() < 12000, "Full prompt too long: {} chars", prompt.len());
+        assert!(
+            prompt.len() < 12000,
+            "Full prompt too long: {} chars",
+            prompt.len()
+        );
     }
 
     // --- build_user_prompt tests ---
 
-    fn make_entry(text: &str, start: f64, duration: f64, section: Option<&str>, character: Option<&str>) -> TimelineEntry {
+    fn make_entry(
+        text: &str,
+        start: f64,
+        duration: f64,
+        section: Option<&str>,
+        character: Option<&str>,
+    ) -> TimelineEntry {
         TimelineEntry {
             line_id: format!("line_{}", start as u32),
             text: text.to_string(),
@@ -347,9 +356,7 @@ mod tests {
 
     #[test]
     fn test_build_user_prompt_contains_instruction() {
-        let entries = vec![
-            make_entry("Hello", 0.0, 2.0, None, None),
-        ];
+        let entries = vec![make_entry("Hello", 0.0, 2.0, None, None)];
 
         let prompt = build_user_prompt(&entries);
         assert!(prompt.contains("请根据以下有声书时间轴数据"));
@@ -372,7 +379,7 @@ mod tests {
     fn test_build_user_prompt_calculates_total_duration() {
         let entries = vec![
             make_entry("First", 0.0, 2.0, None, None),
-            make_entry("Second", 2.5, 3.0, None, None),  // ends at 5.5
+            make_entry("Second", 2.5, 3.0, None, None), // ends at 5.5
         ];
 
         let prompt = build_user_prompt(&entries);
@@ -410,9 +417,7 @@ mod tests {
 
     #[test]
     fn test_build_user_prompt_default_section_for_entries_without_section() {
-        let entries = vec![
-            make_entry("No section line", 0.0, 2.0, None, Some("旁白")),
-        ];
+        let entries = vec![make_entry("No section line", 0.0, 2.0, None, Some("旁白"))];
 
         let prompt = build_user_prompt(&entries);
         assert!(prompt.contains("默认"));

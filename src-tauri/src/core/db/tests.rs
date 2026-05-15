@@ -109,7 +109,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0, "Characters should be cascade-deleted with project");
+        assert_eq!(
+            count, 0,
+            "Characters should be cascade-deleted with project"
+        );
     }
 
     #[test]
@@ -117,10 +120,7 @@ mod tests {
         let (db, _dir) = temp_db();
 
         db.conn
-            .execute(
-                "INSERT INTO projects (id, name) VALUES ('p1', 'Test')",
-                [],
-            )
+            .execute("INSERT INTO projects (id, name) VALUES ('p1', 'Test')", [])
             .unwrap();
         db.conn
             .execute(
@@ -149,10 +149,7 @@ mod tests {
         let (db, _dir) = temp_db();
 
         db.conn
-            .execute(
-                "INSERT INTO projects (id, name) VALUES ('p1', 'Test')",
-                [],
-            )
+            .execute("INSERT INTO projects (id, name) VALUES ('p1', 'Test')", [])
             .unwrap();
         db.conn
             .execute(
@@ -190,10 +187,7 @@ mod tests {
         let (db, _dir) = temp_db();
 
         db.conn
-            .execute(
-                "INSERT INTO projects (id, name) VALUES ('p1', 'Test')",
-                [],
-            )
+            .execute("INSERT INTO projects (id, name) VALUES ('p1', 'Test')", [])
             .unwrap();
         db.conn
             .execute(
@@ -354,23 +348,16 @@ mod tests {
             .unwrap();
         let line_count: i64 = db
             .conn
-            .query_row("SELECT COUNT(*) FROM script_lines", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT COUNT(*) FROM script_lines", [], |row| row.get(0))
             .unwrap();
         let audio_count: i64 = db
             .conn
-            .query_row("SELECT COUNT(*) FROM audio_fragments", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT COUNT(*) FROM audio_fragments", [], |row| row.get(0))
             .unwrap();
 
         assert_eq!(char_count, 0, "Characters should be cascade-deleted");
         assert_eq!(line_count, 0, "Script lines should be cascade-deleted");
-        assert_eq!(
-            audio_count, 0,
-            "Audio fragments should be cascade-deleted"
-        );
+        assert_eq!(audio_count, 0, "Audio fragments should be cascade-deleted");
     }
 
     // ---- Character CRUD tests ----
@@ -768,7 +755,8 @@ mod tests {
 
         let fragments = db.list_audio_fragments("p1").unwrap();
         assert_eq!(
-            fragments.len(), 1,
+            fragments.len(),
+            1,
             "Should only have one fragment per line_id after upsert"
         );
         assert_eq!(fragments[0].id, "a2");
@@ -934,12 +922,8 @@ mod tests {
         assert_eq!(loaded.llm_endpoint, settings.llm_endpoint);
         assert_eq!(loaded.llm_model, settings.llm_model);
         assert_eq!(loaded.default_voice_name, settings.default_voice_name);
-        assert!(
-            (loaded.default_speed - settings.default_speed).abs() < f32::EPSILON
-        );
-        assert!(
-            (loaded.default_pitch - settings.default_pitch).abs() < f32::EPSILON
-        );
+        assert!((loaded.default_speed - settings.default_speed).abs() < f32::EPSILON);
+        assert!((loaded.default_pitch - settings.default_pitch).abs() < f32::EPSILON);
     }
 
     // ---- load_project aggregate test ----

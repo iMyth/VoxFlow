@@ -222,7 +222,7 @@ pub async fn generate_script(
             title: section.title.clone(),
             section_order: i as i32,
         });
-        for (_j, line) in section.lines.iter().enumerate() {
+        for line in section.lines.iter() {
             let text = line.text.trim();
             if text.is_empty() {
                 continue;
@@ -250,11 +250,12 @@ pub async fn generate_script(
         })?;
     }
 
-    db.save_script(&project_id, &lines, &sections).map_err(|e| {
-        let msg = format!("Failed to save script: {}", e);
-        let _ = app.emit("llm-error", &msg);
-        e
-    })?;
+    db.save_script(&project_id, &lines, &sections)
+        .map_err(|e| {
+            let msg = format!("Failed to save script: {}", e);
+            let _ = app.emit("llm-error", &msg);
+            e
+        })?;
 
     // Emit tool-result event
     let _ = app.emit(

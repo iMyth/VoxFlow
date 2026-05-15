@@ -9,9 +9,7 @@ use crate::core::models::{AudioFragment, TtsBatchProgress, VoiceConfig};
 use log::{error, info, warn};
 
 use super::core::{batch_tts_one, call_tts};
-use super::utils::{
-    build_audio_path, get_audio_duration, reencode_with_ffmpeg, resolve_model,
-};
+use super::utils::{build_audio_path, get_audio_duration, reencode_with_ffmpeg, resolve_model};
 
 #[tauri::command]
 pub async fn generate_tts(
@@ -38,7 +36,10 @@ pub async fn generate_tts(
         std::fs::create_dir_all(p).map_err(|e| AppError::FileSystem(format!("mkdir: {}", e)))?;
     }
 
-    let has_instr = instructions.as_ref().map(|i| !i.trim().is_empty()).unwrap_or(false);
+    let has_instr = instructions
+        .as_ref()
+        .map(|i| !i.trim().is_empty())
+        .unwrap_or(false);
     let model = resolve_model(&voice_config, has_instr);
 
     let audio_bytes = call_tts(
@@ -333,7 +334,11 @@ pub async fn delete_audio_by_line(
             warn!("[TTS] Failed to delete audio file {}: {}", path, e);
         }
     }
-    info!("[TTS] Deleted {} audio fragments for line={}", paths.len(), line_id);
+    info!(
+        "[TTS] Deleted {} audio fragments for line={}",
+        paths.len(),
+        line_id
+    );
     Ok(())
 }
 
