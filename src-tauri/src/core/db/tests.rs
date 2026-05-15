@@ -2,15 +2,10 @@
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use rusqlite::Connection;
-
-    use super::super::super::error::AppError;
     use super::super::super::models::{
-        AudioFragment, Character, Project, ScriptLine, ScriptSection, UserSettings,
+        AudioFragment, Character, Project, ScriptLine, UserSettings,
     };
-    use super::*;
+    use super::super::Database;
 
     fn temp_db() -> (Database, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -838,7 +833,7 @@ mod tests {
         UserSettings {
             llm_endpoint: "https://api.openai.com/v1".to_string(),
             llm_model: "gpt-4".to_string(),
-            default_tts_model: "qwen3-tts-flash".to_string(),
+            default_tts_model: "qwen3-tts-instruct-flash-realtime".to_string(),
             default_voice_name: "Cherry".to_string(),
             default_speed: 1.0,
             default_pitch: 1.0,
@@ -853,7 +848,7 @@ mod tests {
 
         assert_eq!(settings.llm_endpoint, "https://api.openai.com/v1");
         assert_eq!(settings.llm_model, "gpt-4");
-        assert_eq!(settings.default_tts_model, "qwen3-tts-flash");
+        assert_eq!(settings.default_tts_model, "qwen3-tts-instruct-flash-realtime");
         assert_eq!(settings.default_voice_name, "Cherry");
         assert!((settings.default_speed - 1.0).abs() < f32::EPSILON);
         assert!((settings.default_pitch - 1.0).abs() < f32::EPSILON);
