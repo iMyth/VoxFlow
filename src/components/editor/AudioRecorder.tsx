@@ -140,7 +140,7 @@ export default function AudioRecorder({ lineId, onSave, onRemove, hasExistingAud
           size="xs"
           variant="outline"
           className="text-red-500 border-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
-          onClick={startRecording}
+          onClick={() => void startRecording()}
           disabled={isSaving}
         >
           <Mic className="h-3 w-3" />
@@ -178,7 +178,7 @@ export default function AudioRecorder({ lineId, onSave, onRemove, hasExistingAud
       ) : (
         <>
           <span className="text-xs text-muted-foreground font-mono">{formatTime(recordingTime)}</span>
-          <Button size="xs" onClick={saveRecording} disabled={isSaving}>
+          <Button size="xs" onClick={() => void saveRecording()} disabled={isSaving}>
             {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
             {t('editor.saveRecording')}
           </Button>

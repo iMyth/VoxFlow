@@ -388,7 +388,7 @@ export default function CharacterPanel() {
               </div>
             ) : !vcAudioBase64 ? (
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={startVcRecording}>
+                <Button size="sm" variant="outline" onClick={() => void startVcRecording()}>
                   <Mic className="h-3.5 w-3.5 mr-1" />
                   {t('character.vcRecord')}
                 </Button>
