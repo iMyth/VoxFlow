@@ -20,6 +20,7 @@ mod utils;
 mod video;
 pub mod vinyl;
 pub mod starfield;
+pub mod hyperframes;
 
 // Re-export all public items from submodules (includes __cmd__ functions from #[tauri::command])
 pub use export::*;

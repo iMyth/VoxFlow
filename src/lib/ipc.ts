@@ -541,11 +541,7 @@ export function onMixProgress(callback: (progress: MixProgress) => void): Promis
 
 // ---- Video Export ----
 
-export type VideoStyle =
-  | 'particles'
-  | 'vinyl'
-  | 'starfield'
-  | 'fractal';
+export type VideoStyle = 'particles' | 'vinyl' | 'starfield' | 'fractal';
 
 export interface VideoExportConfig {
   audio_path: string;
@@ -622,4 +618,37 @@ export async function installUpdate(): Promise<void> {
 
 export async function cancelVideoExport(): Promise<void> {
   return ipcCall<void>('cancel_video_export', {});
+}
+
+// ---- Hyperframes Export ----
+
+export interface HyperframesExportConfig {
+  project_id: string;
+  output_dir: string;
+  template: 'minimal-subtitle' | 'dialogue-cards' | 'chapter-sections';
+  include_audio: boolean;
+  audio_path?: string | null;
+  use_ai: boolean;
+}
+
+export interface HyperframesProgress {
+  percent: number;
+  stage: string;
+}
+
+export async function exportHyperframes(config: HyperframesExportConfig): Promise<string> {
+  return ipcCall<string>('export_hyperframes', {
+    projectId: config.project_id,
+    outputDir: config.output_dir,
+    template: config.template,
+    includeAudio: config.include_audio,
+    audioPath: config.audio_path ?? null,
+    useAi: config.use_ai,
+  });
+}
+
+export function onHyperframesProgress(callback: (progress: HyperframesProgress) => void): Promise<UnlistenFn> {
+  return listen<HyperframesProgress>('hyperframes-progress', (event) => {
+    callback(event.payload);
+  });
 }

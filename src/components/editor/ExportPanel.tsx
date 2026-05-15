@@ -14,6 +14,7 @@ import {
   Image,
   Lock,
   ArrowRight,
+  Sparkles,
 } from 'lucide-react';
 import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -31,6 +32,7 @@ import { Label } from '../ui/label';
 import { Progress } from '../ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Slider } from '../ui/slider';
+import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
 
 import type { CharacterMapping } from './ImportMappingDialog';
 import type { VideoStyle } from '../../lib/ipc';
@@ -56,7 +58,7 @@ export default function ExportPanel() {
   const [importSuccess, setImportSuccess] = useState(false);
 
   // Video export state
-  const [videoStyle, setVideoStyle] = useState<VideoStyle>('particles');
+  const [videoStyle, setVideoStyle] = useState<VideoStyle | 'hyperframes'>('particles');
   const [videoFgColor, setVideoFgColor] = useState('6366f1');
   const [videoBgColor, setVideoBgColor] = useState('0a0a1a');
   const [videoBgImage, setVideoBgImage] = useState<string | null>(null);
@@ -65,6 +67,17 @@ export default function ExportPanel() {
   const [videoDone, setVideoDone] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [lastExportedAudioPath, setLastExportedAudioPath] = useState<string | null>(null);
+
+  // Hyperframes export state
+  type HyperframesTemplate = 'minimal-subtitle' | 'dialogue-cards' | 'chapter-sections';
+  type HyperframesMode = 'template' | 'ai';
+  const [hyperframesMode, setHyperframesMode] = useState<HyperframesMode>('template');
+  const [hyperframesTemplate, setHyperframesTemplate] = useState<HyperframesTemplate>('minimal-subtitle');
+  const [hyperframesExporting, setHyperframesExporting] = useState(false);
+  const [hyperframesProgress, setHyperframesProgress] = useState<{ percent: number; stage: string } | null>(null);
+  const [hyperframesDone, setHyperframesDone] = useState(false);
+  const [hyperframesError, setHyperframesError] = useState<string | null>(null);
+  const [hyperframesOutputDir, setHyperframesOutputDir] = useState<string | null>(null);
 
   const audioFragments = currentProject?.audio_fragments;
   const coveredLineIds = useMemo(() => new Set((audioFragments ?? []).map((a) => a.line_id)), [audioFragments]);
@@ -231,7 +244,7 @@ export default function ExportPanel() {
       await ipc.exportVideo({
         audio_path: lastExportedAudioPath,
         output_path: selectedPath,
-        style: videoStyle,
+        style: videoStyle as VideoStyle,
         width: 1280,
         height: 720,
         fg_color: videoFgColor,
@@ -252,6 +265,47 @@ export default function ExportPanel() {
     await ipc.cancelVideoExport();
     setVideoExporting(false);
     setVideoProgress(null);
+  };
+
+  const handleExportHyperframes = async () => {
+    if (!currentProject) return;
+
+    const selectedDir = await open({
+      title: '选择 Hyperframes 项目输出目录',
+      directory: true,
+      multiple: false,
+    });
+    if (!selectedDir) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const outputDir: string = Array.isArray(selectedDir) ? selectedDir[0] : selectedDir;
+
+    setHyperframesExporting(true);
+    setHyperframesProgress(null);
+    setHyperframesDone(false);
+    setHyperframesError(null);
+
+    const unlisten = await ipc.onHyperframesProgress((p: { percent: number; stage: string }) => {
+      setHyperframesProgress(p);
+    });
+
+    try {
+      await ipc.exportHyperframes({
+        project_id: currentProject.project.id,
+        output_dir: outputDir,
+        template: hyperframesTemplate,
+        include_audio: !!lastExportedAudioPath,
+        audio_path: lastExportedAudioPath,
+        use_ai: hyperframesMode === 'ai',
+      });
+      setHyperframesDone(true);
+      setHyperframesOutputDir(outputDir);
+    } catch (e) {
+      setHyperframesError(String(e));
+    } finally {
+      unlisten();
+      setHyperframesExporting(false);
+    }
   };
 
   const handleImportConfirm = async (mapping: CharacterMapping[]) => {
@@ -485,10 +539,10 @@ export default function ExportPanel() {
 
         {/* ===== STEP 2: Video Export ===== */}
         <div
-          className={`relative rounded-xl border overflow-hidden transition-all duration-300 ${audioReady ? 'border-border bg-card' : 'border-border/40 bg-muted/20'}`}
+          className={`relative rounded-xl border overflow-hidden transition-all duration-300 ${audioReady || videoStyle === 'hyperframes' ? 'border-border bg-card' : 'border-border/40 bg-muted/20'}`}
         >
-          {/* Locked overlay */}
-          {!audioReady && (
+          {/* Locked overlay — only for non-hyperframes video styles */}
+          {!audioReady && videoStyle !== 'hyperframes' && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60 backdrop-blur-[1px]">
               <div className="flex flex-col items-center gap-2 text-center px-4">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
@@ -502,16 +556,16 @@ export default function ExportPanel() {
           {/* Step header */}
           <div className="flex items-center gap-3 px-5 py-3 border-b border-border/50 bg-muted/30">
             <div
-              className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${videoDone ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' : audioReady ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400' : 'bg-muted text-muted-foreground'}`}
+              className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${videoDone || hyperframesDone ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' : audioReady || videoStyle === 'hyperframes' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400' : 'bg-muted text-muted-foreground'}`}
             >
-              {videoDone ? <CheckCircle className="h-4 w-4" /> : '2'}
+              {videoDone || hyperframesDone ? <CheckCircle className="h-4 w-4" /> : '2'}
             </div>
             <div className="flex-1">
               <h3 className="text-sm font-semibold">{t('export.videoTitle')}</h3>
             </div>
-            {videoDone && (
+            {(videoDone || hyperframesDone) && (
               <span className="text-xs text-green-600 dark:text-green-400 font-medium">
-                {t('export.videoExportSuccess')}
+                {videoStyle === 'hyperframes' ? 'Hyperframes 导出成功' : t('export.videoExportSuccess')}
               </span>
             )}
           </div>
@@ -526,7 +580,7 @@ export default function ExportPanel() {
               <Select
                 value={videoStyle}
                 onValueChange={(v) => {
-                  const style = v as VideoStyle;
+                  const style = v as VideoStyle | 'hyperframes';
                   setVideoStyle(style);
                   // Set recommended default colors per style
                   switch (style) {
@@ -557,80 +611,172 @@ export default function ExportPanel() {
                   <SelectItem value="starfield">{t('export.styleStarfield')}</SelectItem>
                   <SelectItem value="vinyl">{t('export.styleVinyl')}</SelectItem>
                   <SelectItem value="fractal">{t('export.styleFractal')}</SelectItem>
+                  <SelectItem value="hyperframes">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Hyperframes
+                    </span>
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            {/* Colors */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label className="text-xs">{t('export.videoFgColor')}</Label>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">#</span>
-                  <Input
-                    className="flex-1 h-9"
-                    value={videoFgColor}
-                    onChange={(e) => {
-                      setVideoFgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
-                    }}
-                    maxLength={6}
-                  />
-                  <div className="w-9 h-9 rounded-md border shrink-0" style={{ backgroundColor: `#${videoFgColor}` }} />
+            {/* Colors — only for non-hyperframes styles */}
+            {videoStyle !== 'hyperframes' && (
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">{t('export.videoFgColor')}</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">#</span>
+                      <Input
+                        className="flex-1 h-9"
+                        value={videoFgColor}
+                        onChange={(e) => {
+                          setVideoFgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
+                        }}
+                        maxLength={6}
+                      />
+                      <div
+                        className="w-9 h-9 rounded-md border shrink-0"
+                        style={{ backgroundColor: `#${videoFgColor}` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">{t('export.videoBgColor')}</Label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">#</span>
+                      <Input
+                        className="flex-1 h-9"
+                        value={videoBgColor}
+                        onChange={(e) => {
+                          setVideoBgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
+                        }}
+                        maxLength={6}
+                      />
+                      <div
+                        className="w-9 h-9 rounded-md border shrink-0"
+                        style={{ backgroundColor: `#${videoBgColor}` }}
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">{t('export.videoBgColor')}</Label>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">#</span>
-                  <Input
-                    className="flex-1 h-9"
-                    value={videoBgColor}
-                    onChange={(e) => {
-                      setVideoBgColor(e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6));
-                    }}
-                    maxLength={6}
-                  />
-                  <div className="w-9 h-9 rounded-md border shrink-0" style={{ backgroundColor: `#${videoBgColor}` }} />
-                </div>
-              </div>
-            </div>
 
-            {/* Background image */}
-            <div className="space-y-1.5">
-              <Label className="text-xs">{t('export.videoBgImage')}</Label>
-              <div className="flex gap-2 items-center">
-                <Input
-                  className="flex-1 h-9"
-                  placeholder={t('export.videoBgImagePlaceholder')}
-                  value={videoBgImage ?? ''}
-                  readOnly
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 shrink-0"
-                  onClick={() => void handleVideoBgImageBrowse()}
-                >
-                  <Image className="h-4 w-4" />
-                </Button>
-                {videoBgImage && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-9 w-9 shrink-0"
-                    onClick={() => {
-                      setVideoBgImage(null);
+                {/* Background image */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs">{t('export.videoBgImage')}</Label>
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      className="flex-1 h-9"
+                      placeholder={t('export.videoBgImagePlaceholder')}
+                      value={videoBgImage ?? ''}
+                      readOnly
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9 shrink-0"
+                      onClick={() => void handleVideoBgImageBrowse()}
+                    >
+                      <Image className="h-4 w-4" />
+                    </Button>
+                    {videoBgImage && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 shrink-0"
+                        onClick={() => {
+                          setVideoBgImage(null);
+                        }}
+                      >
+                        ✕
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">{t('export.videoBgImageHint')}</p>
+                </div>
+              </>
+            )}
+
+            {/* Hyperframes options — mode toggle + template picker */}
+            {videoStyle === 'hyperframes' && (
+              <div className="space-y-4">
+                {/* Mode toggle: 固定模板 / AI 生成 */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">生成模式</Label>
+                  <Tabs
+                    value={hyperframesMode}
+                    onValueChange={(v) => {
+                      setHyperframesMode(v as HyperframesMode);
                     }}
                   >
-                    ✕
-                  </Button>
+                    <TabsList className="w-full">
+                      <TabsTrigger value="template" className="flex-1">
+                        固定模板
+                      </TabsTrigger>
+                      <TabsTrigger value="ai" className="flex-1">
+                        <Sparkles className="h-3.5 w-3.5 mr-1" />
+                        AI 生成
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </div>
+
+                {/* Template picker — only shown in template mode */}
+                {hyperframesMode === 'template' && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      选择模板
+                    </Label>
+                    <div className="grid gap-2">
+                      {[
+                        { id: 'minimal-subtitle' as const, name: '简约字幕', desc: '深色背景 + 居中白色文字' },
+                        { id: 'dialogue-cards' as const, name: '对话卡片', desc: '角色对话气泡' },
+                        { id: 'chapter-sections' as const, name: '章节分段', desc: '按章节分段 + 标题卡片' },
+                      ].map((tmpl) => (
+                        <button
+                          key={tmpl.id}
+                          type="button"
+                          className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                            hyperframesTemplate === tmpl.id
+                              ? 'border-primary bg-primary/5'
+                              : 'border-border hover:border-primary/50 hover:bg-muted/50'
+                          }`}
+                          onClick={() => {
+                            setHyperframesTemplate(tmpl.id);
+                          }}
+                        >
+                          <div
+                            className={`mt-0.5 h-3 w-3 rounded-full border-2 shrink-0 ${
+                              hyperframesTemplate === tmpl.id
+                                ? 'border-primary bg-primary'
+                                : 'border-muted-foreground/40'
+                            }`}
+                          />
+                          <div>
+                            <div className="text-sm font-medium">{tmpl.name}</div>
+                            <div className="text-xs text-muted-foreground">{tmpl.desc}</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* AI mode hint */}
+                {hyperframesMode === 'ai' && (
+                  <div className="rounded-lg bg-muted/50 p-3">
+                    <p className="text-xs text-muted-foreground">
+                      AI 将根据文案内容自由创作视觉画面，使用 CSS 动画、SVG、GSAP 等技术表达文案意境。
+                    </p>
+                  </div>
                 )}
               </div>
-              <p className="text-[11px] text-muted-foreground">{t('export.videoBgImageHint')}</p>
-            </div>
+            )}
 
             {/* Video progress */}
-            {videoExporting && videoProgress && (
+            {videoExporting && videoProgress && videoStyle !== 'hyperframes' && (
               <div className="rounded-lg bg-muted/50 p-3 space-y-2">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -641,7 +787,19 @@ export default function ExportPanel() {
               </div>
             )}
 
-            {videoError && (
+            {/* Hyperframes progress */}
+            {hyperframesExporting && hyperframesProgress && (
+              <div className="rounded-lg bg-muted/50 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>{hyperframesProgress.stage}</span>
+                  <span className="ml-auto font-mono">{Math.round(hyperframesProgress.percent)}%</span>
+                </div>
+                <Progress value={hyperframesProgress.percent} className="h-1.5" />
+              </div>
+            )}
+
+            {videoStyle !== 'hyperframes' && videoError && (
               <Alert variant="destructive">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertTitle>{t('export.videoExportFailed')}</AlertTitle>
@@ -649,18 +807,64 @@ export default function ExportPanel() {
               </Alert>
             )}
 
-            {/* Video export button */}
+            {videoStyle === 'hyperframes' && hyperframesError && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>Hyperframes 导出失败</AlertTitle>
+                <AlertDescription className="text-xs">{hyperframesError}</AlertDescription>
+              </Alert>
+            )}
+
+            {/* Hyperframes success */}
+            {videoStyle === 'hyperframes' && hyperframesDone && hyperframesOutputDir && (
+              <Alert>
+                <CheckCircle className="h-4 w-4 text-green-500" />
+                <AlertTitle>Hyperframes 项目导出成功</AlertTitle>
+                <AlertDescription className="text-xs space-y-1 mt-1">
+                  <p className="font-medium">后续操作：</p>
+                  <code className="block bg-muted rounded px-2 py-1 text-[11px]">
+                    cd {hyperframesOutputDir} && npx hyperframes preview
+                  </code>
+                  <code className="block bg-muted rounded px-2 py-1 text-[11px]">
+                    npx hyperframes render --output output.mp4
+                  </code>
+                  {lastExportedAudioPath && (
+                    <code className="block bg-muted rounded px-2 py-1 text-[11px]">
+                      ffmpeg -i output.mp4 -i assets/audio.mp3 -c:v copy -c:a aac final.mp4
+                    </code>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* Video/Hyperframes export button */}
             <div className="flex gap-2">
-              <Button
-                className="flex-1 gap-2"
-                variant="secondary"
-                onClick={() => void handleExportVideo()}
-                disabled={videoExporting || !audioReady}
-              >
-                {videoExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
-                {videoExporting ? t('export.videoExporting') : t('export.videoExportButton')}
-              </Button>
-              {videoExporting && (
+              {videoStyle === 'hyperframes' ? (
+                <Button
+                  className="flex-1 gap-2"
+                  variant="secondary"
+                  onClick={() => void handleExportHyperframes()}
+                  disabled={hyperframesExporting || !currentProject}
+                >
+                  {hyperframesExporting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  {hyperframesExporting ? '正在导出...' : '导出 Hyperframes 项目'}
+                </Button>
+              ) : (
+                <Button
+                  className="flex-1 gap-2"
+                  variant="secondary"
+                  onClick={() => void handleExportVideo()}
+                  disabled={videoExporting || !audioReady}
+                >
+                  {videoExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
+                  {videoExporting ? t('export.videoExporting') : t('export.videoExportButton')}
+                </Button>
+              )}
+              {videoExporting && videoStyle !== 'hyperframes' && (
                 <Button
                   variant="outline"
                   className="gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
