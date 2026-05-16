@@ -11,6 +11,7 @@ VoxFlow AI is a desktop application designed to streamline the creation of audio
 ## ✨ Features
 
 - 🎙️ **Alibaba Cloud Bailian Integration** — High-quality TTS synthesis powered by models like Qwen3 TTS Flash.
+- 🎬 **AI Video Generation** — Automatically generate visually rich video compositions from your audiobook scripts using LLM-powered Hyperframes. The AI acts as a visual artist, creating unique motion graphics, SVG animations, and layered scenes that match the mood and content of your narration.
 - ⚙️ **User-Configurable Settings** — Easily input your API Key, select models, and adjust default voice settings (speed, pitch, voice) directly from the application UI.
 - ⏱️ **Adjustable Intervals** — Fine-tune the silence between script lines to ensure natural pacing.
 - 💾 **Robust Data Management** — Built-in SQLite database ensures data integrity and prevents conflicts during manual script creation.
@@ -77,11 +78,11 @@ npm run tauri:build
 
 ## 🛠️ Tech Stack
 
-| Layer           | Technologies                                      |
-| --------------- | ------------------------------------------------- |
-| **Frontend**    | React 19, TypeScript, Vite, Tailwind CSS, Zustand |
-| **Backend**     | Rust, Tauri 2.0, Tokio, Rusqlite (SQLite)         |
-| **AI Services** | Alibaba Cloud Bailian (DashScope)                 |
+| Layer           | Technologies                                        |
+| --------------- | --------------------------------------------------- |
+| **Frontend**    | React 19, TypeScript, Vite, Tailwind CSS, Zustand   |
+| **Backend**     | Rust, Tauri 2.0, Tokio, Rusqlite (SQLite)           |
+| **AI Services** | Alibaba Cloud Bailian (DashScope), Qwen3-Plus (LLM) |
 
 ---
 
