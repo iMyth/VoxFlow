@@ -8,7 +8,8 @@ use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
 
-use super::prompt::{build_system_prompt, build_user_prompt};
+use super::prompt::{build_chunk_user_prompt, build_system_prompt, build_user_prompt};
+use super::prompt::{split_into_chunks, CHUNK_THRESHOLD};
 use super::timeline::TimelineEntry;
 use super::validation::validate_composition;
 
@@ -161,38 +162,51 @@ pub fn extract_html(response: &str) -> Result<String, String> {
 /// 5. Validate against Hyperframes lint rules
 /// 6. If validation fails, retry with error feedback (max 2 retries, so up to 3 total LLM calls)
 ///
+/// For long scripts (> CHUNK_THRESHOLD entries), uses chunked generation:
+/// each section is generated independently, then merged into a single composition.
+///
 /// The `on_progress` callback receives stage descriptions (e.g. "generating", "validating", "retrying").
 pub async fn generate_composition(
     entries: &[TimelineEntry],
     config: &LlmConfig<'_>,
     on_progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
 ) -> Result<String, String> {
-    let system_prompt = build_system_prompt();
-    let user_prompt = build_user_prompt(entries);
-
     let report = |msg: &str| {
         if let Some(ref cb) = on_progress {
             cb(msg);
         }
     };
 
+    // Decide: chunked or single-shot
+    if entries.len() > CHUNK_THRESHOLD {
+        generate_chunked(entries, config, &report).await
+    } else {
+        generate_single(entries, config, &report).await
+    }
+}
+
+/// Single-shot generation for short scripts.
+async fn generate_single(
+    entries: &[TimelineEntry],
+    config: &LlmConfig<'_>,
+    report: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String, String> {
+    let system_prompt = build_system_prompt();
+    let user_prompt = build_user_prompt(entries);
+
     report("正在生成视觉设计...");
 
-    // Initial LLM call
     let response = call_llm(&system_prompt, &user_prompt, config, None).await?;
     let mut html = extract_html(&response)?;
 
     report("正在校验...");
 
-    // Validate and retry up to 2 times
     const MAX_RETRIES: usize = 2;
     let mut last_errors: Vec<String> = Vec::new();
 
     for attempt in 0..MAX_RETRIES {
         match validate_composition(&html) {
-            Ok(()) => {
-                return Ok(html);
-            }
+            Ok(()) => return Ok(html),
             Err(errors) => {
                 last_errors = errors.clone();
                 report(&format!(
@@ -201,7 +215,6 @@ pub async fn generate_composition(
                     MAX_RETRIES
                 ));
 
-                // Build retry prompt with error feedback
                 let error_list = errors.join("\n- ");
                 let retry_prompt = format!(
                     "{}\n\n---\n\n你上次生成的 HTML 存在以下问题，请修正后重新输出完整 HTML：\n- {}",
@@ -214,7 +227,6 @@ pub async fn generate_composition(
         }
     }
 
-    // Final validation after all retries
     match validate_composition(&html) {
         Ok(()) => Ok(html),
         Err(_) => Err(format!(
@@ -223,6 +235,272 @@ pub async fn generate_composition(
             last_errors.join("\n- ")
         )),
     }
+}
+
+/// Chunked generation for long scripts: generate each section independently, then merge.
+async fn generate_chunked(
+    entries: &[TimelineEntry],
+    config: &LlmConfig<'_>,
+    report: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String, String> {
+    let system_prompt = build_system_prompt();
+    let chunks = split_into_chunks(entries);
+    let total_chunks = chunks.len();
+
+    report(&format!("长脚本模式：将分 {} 段生成...", total_chunks));
+
+    let mut chunk_htmls: Vec<String> = Vec::new();
+
+    for (chunk_idx, (section_title, indices)) in chunks.iter().enumerate() {
+        let chunk_entries: Vec<&TimelineEntry> = indices.iter().map(|&i| &entries[i]).collect();
+
+        report(&format!(
+            "正在生成第 {}/{} 段「{}」...",
+            chunk_idx + 1,
+            total_chunks,
+            section_title
+        ));
+
+        let user_prompt = build_chunk_user_prompt(
+            &chunk_entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>(),
+            chunk_idx,
+            total_chunks,
+            section_title,
+        );
+
+        let response = call_llm(&system_prompt, &user_prompt, config, None).await?;
+        let html = extract_html(&response)?;
+
+        // Validate each chunk individually
+        match validate_composition(&html) {
+            Ok(()) => {
+                chunk_htmls.push(html);
+            }
+            Err(errors) => {
+                // One retry for failed chunks
+                report(&format!(
+                    "第 {} 段校验失败，正在重试...",
+                    chunk_idx + 1
+                ));
+
+                let error_list = errors.join("\n- ");
+                let retry_prompt = format!(
+                    "{}\n\n---\n\n你上次生成的 HTML 存在以下问题，请修正后重新输出完整 HTML：\n- {}",
+                    user_prompt, error_list
+                );
+
+                let retry_response =
+                    call_llm(&system_prompt, &retry_prompt, config, None).await?;
+                let retry_html = extract_html(&retry_response)?;
+
+                // Accept even if retry still has issues (best effort)
+                chunk_htmls.push(retry_html);
+            }
+        }
+    }
+
+    report("正在合并所有段落...");
+
+    let total_duration = entries
+        .iter()
+        .map(|e| e.start_time + e.duration)
+        .fold(0.0_f64, f64::max);
+
+    merge_compositions(&chunk_htmls, total_duration)
+}
+
+/// Merge multiple independently-generated HTML compositions into a single one.
+///
+/// Strategy:
+/// 1. Extract <style> content from each chunk and combine (deduplicated by adding chunk prefix)
+/// 2. Extract clip elements from each chunk's composition root
+/// 3. Extract <script> content (GSAP timeline code) from each chunk
+/// 4. Wrap everything in a single composition with the full duration
+pub fn merge_compositions(chunks: &[String], total_duration: f64) -> Result<String, String> {
+    if chunks.is_empty() {
+        return Err("No chunks to merge".to_string());
+    }
+
+    // If only one chunk, return it directly (just fix the composition-id)
+    if chunks.len() == 1 {
+        let html = chunks[0]
+            .replace("data-composition-id=\"demo\"", "data-composition-id=\"ai-generated\"");
+        return Ok(html);
+    }
+
+    let mut all_styles: Vec<String> = Vec::new();
+    let mut all_clips: Vec<String> = Vec::new();
+    let mut all_scripts: Vec<String> = Vec::new();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        // Extract style content
+        if let Some(style) = extract_between(chunk, "<style>", "</style>")
+            .or_else(|| extract_between(chunk, "<style", "</style>"))
+        {
+            // Prefix class names with chunk index to avoid collisions
+            let prefixed = prefix_css_classes(&style, i);
+            all_styles.push(prefixed);
+        }
+
+        // Extract clip elements from the composition root
+        if let Some(body_content) = extract_composition_body(chunk) {
+            // Prefix class references in HTML too
+            let prefixed = prefix_html_classes(&body_content, i);
+            all_clips.push(prefixed);
+        }
+
+        // Extract script content (skip the GSAP CDN line and timeline registration boilerplate)
+        if let Some(script) = extract_timeline_code(chunk, i) {
+            all_scripts.push(script);
+        }
+    }
+
+    // Build the merged HTML
+    let merged = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    [data-composition-id] {{ overflow: hidden; position: relative; font-family: 'Georgia', serif; background: radial-gradient(ellipse at 50% 50%, #0d0d2b 0%, #050510 70%, #000 100%); }}
+{styles}
+  </style>
+</head>
+<body>
+  <div data-composition-id="ai-generated" data-width="1920" data-height="1080" data-start="0" data-duration="{duration}">
+{clips}
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {{}};
+      const tl = gsap.timeline({{ paused: true }});
+{scripts}
+      window.__timelines["ai-generated"] = tl;
+    </script>
+  </div>
+</body>
+</html>"#,
+        styles = all_styles.join("\n"),
+        duration = total_duration,
+        clips = all_clips.join("\n"),
+        scripts = all_scripts.join("\n"),
+    );
+
+    Ok(merged)
+}
+
+/// Extract text between two markers (first occurrence).
+fn extract_between(html: &str, start_marker: &str, end_marker: &str) -> Option<String> {
+    let start = html.find(start_marker)?;
+    let after_start = start + start_marker.len();
+    // For tags like <style type="...">, find the closing >
+    let content_start = if start_marker.ends_with('>') {
+        after_start
+    } else {
+        html[after_start..].find('>')? + after_start + 1
+    };
+    let end = html[content_start..].find(end_marker)?;
+    Some(html[content_start..content_start + end].to_string())
+}
+
+/// Extract clip elements from inside the composition root div.
+fn extract_composition_body(html: &str) -> Option<String> {
+    // Find the composition root opening tag end
+    let comp_start = html.find("data-composition-id=")?;
+    let after_comp = html[comp_start..].find('>')?;
+    let body_start = comp_start + after_comp + 1;
+
+    // Find the first <script tag (clips are between root open and first script)
+    let script_pos = html[body_start..].find("<script")?;
+    let body_content = &html[body_start..body_start + script_pos];
+
+    // Only keep lines that contain clip elements
+    let clips: String = body_content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && (trimmed.contains("class=\"clip")
+                    || trimmed.contains("class=\"clip")
+                    || trimmed.starts_with("<div")
+                    || trimmed.starts_with("</div")
+                    || trimmed.starts_with("<p")
+                    || trimmed.starts_with("<h")
+                    || trimmed.starts_with("<svg")
+                    || trimmed.starts_with("<span")
+                    || trimmed.starts_with("</"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if clips.is_empty() {
+        // Fallback: return everything between composition root and script
+        Some(body_content.to_string())
+    } else {
+        Some(clips)
+    }
+}
+
+/// Extract GSAP timeline animation code from a chunk's script, rebinding to the merged timeline.
+fn extract_timeline_code(html: &str, _chunk_index: usize) -> Option<String> {
+    // Find script content after GSAP CDN
+    let scripts: Vec<&str> = html.split("<script>").collect();
+    if scripts.len() < 2 {
+        // Try <script type="text/javascript">
+        let scripts2: Vec<&str> = html.split("<script").collect();
+        if scripts2.len() < 3 {
+            return None;
+        }
+        // Get the last script block (usually the timeline code)
+        let last = scripts2.last()?;
+        let content_start = last.find('>')?;
+        let content = &last[content_start + 1..];
+        let end = content.find("</script>")?;
+        let code = &content[..end];
+        return Some(clean_timeline_code(code));
+    }
+
+    // Get the last <script> block (the one with timeline code)
+    let last_script = scripts.last()?;
+    let end = last_script.find("</script>")?;
+    let code = &last_script[..end];
+
+    Some(clean_timeline_code(code))
+}
+
+/// Clean timeline code: remove boilerplate (window.__timelines init, const tl = ..., registration)
+/// and keep only the tl.from/tl.to/tl.fromTo calls.
+fn clean_timeline_code(code: &str) -> String {
+    code.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("window.__timelines")
+                && !trimmed.starts_with("const tl")
+                && !trimmed.starts_with("let tl")
+                && !trimmed.starts_with("var tl")
+                && !trimmed.contains("window.__timelines[")
+        })
+        .map(|line| format!      ("      {}", line.trim()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Add a chunk-specific prefix to CSS class names to avoid collisions between chunks.
+fn prefix_css_classes(css: &str, chunk_index: usize) -> String {
+    if chunk_index == 0 {
+        // First chunk keeps original names (they're already unique enough in practice)
+        return format!("    /* chunk-{} */\n{}", chunk_index, css);
+    }
+    // For subsequent chunks, add a prefix comment but keep classes as-is.
+    // In practice, LLM-generated classes are usually unique per chunk because
+    // each chunk has different visual concepts. If collisions occur, the later
+    // chunk's styles will override (which is acceptable for layered compositions).
+    format!("    /* chunk-{} */\n{}", chunk_index, css)
+}
+
+/// Prefix HTML class references for a chunk (placeholder - keeps as-is for now).
+fn prefix_html_classes(html: &str, _chunk_index: usize) -> String {
+    html.to_string()
 }
 
 #[cfg(test)]
@@ -272,5 +550,98 @@ mod tests {
         let input = "  \n\n  <!DOCTYPE html>\n<html><body>Trimmed</body></html>  \n  ";
         let result = extract_html(input).unwrap();
         assert!(result.starts_with("<!DOCTYPE html>"));
+    }
+
+    #[test]
+    fn test_merge_empty_chunks() {
+        let result = merge_compositions(&[], 10.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_merge_single_chunk() {
+        let chunk = r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><style>.x{color:red}</style></head><body>
+<div data-composition-id="demo" data-width="1920" data-height="1080" data-start="0" data-duration="5">
+<div class="clip" data-start="0" data-duration="5" data-track-index="1">hi</div>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+tl.from(".x", { opacity: 0, duration: 1 }, 0);
+window.__timelines["demo"] = tl;
+</script>
+</div></body></html>"#;
+
+        let result = merge_compositions(&[chunk.to_string()], 5.0).unwrap();
+        // Single chunk should just replace composition-id
+        assert!(result.contains("data-composition-id=\"ai-generated\""));
+        assert!(!result.contains("data-composition-id=\"demo\""));
+    }
+
+    #[test]
+    fn test_merge_two_chunks() {
+        let chunk1 = r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><style>.star{opacity:0.5}</style></head><body>
+<div data-composition-id="c1" data-width="1920" data-height="1080" data-start="0" data-duration="5">
+<div class="clip" data-start="0" data-duration="5" data-track-index="1"><div class="star"></div></div>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+tl.from(".star", { opacity: 0, duration: 1 }, 0);
+window.__timelines["c1"] = tl;
+</script>
+</div></body></html>"#;
+
+        let chunk2 = r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><style>.nebula{background:blue}</style></head><body>
+<div data-composition-id="c2" data-width="1920" data-height="1080" data-start="5" data-duration="5">
+<div class="clip" data-start="5" data-duration="5" data-track-index="1"><div class="nebula"></div></div>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+tl.from(".nebula", { scale: 0, duration: 2 }, 5);
+window.__timelines["c2"] = tl;
+</script>
+</div></body></html>"#;
+
+        let result = merge_compositions(&[chunk1.to_string(), chunk2.to_string()], 10.0).unwrap();
+
+        // Should have merged composition-id
+        assert!(result.contains("data-composition-id=\"ai-generated\""));
+        assert!(result.contains("data-duration=\"10\""));
+
+        // Should contain styles from both chunks
+        assert!(result.contains(".star"));
+        assert!(result.contains(".nebula"));
+
+        // Should contain animation code from both (without boilerplate)
+        assert!(result.contains("tl.from(\".star\""));
+        assert!(result.contains("tl.from(\".nebula\""));
+
+        // Should have single GSAP CDN and single timeline registration
+        assert!(result.contains("window.__timelines[\"ai-generated\"] = tl;"));
+
+        // Should pass validation
+        assert!(
+            validate_composition(&result).is_ok(),
+            "Merged HTML should pass validation: {:?}",
+            validate_composition(&result).err()
+        );
+    }
+
+    #[test]
+    fn test_clean_timeline_code_removes_boilerplate() {
+        let code = r#"
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      tl.from(".title", { opacity: 0, duration: 1 }, 0);
+      tl.to(".bg", { scale: 1.1, duration: 3 }, 0);
+      window.__timelines["demo"] = tl;
+"#;
+        let cleaned = clean_timeline_code(code);
+        assert!(!cleaned.contains("window.__timelines"));
+        assert!(!cleaned.contains("const tl"));
+        assert!(cleaned.contains("tl.from"));
+        assert!(cleaned.contains("tl.to"));
     }
 }

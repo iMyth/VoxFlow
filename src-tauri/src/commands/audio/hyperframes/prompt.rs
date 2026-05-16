@@ -93,6 +93,103 @@ pub fn build_user_prompt(entries: &[TimelineEntry]) -> String {
     prompt
 }
 
+/// Build a user prompt for a single chunk (section) of the timeline.
+///
+/// Used in chunked generation mode: each section is generated independently,
+/// then merged into a final composition. The prompt tells the LLM to generate
+/// only the clip elements and styles for this specific time range.
+pub fn build_chunk_user_prompt(
+    entries: &[TimelineEntry],
+    chunk_index: usize,
+    total_chunks: usize,
+    section_title: &str,
+) -> String {
+    let chunk_entries: Vec<EntryJson> = entries
+        .iter()
+        .map(|e| EntryJson {
+            text: e.text.clone(),
+            start: e.start_time,
+            duration: e.duration,
+            character: e.character_name.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    let chunk_start = entries
+        .iter()
+        .map(|e| e.start_time)
+        .fold(f64::INFINITY, f64::min);
+    let chunk_end = entries
+        .iter()
+        .map(|e| e.start_time + e.duration)
+        .fold(0.0_f64, f64::max);
+
+    let chunk_data = ChunkJson {
+        chunk_index,
+        total_chunks,
+        section_title: section_title.to_string(),
+        time_range: TimeRange {
+            start: chunk_start,
+            end: chunk_end,
+        },
+        entries: chunk_entries,
+    };
+
+    let json = serde_json::to_string_pretty(&chunk_data).unwrap_or_default();
+
+    format!(
+        "这是一个分段生成任务（第 {}/{} 段，段落标题：「{}」）。\n\
+         请只为这个时间段生成视觉画面。输出完整 HTML 文件，但只包含这个时间段的 clip 元素。\n\
+         composition 的 data-start 应为 \"{}\"，data-duration 应为 \"{}\"。\n\n\
+         {json}",
+        chunk_index + 1,
+        total_chunks,
+        section_title,
+        chunk_start,
+        chunk_end - chunk_start,
+    )
+}
+
+/// Determine whether chunked generation should be used based on entry count.
+///
+/// Returns the threshold: if entries exceed this count, use chunked mode.
+pub const CHUNK_THRESHOLD: usize = 20;
+
+/// Split timeline entries into chunks by section for independent generation.
+///
+/// Returns a Vec of (section_title, entries_slice_indices) tuples.
+pub fn split_into_chunks(entries: &[TimelineEntry]) -> Vec<(String, Vec<usize>)> {
+    let mut chunks: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut current_title: Option<String> = None;
+    let mut current_indices: Vec<usize> = Vec::new();
+
+    for (i, entry) in entries.iter().enumerate() {
+        let title = entry
+            .section_title
+            .clone()
+            .unwrap_or_else(|| "默认".to_string());
+
+        if current_title.as_deref() != Some(&title) {
+            if !current_indices.is_empty() {
+                chunks.push((
+                    current_title.unwrap_or_else(|| "默认".to_string()),
+                    std::mem::take(&mut current_indices),
+                ));
+            }
+            current_title = Some(title);
+        }
+        current_indices.push(i);
+    }
+
+    if !current_indices.is_empty() {
+        chunks.push((
+            current_title.unwrap_or_else(|| "默认".to_string()),
+            current_indices,
+        ));
+    }
+
+    chunks
+}
+
 #[derive(serde::Serialize)]
 struct TimelineJson {
     total_duration: f64,
@@ -113,39 +210,66 @@ struct EntryJson {
     character: String,
 }
 
+#[derive(serde::Serialize)]
+struct ChunkJson {
+    chunk_index: usize,
+    total_chunks: usize,
+    section_title: String,
+    time_range: TimeRange,
+    entries: Vec<EntryJson>,
+}
+
+#[derive(serde::Serialize)]
+struct TimeRange {
+    start: f64,
+    end: f64,
+}
+
 const ROLE_DEFINITION: &str = "\
-你是一个顶级视频视觉创作专家和动效设计师，使用 Hyperframes 框架为有声书创作震撼的视觉画面。\
-你的作品以视觉冲击力强、元素丰富、层次感强著称。";
+你是一个顶级视频视觉创作专家和动效设计师，使用 Hyperframes 框架为有声书创作沉浸式视觉画面。\
+你擅长将抽象概念（哲学、科学、情感）转化为具象的视觉隐喻，\
+作品以氛围感强、层次丰富、情绪递进著称，风格介于科学纪录片与艺术装置之间。";
 
 const CREATIVE_FREEDOM: &str = "\
-你的任务：根据有声书文案内容，创作视觉冲击力强的画面。\n\
+你的任务：根据有声书文案内容，创作与叙事情绪和概念深度匹配的视觉画面。\n\
 \n\
-[核心原则 — 画面必须丰富]\n\
-- 每个片段至少使用 3-5 个视觉层次（背景层 + 装饰层 + 主体层 + 前景粒子层 + 文字层）\n\
+[核心原则 — 概念可视化]\n\
+- 有声书通常是深度叙事（哲学、科学、情感），画面要服务于「理解」和「感受」\n\
+- 将抽象概念转化为视觉隐喻：量子纠缠→光线交织网络，概率云→弥散粒子雾，时间→琥珀/胶片\n\
+- 每个片段使用 3-5 个视觉层次（氛围背景层 + 隐喻主体层 + 粒子/纹理层 + 可选文字层）\n\
 - 使用多个 track（data-track-index）叠加不同层次的视觉元素\n\
-- 背景永远不要只是纯色！使用渐变、网格、噪点纹理、径向光晕等\n\
-- 大量使用 CSS 动画：浮动粒子、脉冲光圈、扫描线、呼吸效果\n\
-- 文字要大、要有存在感，配合发光、阴影、描边等效果\n\
-- 颜色要饱和、对比要强烈，善用霓虹色、渐变色\n\
+- 情绪递进：随叙事推进，画面的色调、密度、运动节奏应逐步变化\n\
+- 留白是设计语言的一部分——深沉的叙事需要呼吸空间，但留白区域要有微妙纹理或光效\n\
+\n\
+[视觉隐喻设计思路]\n\
+- 讲「渺小/宏大」→ 微小光点在巨大深空中缓慢漂移，径向光晕暗示无限\n\
+- 讲「连接/关系/纠缠」→ 光线网络、节点脉冲、线条交汇处发光\n\
+- 讲「不确定性/概率」→ 弥散粒子云、半透明叠影、模糊与清晰的交替\n\
+- 讲「时间/永恒」→ 琥珀色调、胶片帧叠加、缓慢旋转的几何体\n\
+- 讲「意识/觉醒」→ 从暗到亮的渐变、瞳孔/眼睛意象、光束聚焦\n\
+- 讲「循环/自指」→ 衔尾蛇、莫比乌斯环、递归图形\n\
+- 讲「诞生/起源」→ 中心爆发的光、从一点扩散的涟漪、粒子凝聚\n\
+- 讲「寂静/虚无」→ 极简深色背景、单一微弱光源、缓慢消散的元素\n\
 \n\
 [技术手段 — 充分利用]\n\
 - CSS: radial-gradient, conic-gradient, backdrop-filter, mix-blend-mode, clip-path\n\
-- SVG: 路径动画、滤镜（feGaussianBlur, feTurbulence）、图案填充\n\
-- GSAP: stagger 动画、运动路径、弹性缓动、序列编排\n\
-- 伪元素 ::before/::after 增加装饰层\n\
-- box-shadow 多层发光、text-shadow 霓虹效果\n\
-- CSS Grid/Flexbox 创建复杂布局\n\
+- SVG: 路径动画、滤镜（feGaussianBlur, feTurbulence）、图案填充、线条网络\n\
+- GSAP: stagger 动画、运动路径、缓慢优雅的缓动（power1/power2）、序列编排\n\
+- 伪元素 ::before/::after 增加氛围层\n\
+- box-shadow 多层柔光、text-shadow 微妙发光\n\
+- CSS Grid 创建对称/几何布局\n\
 \n\
-[视觉风格参考]\n\
-- 文案讲\u{201c}暴风雨来临\u{201d} → 全屏雨滴粒子（50+个 div）+ 闪电 SVG 路径动画 + 乌云渐变背景 + 风吹树影剪影 + 大字标题带抖动\n\
-- 文案讲\u{201c}两人对话\u{201d} → 分屏布局 + 角色轮廓 SVG + 对话气泡弹入 + 背景波纹扩散 + 情绪色彩渐变\n\
-- 文案讲\u{201c}宁静夜晚\u{201d} → 星空粒子背景（30+颗星）+ 月亮光晕 + 萤火虫浮动 + 文字淡入带柔光\n\
-- 文案讲\u{201c}激烈战斗\u{201d} → 红色脉冲波 + 碎片爆炸 + 画面震动 + 速度线 + 冲击波扩散 + 大字体碎裂\n\
+[色彩与氛围指导]\n\
+- 深色系为主基调（深蓝、深紫、墨黑），用高光点缀（星光白、量子蓝、琥珀金）\n\
+- 避免过度饱和的霓虹色，优先使用有深度感的渐变\n\
+- 关键概念出现时可以用对比色强调（如暗背景中突然出现的暖光）\n\
+- 整体节奏偏沉稳，动画速度中等偏慢，营造思考的空间感\n\
 \n\
 [禁止]\n\
-- 禁止只放一个小元素在画面中央，画面必须饱满\n\
-- 禁止大面积空白/纯黑，每个区域都要有视觉内容\n\
-- 文字可以出现也可以不出现，但如果出现必须有设计感（不是简单居中白字）";
+- 禁止画面与文案内容无关的纯装饰（不要为了花哨而花哨）\n\
+- 禁止过于具象的插画风格（不要画卡通人物、写实场景）\n\
+- 禁止快速闪烁或过度运动（有声书节奏偏慢，画面要配合）\n\
+- 文字可以出现也可以不出现，如果出现应是关键词/金句，要有设计感";
 
 const HYPERFRAMES_SPEC: &str = "\
 [Hyperframes 技术约束]
@@ -182,43 +306,48 @@ const HYPERFRAMES_SPEC: &str = "\
    - 所有视觉元素必须在 composition 根元素内部";
 
 const MINIMAL_EXAMPLE: &str = "\
-[丰富示例 — 注意多层叠加]
+[示例 — 抽象概念可视化风格]
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset=\"UTF-8\">
   <style>
-    [data-composition-id] { background: linear-gradient(135deg, #0a0a2e 0%, #1a0a3e 50%, #0a1a2e 100%); overflow: hidden; position: relative; font-family: sans-serif; }
-    .bg-layer { position: absolute; width: 100%; height: 100%; }
-    .particle { position: absolute; width: 4px; height: 4px; background: rgba(99,102,241,0.6); border-radius: 50%; box-shadow: 0 0 6px rgba(99,102,241,0.8); }
-    .glow-ring { position: absolute; top: 50%; left: 50%; width: 300px; height: 300px; margin: -150px; border: 2px solid rgba(139,92,246,0.3); border-radius: 50%; box-shadow: 0 0 40px rgba(139,92,246,0.2), inset 0 0 40px rgba(139,92,246,0.1); }
-    .title { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #f0f0f5; font-size: 72px; font-weight: 700; text-shadow: 0 0 20px rgba(99,102,241,0.8), 0 0 60px rgba(99,102,241,0.4); }
-    .scan-line { position: absolute; width: 100%; height: 2px; background: linear-gradient(90deg, transparent, rgba(99,102,241,0.4), transparent); }
+    [data-composition-id] { background: radial-gradient(ellipse at 50% 50%, #0d0d2b 0%, #050510 70%, #000 100%); overflow: hidden; position: relative; font-family: 'Georgia', serif; }
+    .cosmos-layer { position: absolute; width: 100%; height: 100%; }
+    .node { position: absolute; width: 6px; height: 6px; background: rgba(180,200,255,0.8); border-radius: 50%; box-shadow: 0 0 12px rgba(140,160,255,0.6), 0 0 30px rgba(100,120,255,0.2); }
+    .connection { position: absolute; height: 1px; background: linear-gradient(90deg, transparent, rgba(140,160,255,0.3), transparent); transform-origin: left center; }
+    .probability-cloud { position: absolute; top: 50%; left: 50%; width: 400px; height: 400px; margin: -200px; border-radius: 50%; background: radial-gradient(circle, rgba(100,140,255,0.08) 0%, transparent 70%); filter: blur(20px); }
+    .keyword { position: absolute; bottom: 12%; left: 50%; transform: translateX(-50%); color: rgba(220,230,255,0.9); font-size: 42px; font-weight: 300; letter-spacing: 8px; text-shadow: 0 0 30px rgba(100,140,255,0.4); }
+    .vignette { position: absolute; width: 100%; height: 100%; background: radial-gradient(ellipse at 50% 50%, transparent 40%, rgba(0,0,0,0.6) 100%); }
   </style>
 </head>
 <body>
-  <div data-composition-id=\"demo\" data-width=\"1920\" data-height=\"1080\" data-start=\"0\" data-duration=\"5\">
-    <div class=\"clip bg-layer\" data-start=\"0\" data-duration=\"5\" data-track-index=\"1\">
-      <div class=\"particle\" style=\"top:10%;left:20%\"></div>
-      <div class=\"particle\" style=\"top:30%;left:70%\"></div>
-      <div class=\"particle\" style=\"top:60%;left:40%\"></div>
-      <div class=\"particle\" style=\"top:80%;left:85%\"></div>
-      <div class=\"particle\" style=\"top:45%;left:15%\"></div>
-      <div class=\"glow-ring\"></div>
-      <div class=\"scan-line\" style=\"top:30%\"></div>
+  <div data-composition-id=\"demo\" data-width=\"1920\" data-height=\"1080\" data-start=\"0\" data-duration=\"6\">
+    <div class=\"clip cosmos-layer\" data-start=\"0\" data-duration=\"6\" data-track-index=\"1\">
+      <div class=\"probability-cloud\"></div>
+      <div class=\"node\" style=\"top:35%;left:30%\"></div>
+      <div class=\"node\" style=\"top:45%;left:55%\"></div>
+      <div class=\"node\" style=\"top:60%;left:42%\"></div>
+      <div class=\"node\" style=\"top:38%;left:68%\"></div>
+      <div class=\"node\" style=\"top:55%;left:25%\"></div>
+      <div class=\"connection\" style=\"top:40%;left:30%;width:200px;transform:rotate(12deg)\"></div>
+      <div class=\"connection\" style=\"top:52%;left:42%;width:150px;transform:rotate(-20deg)\"></div>
     </div>
-    <div class=\"clip\" data-start=\"0\" data-duration=\"5\" data-track-index=\"2\">
-      <h1 class=\"title\">暴风雨来临</h1>
+    <div class=\"clip\" data-start=\"0\" data-duration=\"6\" data-track-index=\"2\">
+      <div class=\"vignette\"></div>
+    </div>
+    <div class=\"clip\" data-start=\"1\" data-duration=\"5\" data-track-index=\"3\">
+      <p class=\"keyword\">存在 即是 关系</p>
     </div>
     <script src=\"https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js\"></script>
     <script>
       window.__timelines = window.__timelines || {};
       const tl = gsap.timeline({ paused: true });
-      tl.from(\".title\", { scale: 0.8, opacity: 0, duration: 1.2, ease: \"power3.out\" }, 0.3);
-      tl.from(\".particle\", { opacity: 0, y: 20, duration: 0.8, stagger: 0.15, ease: \"power2.out\" }, 0);
-      tl.from(\".glow-ring\", { scale: 0.5, opacity: 0, duration: 1.5, ease: \"power2.out\" }, 0.2);
-      tl.to(\".scan-line\", { y: 800, duration: 3, ease: \"none\" }, 0.5);
-      tl.to(\".glow-ring\", { rotation: 360, duration: 4, ease: \"none\" }, 0);
+      tl.from(\".probability-cloud\", { scale: 0.3, opacity: 0, duration: 2.5, ease: \"power1.out\" }, 0);
+      tl.from(\".node\", { opacity: 0, scale: 0, duration: 1.2, stagger: 0.3, ease: \"power2.out\" }, 0.5);
+      tl.from(\".connection\", { scaleX: 0, opacity: 0, duration: 1.5, stagger: 0.4, ease: \"power1.inOut\" }, 1.2);
+      tl.from(\".keyword\", { opacity: 0, y: 20, duration: 1.8, ease: \"power1.out\" }, 2.5);
+      tl.to(\".node\", { boxShadow: \"0 0 20px rgba(180,200,255,1), 0 0 50px rgba(140,160,255,0.5)\", duration: 1.5, stagger: 0.2, yoyo: true, repeat: 1 }, 2);
       window.__timelines[\"demo\"] = tl;
     </script>
   </div>
@@ -240,16 +369,16 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_role() {
         let prompt = build_system_prompt();
-        assert!(prompt.contains("视频视觉创作专家"));
+        assert!(prompt.contains("视觉创作专家"));
         assert!(prompt.contains("Hyperframes"));
     }
 
     #[test]
     fn test_build_system_prompt_contains_creative_freedom() {
         let prompt = build_system_prompt();
-        assert!(prompt.contains("视觉冲击力"));
+        assert!(prompt.contains("概念可视化"));
         assert!(prompt.contains("多个 track"));
-        assert!(prompt.contains("禁止只放一个小元素"));
+        assert!(prompt.contains("禁止"));
     }
 
     #[test]
@@ -300,21 +429,16 @@ mod tests {
     #[test]
     fn test_build_system_prompt_reasonable_length() {
         let prompt = build_system_prompt();
-        // Rough token estimate: ~4 chars per token for mixed CJK/English
-        // Should be well under 2000 tokens for the spec portion
-        // Total prompt (including examples) can be longer, but spec section alone should be concise
         let spec_section = HYPERFRAMES_SPEC;
         let spec_chars = spec_section.len();
-        // CJK chars ≈ 1-2 tokens each, ASCII ≈ 4 chars/token
-        // Conservative estimate: spec_chars / 2 < 2000 tokens
         assert!(
             spec_chars < 4000,
             "Spec section too long: {} chars",
             spec_chars
         );
-        // Full prompt should be reasonable (not excessively long)
+        // Full prompt can be longer now due to richer creative guidance
         assert!(
-            prompt.len() < 12000,
+            prompt.len() < 16000,
             "Full prompt too long: {} chars",
             prompt.len()
         );
@@ -421,5 +545,64 @@ mod tests {
 
         let prompt = build_user_prompt(&entries);
         assert!(prompt.contains("默认"));
+    }
+
+    // --- split_into_chunks tests ---
+
+    #[test]
+    fn test_split_into_chunks_by_section() {
+        let entries = vec![
+            make_entry("Line 1", 0.0, 2.0, Some("第一章"), None),
+            make_entry("Line 2", 2.5, 3.0, Some("第一章"), None),
+            make_entry("Line 3", 6.0, 1.5, Some("第二章"), None),
+            make_entry("Line 4", 8.0, 2.0, Some("第二章"), None),
+            make_entry("Line 5", 10.5, 1.0, Some("第三章"), None),
+        ];
+
+        let chunks = split_into_chunks(&entries);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].0, "第一章");
+        assert_eq!(chunks[0].1, vec![0, 1]);
+        assert_eq!(chunks[1].0, "第二章");
+        assert_eq!(chunks[1].1, vec![2, 3]);
+        assert_eq!(chunks[2].0, "第三章");
+        assert_eq!(chunks[2].1, vec![4]);
+    }
+
+    #[test]
+    fn test_split_into_chunks_no_sections() {
+        let entries = vec![
+            make_entry("Line 1", 0.0, 2.0, None, None),
+            make_entry("Line 2", 2.5, 3.0, None, None),
+        ];
+
+        let chunks = split_into_chunks(&entries);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].0, "默认");
+        assert_eq!(chunks[0].1, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_split_into_chunks_empty() {
+        let entries: Vec<TimelineEntry> = vec![];
+        let chunks = split_into_chunks(&entries);
+        assert!(chunks.is_empty());
+    }
+
+    // --- build_chunk_user_prompt tests ---
+
+    #[test]
+    fn test_build_chunk_user_prompt_contains_chunk_info() {
+        let entries = vec![
+            make_entry("量子纠缠", 5.0, 3.0, Some("第二章"), Some("旁白")),
+            make_entry("概率云", 8.5, 2.0, Some("第二章"), Some("旁白")),
+        ];
+
+        let prompt = build_chunk_user_prompt(&entries, 1, 3, "第二章");
+        assert!(prompt.contains("第 2/3 段"));
+        assert!(prompt.contains("第二章"));
+        assert!(prompt.contains("量子纠缠"));
+        assert!(prompt.contains("概率云"));
+        assert!(prompt.contains("分段生成"));
     }
 }

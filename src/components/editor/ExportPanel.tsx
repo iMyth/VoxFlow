@@ -271,7 +271,7 @@ export default function ExportPanel() {
     if (!currentProject) return;
 
     const selectedDir = await open({
-      title: '选择 Hyperframes 项目输出目录',
+      title: t('export.hyperframesSelectOutputDir'),
       directory: true,
       multiple: false,
     });
@@ -565,7 +565,7 @@ export default function ExportPanel() {
             </div>
             {(videoDone || hyperframesDone) && (
               <span className="text-xs text-green-600 dark:text-green-400 font-medium">
-                {videoStyle === 'hyperframes' ? 'Hyperframes 导出成功' : t('export.videoExportSuccess')}
+                {videoStyle === 'hyperframes' ? t('export.hyperframesExportSuccess') : t('export.videoExportSuccess')}
               </span>
             )}
           </div>
@@ -704,7 +704,9 @@ export default function ExportPanel() {
               <div className="space-y-4">
                 {/* Mode toggle: 固定模板 / AI 生成 */}
                 <div className="space-y-1.5">
-                  <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">生成模式</Label>
+                  <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    {t('export.hyperframesMode')}
+                  </Label>
                   <Tabs
                     value={hyperframesMode}
                     onValueChange={(v) => {
@@ -713,11 +715,11 @@ export default function ExportPanel() {
                   >
                     <TabsList className="w-full">
                       <TabsTrigger value="template" className="flex-1">
-                        固定模板
+                        {t('export.hyperframesModeTemplate')}
                       </TabsTrigger>
                       <TabsTrigger value="ai" className="flex-1">
                         <Sparkles className="h-3.5 w-3.5 mr-1" />
-                        AI 生成
+                        {t('export.hyperframesModeAi')}
                       </TabsTrigger>
                     </TabsList>
                   </Tabs>
@@ -727,13 +729,25 @@ export default function ExportPanel() {
                 {hyperframesMode === 'template' && (
                   <div className="space-y-1.5">
                     <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      选择模板
+                      {t('export.hyperframesSelectTemplate')}
                     </Label>
                     <div className="grid gap-2">
                       {[
-                        { id: 'minimal-subtitle' as const, name: '简约字幕', desc: '深色背景 + 居中白色文字' },
-                        { id: 'dialogue-cards' as const, name: '对话卡片', desc: '角色对话气泡' },
-                        { id: 'chapter-sections' as const, name: '章节分段', desc: '按章节分段 + 标题卡片' },
+                        {
+                          id: 'minimal-subtitle' as const,
+                          name: t('export.hyperframesTemplateMinimalSubtitle'),
+                          desc: t('export.hyperframesTemplateMinimalSubtitleDesc'),
+                        },
+                        {
+                          id: 'dialogue-cards' as const,
+                          name: t('export.hyperframesTemplateDialogueCards'),
+                          desc: t('export.hyperframesTemplateDialogueCardsDesc'),
+                        },
+                        {
+                          id: 'chapter-sections' as const,
+                          name: t('export.hyperframesTemplateChapterSections'),
+                          desc: t('export.hyperframesTemplateChapterSectionsDesc'),
+                        },
                       ].map((tmpl) => (
                         <button
                           key={tmpl.id}
@@ -767,9 +781,7 @@ export default function ExportPanel() {
                 {/* AI mode hint */}
                 {hyperframesMode === 'ai' && (
                   <div className="rounded-lg bg-muted/50 p-3">
-                    <p className="text-xs text-muted-foreground">
-                      AI 将根据文案内容自由创作视觉画面，使用 CSS 动画、SVG、GSAP 等技术表达文案意境。
-                    </p>
+                    <p className="text-xs text-muted-foreground">{t('export.hyperframesAiHint')}</p>
                   </div>
                 )}
               </div>
@@ -810,7 +822,7 @@ export default function ExportPanel() {
             {videoStyle === 'hyperframes' && hyperframesError && (
               <Alert variant="destructive">
                 <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Hyperframes 导出失败</AlertTitle>
+                <AlertTitle>{t('export.hyperframesExportFailed')}</AlertTitle>
                 <AlertDescription className="text-xs">{hyperframesError}</AlertDescription>
               </Alert>
             )}
@@ -819,9 +831,9 @@ export default function ExportPanel() {
             {videoStyle === 'hyperframes' && hyperframesDone && hyperframesOutputDir && (
               <Alert>
                 <CheckCircle className="h-4 w-4 text-green-500" />
-                <AlertTitle>Hyperframes 项目导出成功</AlertTitle>
+                <AlertTitle>{t('export.hyperframesProjectExportSuccess')}</AlertTitle>
                 <AlertDescription className="text-xs space-y-1 mt-1">
-                  <p className="font-medium">后续操作：</p>
+                  <p className="font-medium">{t('export.hyperframesNextSteps')}</p>
                   <code className="block bg-muted rounded px-2 py-1 text-[11px]">
                     cd {hyperframesOutputDir} && npx hyperframes preview
                   </code>
@@ -851,7 +863,7 @@ export default function ExportPanel() {
                   ) : (
                     <Sparkles className="h-4 w-4" />
                   )}
-                  {hyperframesExporting ? '正在导出...' : '导出 Hyperframes 项目'}
+                  {hyperframesExporting ? t('export.hyperframesExporting') : t('export.hyperframesExportButton')}
                 </Button>
               ) : (
                 <Button
