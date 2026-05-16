@@ -141,12 +141,8 @@ pub fn build_chunk_user_prompt(
          请只为这个时间段生成视觉画面。输出完整 HTML 文件，但只包含这个时间段的 clip 元素。\n\
          composition 的 data-start 应为 \"0\"，data-duration 应为 \"{}\"。\n\
          GSAP timeline 中所有动画的时间偏移使用绝对时间（从 {} 秒开始）。\n\n\
-         ⚠️ 视觉密度要求：\n\
-         - 这个段落时长 {:.0} 秒，你有充足的空间来创作丰富的画面\n\
-         - 每 10-15 秒应该有一次明显的视觉变化（新元素入场、颜色渐变、形态变化）\n\
-         - 至少使用 15-30 个视觉元素（粒子、线条、几何体、光效等）\n\
-         - 背景不能只是纯色渐变，要有动态纹理（网格线、噪点、光斑漂移）\n\
-         - 文字/关键词至少出现 2-3 次，每次展示不同的金句\n\n\
+         这个段落时长 {:.0} 秒。尽情发挥——创造一个让人过目不忘的视觉段落。\n\
+         不要重复上一段的视觉语言，每段都应该是一次新的视觉冒险。\n\n\
          {json}",
         chunk_index + 1,
         total_chunks,
@@ -234,66 +230,64 @@ struct TimeRange {
 }
 
 const ROLE_DEFINITION: &str = "\
-你是一个顶级视频视觉创作专家和动效设计师，使用 Hyperframes 框架为有声书创作沉浸式视觉画面。\
-你擅长将抽象概念（哲学、科学、情感）转化为具象的视觉隐喻，\
-作品以氛围感强、层次丰富、情绪递进著称，风格介于科学纪录片与艺术装置之间。";
+你是一位顶尖的动态视觉艺术家，用 HTML/CSS/SVG/GSAP 作为创作媒介。\
+你正在为一段有声书创作配套的全屏视觉体验。\
+观众会在黑暗中全屏观看这个画面，同时聆听音频。\
+你的目标：让观众觉得这不是「自动生成的配图」，而是一件精心制作的视觉作品。";
 
 const CREATIVE_FREEDOM: &str = "\
-你的任务：根据有声书文案内容，创作与叙事情绪和概念深度匹配的视觉画面。\n\
+[用户观感标准 — 这是你唯一需要优化的目标]\n\
 \n\
-[核心原则 — 概念可视化]\n\
-- 有声书通常是深度叙事（哲学、科学、情感），画面要服务于「理解」和「感受」\n\
-- 将抽象概念转化为视觉隐喻：量子纠缠→光线交织网络，概率云→弥散粒子雾，时间→琥珀/胶片\n\
-- 每个片段使用 3-5 个视觉层次（氛围背景层 + 隐喻主体层 + 粒子/纹理层 + 可选文字层）\n\
-- 使用多个 track（data-track-index）叠加不同层次的视觉元素\n\
-- 情绪递进：随叙事推进，画面的色调、密度、运动节奏应逐步变化\n\
-- 留白是设计语言的一部分——深沉的叙事需要呼吸空间，但留白区域要有微妙纹理或光效\n\
+想象观众刷到这个视频时的反应。以下是从「差」到「好」的光谱：\n\
+❌ 「这就是个字幕视频加了点粒子」— 纯文字 + 几个小光点漂浮\n\
+❌ 「AI 生成的吧，千篇一律」— 深蓝背景 + 发光圆环 + 渐显文字（太常见了）\n\
+⚠️ 「还行，有点氛围感」— 有层次但缺乏惊喜\n\
+✅ 「哇，这个画面好有感觉」— 视觉与内容产生了情感共鸣，有独特的美学\n\
+✅✅ 「这是怎么做到的？」— 观众想截图分享，画面本身就是内容\n\
 \n\
-[视觉密度要求 — 极其重要]\n\
-- 每 10-15 秒必须有一次明显的视觉变化（新元素入场/退场、颜色渐变、形态变化）\n\
-- 背景层：不能只是纯色或简单渐变！必须有动态元素（缓慢漂移的粒子群、脉动的光晕、扫描线）\n\
-- 粒子/装饰层：每个场景至少 15-30 个小元素（光点、线段、几何碎片），用 stagger 动画错开\n\
-- 主体层：核心隐喻图形要有足够的尺寸和存在感（占画面 30-50%），不要只是一个小点\n\
-- 文字层：关键金句要大（40-72px），有设计感（发光、渐显、字间距动画）\n\
-- 动画要持续：不要只在入场时有动画，元素在场期间也要有微妙的持续运动（呼吸、漂移、旋转）\n\
+[如何达到 ✅✅ 级别]\n\
 \n\
-[视觉隐喻设计思路]\n\
-- 讲「渺小/宏大」→ 微小光点在巨大深空中缓慢漂移，径向光晕暗示无限\n\
-- 讲「连接/关系/纠缠」→ 光线网络、节点脉冲、线条交汇处发光\n\
-- 讲「不确定性/概率」→ 弥散粒子云、半透明叠影、模糊与清晰的交替\n\
-- 讲「时间/永恒」→ 琥珀色调、胶片帧叠加、缓慢旋转的几何体\n\
-- 讲「意识/觉醒」→ 从暗到亮的渐变、瞳孔/眼睛意象、光束聚焦\n\
-- 讲「循环/自指」→ 衔尾蛇、莫比乌斯环、递归图形\n\
-- 讲「诞生/起源」→ 中心爆发的光、从一点扩散的涟漪、粒子凝聚\n\
-- 讲「寂静/虚无」→ 极简深色背景、单一微弱光源、缓慢消散的元素\n\
+1. 视觉要有「主角」\n\
+   - 每个场景需要一个占画面 30%+ 的核心视觉元素（不是一堆小点）\n\
+   - 这个主角要有动态：生长、变形、呼吸、旋转、流动\n\
+   - 它应该与文案内容产生意象关联（不需要字面对应）\n\
 \n\
-[技术手段 — 充分利用]\n\
-- CSS: radial-gradient, conic-gradient, backdrop-filter, mix-blend-mode, clip-path\n\
-- SVG: 路径动画、滤镜（feGaussianBlur, feTurbulence）、图案填充、线条网络\n\
-- GSAP: stagger 动画、运动路径、缓慢优雅的缓动（power1/power2）、序列编排\n\
-- 伪元素 ::before/::after 增加氛围层\n\
-- box-shadow 多层柔光、text-shadow 微妙发光\n\
-- CSS Grid 创建对称/几何布局\n\
-- 用循环生成大量相似元素（如 30 个粒子 div，通过 style 属性设置不同位置）\n\
+2. 画面要有「呼吸」\n\
+   - 不是静态海报，每一秒都应该有微妙的运动\n\
+   - 背景层：缓慢的色彩漂移、噪点纹理流动、光斑脉动\n\
+   - 前景层：元素的入场/退场要有戏剧性（不是简单 fade）\n\
 \n\
-[色彩与氛围指导]\n\
-- 深色系为主基调（深蓝、深紫、墨黑），用高光点缀（星光白、量子蓝、琥珀金）\n\
-- 避免过度饱和的霓虹色，优先使用有深度感的渐变\n\
-- 关键概念出现时可以用对比色强调（如暗背景中突然出现的暖光）\n\
-- 整体节奏偏沉稳，动画速度中等偏慢，营造思考的空间感\n\
+3. 色彩要有「态度」\n\
+   - 不要默认深蓝+白色。根据内容情绪选择大胆的色彩方案\n\
+   - 暖色系（琥珀、珊瑚、金）、冷色系（青、靛、薄荷）、对比系（暗底+亮色冲击）都可以\n\
+   - 色彩应该随叙事推进而变化\n\
 \n\
-[禁止]\n\
-- 禁止画面与文案内容无关的纯装饰（不要为了花哨而花哨）\n\
-- 禁止过于具象的插画风格（不要画卡通人物、写实场景）\n\
-- 禁止快速闪烁或过度运动（有声书节奏偏慢，画面要配合）\n\
-- 禁止偷懒：不要只放 5-8 个粒子就完事，不要只用一个小几何体代表整个场景\n\
-- 文字可以出现也可以不出现，如果出现应是关键词/金句，要有设计感\n\
+4. 技术要「到位」\n\
+   - 大量元素（20-50个）通过 stagger 产生群体运动感\n\
+   - SVG 滤镜（feTurbulence, feDisplacementMap）创造有机质感\n\
+   - mix-blend-mode 让层次之间产生化学反应\n\
+   - clip-path 做非矩形的揭示和遮罩\n\
+   - perspective + transform3d 创造空间纵深\n\
+   - 多层 box-shadow 做光晕和景深效果\n\
 \n\
-[文字排版规则]\n\
-- 每段文字放在独立的 clip 中，利用 data-start/data-duration 控制显示时段\n\
-- clip 结束后文字自动消失，不需要手动 fade-out 到 opacity:0\n\
-- 同一时间只显示一组文字（一个主标题 + 可选副标题）\n\
-- 主标题位置统一在 top: 38-42%，副标题在 top: 55-60%";
+5. 场景切换要有「节奏」\n\
+   - 每个叙事段落应该有不同的视觉主题，不要全程一个风格\n\
+   - 利用 clip 的自动显示/隐藏实现干净的场景切换\n\
+   - 场景之间的视觉语言可以有延续性（色彩渐变过渡）也可以有对比（突然切换）\n\
+\n\
+[你的工具箱]\n\
+CSS: gradient 多层叠加 | backdrop-filter | mix-blend-mode | clip-path | \n\
+     box-shadow 多层 | border-radius 有机形状 | transform 3D | filter: hue-rotate/blur\n\
+SVG: path 描边动画 | filter(feTurbulence/feDisplacementMap/feGaussianBlur) | \n\
+     pattern | clipPath/mask | polyline/polygon\n\
+GSAP: stagger | motionPath | ease(elastic/back/expo/power4) | \n\
+      yoyo+repeat(呼吸效果) | keyframes 数组 | fromTo 精确控制\n\
+\n\
+[绝对自由]\n\
+- 你可以用任何视觉风格：有机/几何/极简/繁复/抽象/半具象\n\
+- 你可以用任何色彩：暗色/亮色/单色/撞色/渐变\n\
+- 文字可以出现也可以不出现，如果出现要融入画面设计\n\
+- 唯一的约束是下面的技术格式规范";
 
 const HYPERFRAMES_SPEC: &str = "\
 [Hyperframes 渲染引擎工作原理 — 你必须理解这个]
@@ -363,94 +357,58 @@ const HYPERFRAMES_SPEC: &str = "\
    - 所有视觉元素必须在 composition 根元素内部";
 
 const MINIMAL_EXAMPLE: &str = "\
-[示例 — 注意：多个 clip 分时段出现，利用 clip 自动隐藏特性]
+[格式骨架 — 仅展示 Hyperframes 结构，不要模仿视觉风格]
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset=\"UTF-8\">
   <style>
-    [data-composition-id] { background: radial-gradient(ellipse at 50% 50%, #0d0d2b 0%, #050510 70%, #000 100%); overflow: hidden; position: relative; font-family: 'Georgia', serif; }
+    [data-composition-id] { /* 你的全局样式 */ overflow: hidden; position: relative; }
     .layer { position: absolute; width: 100%; height: 100%; }
-    .node { position: absolute; width: 5px; height: 5px; background: rgba(180,200,255,0.8); border-radius: 50%; box-shadow: 0 0 12px rgba(140,160,255,0.6); }
-    .dust { position: absolute; width: 2px; height: 2px; background: rgba(255,255,255,0.4); border-radius: 50%; }
-    .conn { position: absolute; height: 1px; background: linear-gradient(90deg, transparent, rgba(140,160,255,0.3), transparent); transform-origin: left center; }
-    .ring { position: absolute; top: 50%; left: 50%; border: 1px solid rgba(100,150,220,0.2); border-radius: 50%; transform: translate(-50%,-50%); }
-    .cloud { position: absolute; top: 50%; left: 50%; width: 500px; height: 500px; margin: -250px; border-radius: 50%; background: radial-gradient(circle, rgba(100,140,255,0.06) 0%, transparent 70%); filter: blur(30px); }
-    .grid-line { position: absolute; background: rgba(80,120,180,0.06); }
-    .grid-h { width: 100%; height: 1px; }
-    .keyword { position: absolute; top: 40%; left: 50%; transform: translateX(-50%); color: rgba(220,230,255,0.9); font-size: 48px; font-weight: 300; letter-spacing: 6px; text-shadow: 0 0 30px rgba(100,140,255,0.4); }
-    .sub-text { position: absolute; top: 58%; left: 50%; transform: translateX(-50%); color: rgba(160,180,210,0.7); font-size: 22px; letter-spacing: 3px; }
-    .amber-geo { position: absolute; top: 50%; left: 50%; width: 300px; height: 300px; transform: translate(-50%,-50%); border: 1px solid rgba(200,170,80,0.3); clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%); }
+    /* 在这里定义你的视觉元素样式 */
   </style>
 </head>
 <body>
-  <div data-composition-id=\"demo\" data-width=\"1920\" data-height=\"1080\" data-start=\"0\" data-duration=\"60\">
-    <!-- Track 1: Background (全程可见) -->
-    <div class=\"clip layer\" data-start=\"0\" data-duration=\"60\" data-track-index=\"1\">
-      <div class=\"grid-line grid-h\" style=\"top:25%\"></div>
-      <div class=\"grid-line grid-h\" style=\"top:50%\"></div>
-      <div class=\"grid-line grid-h\" style=\"top:75%\"></div>
-      <div class=\"cloud\"></div>
-      <div class=\"dust\" style=\"top:12%;left:8%\"></div><div class=\"dust\" style=\"top:18%;left:22%\"></div>
-      <div class=\"dust\" style=\"top:25%;left:45%\"></div><div class=\"dust\" style=\"top:30%;left:72%\"></div>
-      <div class=\"dust\" style=\"top:38%;left:15%\"></div><div class=\"dust\" style=\"top:55%;left:35%\"></div>
-      <div class=\"dust\" style=\"top:60%;left:62%\"></div><div class=\"dust\" style=\"top:68%;left:20%\"></div>
-      <div class=\"dust\" style=\"top:72%;left:78%\"></div><div class=\"dust\" style=\"top:80%;left:50%\"></div>
-      <div class=\"dust\" style=\"top:85%;left:30%\"></div><div class=\"dust\" style=\"top:42%;left:88%\"></div>
-      <div class=\"dust\" style=\"top:15%;left:55%\"></div><div class=\"dust\" style=\"top:90%;left:85%\"></div>
-      <div class=\"dust\" style=\"top:45%;left:5%\"></div><div class=\"dust\" style=\"top:35%;left:92%\"></div>
+  <div data-composition-id=\"ai-generated\" data-width=\"1920\" data-height=\"1080\" data-start=\"0\" data-duration=\"总时长\">
+    <!-- Track 1: 贯穿全程的背景层 -->
+    <div class=\"clip layer\" data-start=\"0\" data-duration=\"总时长\" data-track-index=\"1\">
+      <!-- 背景视觉元素 -->
     </div>
-    <!-- Track 2: Scene A - 网络节点 (0-30秒，30秒后自动消失！) -->
-    <div class=\"clip layer\" data-start=\"0\" data-duration=\"30\" data-track-index=\"2\">
-      <div class=\"node\" style=\"top:40%;left:30%\"></div>
-      <div class=\"node\" style=\"top:50%;left:55%\"></div>
-      <div class=\"node\" style=\"top:35%;left:65%\"></div>
-      <div class=\"node\" style=\"top:60%;left:40%\"></div>
-      <div class=\"conn\" style=\"top:45%;left:30%;width:250px;transform:rotate(8deg)\"></div>
-      <div class=\"conn\" style=\"top:48%;left:55%;width:180px;transform:rotate(-15deg)\"></div>
-      <div class=\"ring\" style=\"width:200px;height:200px\"></div>
-      <div class=\"ring\" style=\"width:350px;height:350px\"></div>
+    <!-- Track 2: 第一个场景 (0-N秒，N秒后自动消失) -->
+    <div class=\"clip layer\" data-start=\"0\" data-duration=\"N\" data-track-index=\"2\">
+      <!-- 场景A的视觉元素 -->
     </div>
-    <!-- Track 2: Scene B - 琥珀几何 (30-60秒，30秒时自动出现！) -->
-    <div class=\"clip layer\" data-start=\"30\" data-duration=\"30\" data-track-index=\"2\">
-      <div class=\"amber-geo\"></div>
-      <div class=\"ring\" style=\"width:400px;height:400px;border-color:rgba(200,170,80,0.2)\"></div>
-      <div class=\"ring\" style=\"width:600px;height:600px;border-color:rgba(200,170,80,0.1)\"></div>
+    <!-- Track 2: 第二个场景 (N-M秒，N秒时自动出现) -->
+    <div class=\"clip layer\" data-start=\"N\" data-duration=\"M-N\" data-track-index=\"2\">
+      <!-- 场景B的视觉元素 -->
     </div>
-    <!-- Track 3: Text A (5-20秒，20秒后自动消失，无需 fade-out) -->
-    <div class=\"clip\" data-start=\"5\" data-duration=\"15\" data-track-index=\"3\">
-      <p class=\"keyword\">存在 即是 关系</p>
-    </div>
-    <!-- Track 3: Text B (35-50秒，35秒时自动出现) -->
-    <div class=\"clip\" data-start=\"35\" data-duration=\"15\" data-track-index=\"3\">
-      <p class=\"keyword\" style=\"color:rgba(220,200,140,0.9)\">时间是意识的幻觉</p>
-      <p class=\"sub-text\">宇宙是一块静止的四维琥珀</p>
+    <!-- Track 3: 文字层 (精确时间窗口，结束后自动消失) -->
+    <div class=\"clip\" data-start=\"5\" data-duration=\"10\" data-track-index=\"3\">
+      <p class=\"your-text-class\">关键文字</p>
     </div>
     <script src=\"https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js\"></script>
     <script>
       window.__timelines = window.__timelines || {};
       const tl = gsap.timeline({ paused: true });
-      // Background: dust drifts throughout
-      tl.to('.dust', { y: -60, x: 15, duration: 55, stagger: 0.2, ease: 'none' }, 2);
-      tl.fromTo('.cloud', {scale:0.8, opacity:0.3}, {scale:1.2, opacity:0.6, duration:25, ease:'power1.inOut', yoyo:true, repeat:1}, 0);
-      // Scene A (0-30s): nodes and connections animate in
-      tl.fromTo('.node', {opacity:0, scale:0}, {opacity:1, scale:1, duration:1.5, stagger:0.4, ease:'back.out(1.7)'}, 2);
-      tl.fromTo('.conn', {scaleX:0}, {scaleX:1, opacity:0.6, duration:2, stagger:0.5, ease:'power2.out'}, 4);
-      tl.to('.ring', {scale:1.1, opacity:0.4, duration:8, yoyo:true, repeat:1, ease:'power1.inOut'}, 5);
-      tl.to('.node', {boxShadow:'0 0 20px rgba(180,200,255,1)', duration:2, stagger:0.3, yoyo:true, repeat:3}, 8);
-      // Text A (5-20s): fade in within its clip window
-      tl.fromTo('.keyword', {opacity:0, letterSpacing:'2px'}, {opacity:1, letterSpacing:'8px', duration:2.5, ease:'power2.out'}, 6);
-      // Scene B (30-60s): amber geometry appears (clip auto-shows at t=30)
-      tl.fromTo('.amber-geo', {opacity:0, scale:0.7, rotation:-5}, {opacity:0.8, scale:1, rotation:5, duration:5, ease:'power1.inOut'}, 31);
-      tl.to('.amber-geo', {rotation:-3, duration:20, ease:'power1.inOut', yoyo:true, repeat:1}, 36);
-      // Text B (35-50s): auto-visible at t=35
-      tl.fromTo('.keyword', {opacity:0}, {opacity:1, duration:2, ease:'power1.out'}, 36);
-      tl.fromTo('.sub-text', {opacity:0, y:10}, {opacity:0.8, y:0, duration:2.5, ease:'power1.out'}, 39);
-      window.__timelines[\"demo\"] = tl;
+      // 所有动画使用绝对时间定位（最后一个参数）
+      tl.fromTo('.element', {opacity:0}, {opacity:1, duration:2, ease:'power2.out'}, 0);
+      tl.to('.element', {y: -30, duration:10, ease:'none'}, 2);
+      // stagger 示例：大量元素错开动画
+      tl.fromTo('.particle', {scale:0}, {scale:1, duration:1, stagger:0.1, ease:'back.out(1.7)'}, 3);
+      // yoyo 示例：呼吸/脉动效果（注意 repeat 必须是有限数字）
+      tl.to('.glow', {opacity:0.8, scale:1.1, duration:4, yoyo:true, repeat:5, ease:'power1.inOut'}, 0);
+      window.__timelines[\"ai-generated\"] = tl;
     </script>
   </div>
 </body>
-</html>";
+</html>
+
+关键点：
+- clip 的 data-start/data-duration 控制元素的生命周期，不需要用 opacity 手动隐藏
+- GSAP tl.from/tl.to/tl.fromTo 的最后一个数字参数是绝对时间（秒），必须落在对应 clip 的时间窗口内
+- 用多个 track-index 叠加层次（1=最底层背景，数字越大越靠前）
+- 用 stagger 让大量相似元素产生群体动画效果
+- yoyo+repeat 做持续的呼吸效果，但 repeat 必须是有限数字（不能是 -1）";
 
 const OUTPUT_REQUIREMENTS: &str = "\
 [输出要求]
@@ -467,16 +425,16 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_role() {
         let prompt = build_system_prompt();
-        assert!(prompt.contains("视觉创作专家"));
+        assert!(prompt.contains("视觉艺术家"));
         assert!(prompt.contains("Hyperframes"));
     }
 
     #[test]
     fn test_build_system_prompt_contains_creative_freedom() {
         let prompt = build_system_prompt();
-        assert!(prompt.contains("概念可视化"));
-        assert!(prompt.contains("多个 track"));
-        assert!(prompt.contains("禁止"));
+        assert!(prompt.contains("用户观感标准"));
+        assert!(prompt.contains("工具箱"));
+        assert!(prompt.contains("绝对自由"));
     }
 
     #[test]
@@ -511,8 +469,8 @@ mod tests {
     fn test_build_system_prompt_contains_minimal_example() {
         let prompt = build_system_prompt();
         assert!(prompt.contains("<!DOCTYPE html>"));
-        assert!(prompt.contains("data-composition-id=\"demo\""));
-        assert!(prompt.contains("window.__timelines[\"demo\"] = tl"));
+        assert!(prompt.contains("data-composition-id=\"ai-generated\""));
+        assert!(prompt.contains("window.__timelines[\"ai-generated\"] = tl"));
         assert!(prompt.contains("stagger"));
     }
 
@@ -534,9 +492,9 @@ mod tests {
             "Spec section too long: {} chars",
             spec_chars
         );
-        // Full prompt can be longer now due to richer creative guidance
+        // Full prompt is larger now with two diverse examples and richer creative guidance
         assert!(
-            prompt.len() < 16000,
+            prompt.len() < 24000,
             "Full prompt too long: {} chars",
             prompt.len()
         );

@@ -53,7 +53,8 @@ pub async fn call_llm(
             { "role": "user", "content": user_prompt }
         ],
         "stream": true,
-        "max_tokens": 16384
+        "max_tokens": 65536,
+        "temperature": 1.3
     });
 
     let client = reqwest::Client::new();
