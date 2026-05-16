@@ -82,21 +82,28 @@ fn font_size_for_text(text: &str, base_size: u32) -> u32 {
 fn tween_from(selector: &str, props: &str, time: f64) -> String {
     format!(
         "      tl.from(\"{}\", {{ {} }}, {});\n",
-        selector, props, format_time(time)
+        selector,
+        props,
+        format_time(time)
     )
 }
 
 fn tween_to(selector: &str, props: &str, time: f64) -> String {
     format!(
         "      tl.to(\"{}\", {{ {} }}, {});\n",
-        selector, props, format_time(time)
+        selector,
+        props,
+        format_time(time)
     )
 }
 
 fn tween_fromto(selector: &str, from: &str, to: &str, time: f64) -> String {
     format!(
         "      tl.fromTo(\"{}\", {{ {} }}, {{ {} }}, {});\n",
-        selector, from, to, format_time(time)
+        selector,
+        from,
+        to,
+        format_time(time)
     )
 }
 
@@ -113,11 +120,15 @@ fn generate_dust_particles(count: usize) -> String {
 
     positions
         .iter()
-        .map(|(y, x)| format!("      <div class=\"dust\" style=\"top:{}%;left:{}%\"></div>", y, x))
+        .map(|(y, x)| {
+            format!(
+                "      <div class=\"dust\" style=\"top:{}%;left:{}%\"></div>",
+                y, x
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Template 1: minimal-subtitle (cinematic)
@@ -232,7 +243,6 @@ const MINIMAL_SUBTITLE_STYLE: &str = "\
       text-shadow: 0 0 20px rgba(100,140,220,0.3), 0 2px 10px rgba(0,0,0,0.8);\n\
     }\n";
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Template 2: dialogue-cards
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,12 +260,12 @@ fn generate_dialogue_cards(entries: &[TimelineEntry]) -> String {
     let mut tweens = String::new();
 
     let colors = [
-        ("#6366f1", "rgba(99,102,241,0.08)"),   // indigo
-        ("#ec4899", "rgba(236,72,153,0.08)"),   // pink
-        ("#14b8a6", "rgba(20,184,166,0.08)"),   // teal
-        ("#f59e0b", "rgba(245,158,11,0.08)"),   // amber
-        ("#8b5cf6", "rgba(139,92,246,0.08)"),   // violet
-        ("#06b6d4", "rgba(6,182,212,0.08)"),    // cyan
+        ("#6366f1", "rgba(99,102,241,0.08)"), // indigo
+        ("#ec4899", "rgba(236,72,153,0.08)"), // pink
+        ("#14b8a6", "rgba(20,184,166,0.08)"), // teal
+        ("#f59e0b", "rgba(245,158,11,0.08)"), // amber
+        ("#8b5cf6", "rgba(139,92,246,0.08)"), // violet
+        ("#06b6d4", "rgba(6,182,212,0.08)"),  // cyan
     ];
 
     // Track 1: Ambient background
@@ -285,7 +295,11 @@ fn generate_dialogue_cards(entries: &[TimelineEntry]) -> String {
         let (accent, bg_tint) = colors[color_idx];
         let font_size = font_size_for_text(&entry.text, 44);
 
-        let align_class = if color_idx % 2 == 0 { "align-left" } else { "align-right" };
+        let align_class = if color_idx % 2 == 0 {
+            "align-left"
+        } else {
+            "align-right"
+        };
 
         clips.push_str(&format!(
             "    <div id=\"{id}\" class=\"clip card-clip {align}\" \
@@ -311,7 +325,10 @@ fn generate_dialogue_cards(entries: &[TimelineEntry]) -> String {
         let selector = format!("#{} .card-bubble", clip_id);
         tweens.push_str(&tween_from(
             &selector,
-            &format!("x: {}, opacity: 0, scale: 0.96, duration: 0.5, ease: \"power3.out\"", x_from),
+            &format!(
+                "x: {}, opacity: 0, scale: 0.96, duration: 0.5, ease: \"power3.out\"",
+                x_from
+            ),
             entry.start_time + 0.1,
         ));
     }
@@ -385,7 +402,6 @@ const DIALOGUE_CARDS_STYLE: &str = "\
       line-height: 1.7;\n\
       margin: 0;\n\
     }\n";
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Template 3: chapter-sections
@@ -595,7 +611,6 @@ const CHAPTER_SECTIONS_STYLE: &str = "\
       margin: 0;\n\
       text-shadow: 0 0 15px rgba(80,120,200,0.2), 0 2px 8px rgba(0,0,0,0.6);\n\
     }\n";
-
 
 #[cfg(test)]
 mod tests {

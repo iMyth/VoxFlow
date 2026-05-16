@@ -263,7 +263,10 @@ async fn generate_chunked(
         ));
 
         let user_prompt = build_chunk_user_prompt(
-            &chunk_entries.iter().map(|e| (*e).clone()).collect::<Vec<_>>(),
+            &chunk_entries
+                .iter()
+                .map(|e| (*e).clone())
+                .collect::<Vec<_>>(),
             chunk_idx,
             total_chunks,
             section_title,
@@ -279,10 +282,7 @@ async fn generate_chunked(
             }
             Err(errors) => {
                 // One retry for failed chunks
-                report(&format!(
-                    "第 {} 段校验失败，正在重试...",
-                    chunk_idx + 1
-                ));
+                report(&format!("第 {} 段校验失败，正在重试...", chunk_idx + 1));
 
                 let error_list = errors.join("\n- ");
                 let retry_prompt = format!(
@@ -290,8 +290,7 @@ async fn generate_chunked(
                     user_prompt, error_list
                 );
 
-                let retry_response =
-                    call_llm(&system_prompt, &retry_prompt, config, None).await?;
+                let retry_response = call_llm(&system_prompt, &retry_prompt, config, None).await?;
                 let retry_html = extract_html(&retry_response)?;
 
                 // Accept even if retry still has issues (best effort)
@@ -324,8 +323,10 @@ pub fn merge_compositions(chunks: &[String], total_duration: f64) -> Result<Stri
 
     // If only one chunk, return it directly (just fix the composition-id)
     if chunks.len() == 1 {
-        let html = chunks[0]
-            .replace("data-composition-id=\"demo\"", "data-composition-id=\"ai-generated\"");
+        let html = chunks[0].replace(
+            "data-composition-id=\"demo\"",
+            "data-composition-id=\"ai-generated\"",
+        );
         return Ok(html);
     }
 
@@ -481,7 +482,7 @@ fn clean_timeline_code(code: &str) -> String {
                 && !trimmed.starts_with("var tl")
                 && !trimmed.contains("window.__timelines[")
         })
-        .map(|line| format!      ("      {}", line.trim()))
+        .map(|line| format!("      {}", line.trim()))
         .collect::<Vec<_>>()
         .join("\n")
 }
