@@ -88,6 +88,7 @@ fn tween_from(selector: &str, props: &str, time: f64) -> String {
     )
 }
 
+#[allow(dead_code)]
 fn tween_to(selector: &str, props: &str, time: f64) -> String {
     format!(
         "      tl.to(\"{}\", {{ {} }}, {});\n",
@@ -295,7 +296,7 @@ fn generate_dialogue_cards(entries: &[TimelineEntry]) -> String {
         let (accent, bg_tint) = colors[color_idx];
         let font_size = font_size_for_text(&entry.text, 44);
 
-        let align_class = if color_idx % 2 == 0 {
+        let align_class = if color_idx.is_multiple_of(2) {
             "align-left"
         } else {
             "align-right"
@@ -321,7 +322,7 @@ fn generate_dialogue_cards(entries: &[TimelineEntry]) -> String {
             text = text,
         ));
 
-        let x_from = if color_idx % 2 == 0 { -50 } else { 50 };
+        let x_from = if color_idx.is_multiple_of(2) { -50 } else { 50 };
         let selector = format!("#{} .card-bubble", clip_id);
         tweens.push_str(&tween_from(
             &selector,

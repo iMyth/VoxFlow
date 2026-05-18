@@ -295,8 +295,8 @@ const HYPERFRAMES_SPEC: &str = "\
 渲染器的工作方式（非常重要）：
 1. 渲染器逐帧截图，每帧对应一个时间点 t
 2. 对于每个 clip 元素，渲染器检查 t 是否在 [data-start, data-start + data-duration] 范围内
-   - 在范围内 → clip 可见（display: block）
-   - 不在范围内 → clip 被隐藏（display: none）
+   - 在范围内 → clip 可见（mounted）
+   - 不在范围内 → clip 被隐藏（unmounted）
 3. 渲染器调用 tl.seek(t) 将 GSAP timeline 跳转到时间 t
 4. 截图当前画面作为该帧
 
@@ -307,8 +307,8 @@ const HYPERFRAMES_SPEC: &str = "\
 - GSAP 动画的时间偏移必须是绝对时间（与 data-start 对齐），因为 tl.seek() 用的是绝对时间
 
 正确用法示例：
-  第一段（0-30秒）的星空 → <div class=\"clip\" data-start=\"0\" data-duration=\"30\">
-  第二段（30-60秒）的网络 → <div class=\"clip\" data-start=\"30\" data-duration=\"30\">
+  第一段（0-30秒）的星空 → <div id=\"scene-1\" class=\"clip\" data-start=\"0\" data-duration=\"30\">
+  第二段（30-60秒）的网络 → <div id=\"scene-2\" class=\"clip\" data-start=\"30\" data-duration=\"30\">
   渲染器到 t=35 时，第一段自动消失，第二段自动出现，无需任何 opacity 动画
 
 错误用法：
@@ -318,18 +318,20 @@ const HYPERFRAMES_SPEC: &str = "\
 [技术格式]
 
 1. 根元素属性（必须）：
-   data-composition-id=\"<id>\"
+   id=\"root\"
+   data-composition-id=\"ai-generated\"
    data-width=\"1920\"
    data-height=\"1080\"
    data-start=\"0\"
-   data-duration=\"<总时长秒数>\"
 
-2. Clip 元素：
-   <div class=\"clip\" data-start=\"<秒>\" data-duration=\"<秒>\" data-track-index=\"<层级>\">
+2. Clip 元素（每个可见元素必须有）：
+   <div id=\"<唯一ID>\" class=\"clip\" data-start=\"<秒>\" data-duration=\"<秒>\" data-track-index=\"<层级>\">
+   - id: 每个 clip 必须有唯一 id（用于 GSAP 定位，如 id=\"bg-1\"、id=\"text-intro\"）
+   - class=\"clip\": 必须包含，框架用它管理可见性
    - data-start: 该 clip 开始显示的绝对时间（秒）
    - data-duration: 该 clip 显示持续时间（秒）
-   - data-track-index: 层级索引（从 1 开始，数字越大越靠前/上层）
-   - 同一 track-index 的多个 clip 可以在不同时间段交替出现
+   - data-track-index: 层级索引（从 0 开始，数字越大越靠前/上层）
+   - 同一 track-index 的多个 clip 不能在时间上重叠
 
 3. Clip 使用策略：
    - 贯穿全程的背景层：一个 clip，data-start=0，data-duration=总时长
@@ -337,24 +339,41 @@ const HYPERFRAMES_SPEC: &str = "\
    - 文字/标题：每条文字一个独立 clip，显示 8-15 秒后自动消失
    - 利用 clip 的自动隐藏特性，不需要手动 fade-out 到 opacity:0
 
-4. GSAP 动画：
-   - 引入: <script src=\"https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js\"></script>
+4. GSAP 动画（关键规则）：
+   - 引入: <script src=\"https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js\"></script>
    - 创建: const tl = gsap.timeline({ paused: true });
-   - 注册: window.__timelines = window.__timelines || {}; window.__timelines[\"<composition-id>\"] = tl;
-   - 时间定位：tl.from(\".el\", {...}, 绝对时间) — 这里的时间必须与 clip 的 data-start 对齐
+   - 注册: window.__timelines = window.__timelines || {}; window.__timelines[\"ai-generated\"] = tl;
+   - 时间定位：tl.to(\"#element-id\", {...}, 绝对时间) — 用 id 选择器定位元素
    - 动画应在 clip 的时间窗口内完成（clip 隐藏后动画状态无意义）
+   - 只使用 tl.to()、tl.from()、tl.fromTo()、tl.set() 四种方法
+   - position 参数（第三个参数）必须是绝对时间数字
 
-5. 禁止使用：
+5. GSAP 选择器规则（非常重要）：
+   - 优先使用 id 选择器：tl.to(\"#my-element\", ...)
+   - 如果用 class 选择器，确保对应的 HTML 元素确实存在
+   - 禁止使用 document.querySelectorAll() 或 gsap.utils.toArray()
+   - 禁止使用 forEach 循环动态创建动画
+   - 禁止在 GSAP 回调中使用 this.index 或 this.target
+   - 如果需要 stagger 效果，直接用 stagger 属性：tl.to(\".particle\", {stagger: 0.1, ...}, 0)
+
+6. 禁止使用：
    - Math.random()（破坏确定性渲染）
    - Date.now()（破坏确定性渲染）
    - repeat: -1（无限循环会阻塞渲染）
    - async/await 操作 timeline
    - requestAnimationFrame 自行驱动动画
+   - document.querySelectorAll() 或 document.getElementById()
+   - gsap.utils.toArray() 配合 forEach
+   - 函数作为 GSAP 属性值（如 x: function() {...}）
+   - animation-iteration-count: infinite
 
-6. CSS/SVG 动画规则：
+7. CSS/SVG 动画规则：
    - CSS @keyframes 动画可以使用，但时长必须有限
-   - animation-iteration-count 不能为 infinite
-   - 所有视觉元素必须在 composition 根元素内部";
+   - 所有视觉元素必须在 composition 根元素内部
+   - SVG filter 的 id 必须唯一（不同场景不要复用同一个 filter id）
+   - 动画 SVG 元素时，使用 GSAP 的 x/y/rotation/scale 属性，不要用 transform 字符串
+   - 不要使用 @import url() 引入外部字体（渲染器可能无网络访问）
+   - 用 CSS font-family 指定字体时，始终包含 fallback（如 serif、sans-serif）";
 
 const MINIMAL_EXAMPLE: &str = "\
 [格式骨架 — 仅展示 Hyperframes 结构，不要模仿视觉风格]
@@ -363,40 +382,45 @@ const MINIMAL_EXAMPLE: &str = "\
 <head>
   <meta charset=\"UTF-8\">
   <style>
-    [data-composition-id] { /* 你的全局样式 */ overflow: hidden; position: relative; }
-    .layer { position: absolute; width: 100%; height: 100%; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    [data-composition-id] { overflow: hidden; position: relative; width: 1920px; height: 1080px; }
+    .clip { position: absolute; width: 100%; height: 100%; top: 0; left: 0; }
     /* 在这里定义你的视觉元素样式 */
   </style>
 </head>
 <body>
-  <div data-composition-id=\"ai-generated\" data-width=\"1920\" data-height=\"1080\" data-start=\"0\" data-duration=\"总时长\">
-    <!-- Track 1: 贯穿全程的背景层 -->
-    <div class=\"clip layer\" data-start=\"0\" data-duration=\"总时长\" data-track-index=\"1\">
+  <div id=\"root\" data-composition-id=\"ai-generated\" data-width=\"1920\" data-height=\"1080\" data-start=\"0\">
+    <!-- Track 0: 贯穿全程的背景层 -->
+    <div id=\"bg-main\" class=\"clip\" data-start=\"0\" data-duration=\"总时长\" data-track-index=\"0\">
       <!-- 背景视觉元素 -->
     </div>
-    <!-- Track 2: 第一个场景 (0-N秒，N秒后自动消失) -->
-    <div class=\"clip layer\" data-start=\"0\" data-duration=\"N\" data-track-index=\"2\">
+    <!-- Track 1: 第一个场景 (0-N秒，N秒后自动消失) -->
+    <div id=\"scene-1\" class=\"clip\" data-start=\"0\" data-duration=\"N\" data-track-index=\"1\">
       <!-- 场景A的视觉元素 -->
     </div>
-    <!-- Track 2: 第二个场景 (N-M秒，N秒时自动出现) -->
-    <div class=\"clip layer\" data-start=\"N\" data-duration=\"M-N\" data-track-index=\"2\">
+    <!-- Track 1: 第二个场景 (N-M秒，N秒时自动出现) -->
+    <div id=\"scene-2\" class=\"clip\" data-start=\"N\" data-duration=\"M-N\" data-track-index=\"1\">
       <!-- 场景B的视觉元素 -->
     </div>
-    <!-- Track 3: 文字层 (精确时间窗口，结束后自动消失) -->
-    <div class=\"clip\" data-start=\"5\" data-duration=\"10\" data-track-index=\"3\">
-      <p class=\"your-text-class\">关键文字</p>
+    <!-- Track 2: 文字层 (精确时间窗口，结束后自动消失) -->
+    <div id=\"text-1\" class=\"clip\" data-start=\"5\" data-duration=\"10\" data-track-index=\"2\">
+      <p class=\"title-text\">关键文字</p>
     </div>
-    <script src=\"https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js\"></script>
+    <script src=\"https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js\"></script>
     <script>
       window.__timelines = window.__timelines || {};
       const tl = gsap.timeline({ paused: true });
-      // 所有动画使用绝对时间定位（最后一个参数）
-      tl.fromTo('.element', {opacity:0}, {opacity:1, duration:2, ease:'power2.out'}, 0);
-      tl.to('.element', {y: -30, duration:10, ease:'none'}, 2);
-      // stagger 示例：大量元素错开动画
-      tl.fromTo('.particle', {scale:0}, {scale:1, duration:1, stagger:0.1, ease:'back.out(1.7)'}, 3);
-      // yoyo 示例：呼吸/脉动效果（注意 repeat 必须是有限数字）
-      tl.to('.glow', {opacity:0.8, scale:1.1, duration:4, yoyo:true, repeat:5, ease:'power1.inOut'}, 0);
+
+      // 用 id 选择器定位元素，position 参数是绝对时间
+      tl.fromTo('#scene-1 .title-text', {opacity:0, y:30}, {opacity:1, y:0, duration:1.5, ease:'power2.out'}, 0);
+      tl.to('#scene-1 .title-text', {opacity:0, y:-20, duration:0.8, ease:'power2.in'}, 4);
+
+      // stagger 示例：大量元素错开动画（不要用 forEach）
+      tl.fromTo('#scene-1 .particle', {scale:0}, {scale:1, duration:1, stagger:0.1, ease:'back.out(1.7)'}, 1);
+
+      // yoyo 示例：呼吸/脉动效果（repeat 必须是有限数字）
+      tl.to('#bg-main .glow', {opacity:0.8, scale:1.1, duration:4, yoyo:true, repeat:3, ease:'power1.inOut'}, 0);
+
       window.__timelines[\"ai-generated\"] = tl;
     </script>
   </div>
@@ -404,11 +428,14 @@ const MINIMAL_EXAMPLE: &str = "\
 </html>
 
 关键点：
-- clip 的 data-start/data-duration 控制元素的生命周期，不需要用 opacity 手动隐藏
-- GSAP tl.from/tl.to/tl.fromTo 的最后一个数字参数是绝对时间（秒），必须落在对应 clip 的时间窗口内
-- 用多个 track-index 叠加层次（1=最底层背景，数字越大越靠前）
-- 用 stagger 让大量相似元素产生群体动画效果
-- yoyo+repeat 做持续的呼吸效果，但 repeat 必须是有限数字（不能是 -1）";
+- 每个 clip 必须有唯一 id（用于 GSAP 选择器定位）
+- GSAP 用 '#id .class' 组合选择器精确定位元素
+- clip 的 data-start/data-duration 控制元素的生命周期
+- tl.to/tl.from/tl.fromTo 的最后一个数字参数是绝对时间（秒）
+- 用 data-track-index 叠加层次（0=最底层背景，数字越大越靠前）
+- 用 stagger 属性让大量相似元素产生群体动画效果
+- yoyo+repeat 做持续的呼吸效果，但 repeat 必须是有限数字
+- 不要用 document.querySelectorAll 或 gsap.utils.toArray";
 
 const OUTPUT_REQUIREMENTS: &str = "\
 [输出要求]
@@ -416,7 +443,18 @@ const OUTPUT_REQUIREMENTS: &str = "\
 - HTML 必须是完整的（从 <!DOCTYPE html> 开始）
 - 所有样式内联在 <style> 标签中
 - GSAP 使用 CDN 引入，不要使用其他外部依赖
-- composition-id 使用 \"ai-generated\"";
+- composition-id 使用 \"ai-generated\"
+- <script> 标签放在 composition 根元素内部（</div> 之前）
+
+[GSAP 代码质量要求 — 严格遵守]
+- opacity 值范围 0-1，不能超过 1
+- repeat 必须是正整数（如 1, 2, 3），不能是小数
+- duration 保留最多 1 位小数（如 2.5，不要 2.5384615）
+- data-track-index 必须是非负整数（0, 1, 2, 3...）
+- 每个 tl.to/tl.from/tl.fromTo 调用必须语法完整（括号匹配）
+- 不要在 GSAP 属性中使用超过 2 位小数的数字
+- position 参数（绝对时间）保留最多 2 位小数
+- 确保所有 JavaScript 语法正确（引号闭合、括号匹配）";
 
 #[cfg(test)]
 mod tests {
@@ -454,7 +492,7 @@ mod tests {
         let prompt = build_system_prompt();
         assert!(prompt.contains("gsap.timeline({ paused: true })"));
         assert!(prompt.contains("window.__timelines"));
-        assert!(prompt.contains("cdn.jsdelivr.net/npm/gsap@3.12.5"));
+        assert!(prompt.contains("cdn.jsdelivr.net/npm/gsap@3"));
     }
 
     #[test]
@@ -488,13 +526,13 @@ mod tests {
         let spec_section = HYPERFRAMES_SPEC;
         let spec_chars = spec_section.len();
         assert!(
-            spec_chars < 4000,
+            spec_chars < 6000,
             "Spec section too long: {} chars",
             spec_chars
         );
-        // Full prompt is larger now with two diverse examples and richer creative guidance
+        // Full prompt includes creative guidance, spec, example, and output requirements
         assert!(
-            prompt.len() < 24000,
+            prompt.len() < 28000,
             "Full prompt too long: {} chars",
             prompt.len()
         );

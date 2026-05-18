@@ -5,13 +5,22 @@
 //! Reuses the same reqwest SSE pattern used throughout VoxFlow (see `commands/llm/`).
 
 use futures_util::StreamExt;
+use log::info;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
+use std::time::Instant;
 
 use super::prompt::{build_chunk_user_prompt, build_system_prompt, build_user_prompt};
 use super::prompt::{split_into_chunks, CHUNK_THRESHOLD};
 use super::timeline::TimelineEntry;
 use super::validation::validate_composition;
+
+use super::merger::{merge_chunks, parse_worker_html, resolve_track_indices};
+use super::orchestrator::run_orchestrator;
+use super::pipeline_types::{
+    PipelineError, PipelineProgress, TokenBudget, WorkerInput, WorkerResult,
+};
+use super::worker::{run_workers_concurrent, DEFAULT_CONCURRENCY_CAP};
 
 /// Configuration for the LLM call.
 pub struct LlmConfig<'a> {
@@ -41,6 +50,13 @@ pub async fn call_llm(
     config: &LlmConfig<'_>,
     on_progress: Option<ProgressCallback>,
 ) -> Result<String, String> {
+    let start_time = Instant::now();
+    let prompt_chars = system_prompt.len() + user_prompt.len();
+    info!(
+        "[Hyperframes LLM] Starting call: model={}, prompt_size={}chars",
+        config.model, prompt_chars
+    );
+
     let url = format!(
         "{}/chat/completions",
         config.api_endpoint.trim_end_matches('/')
@@ -103,6 +119,15 @@ pub async fn call_llm(
         return Err("LLM returned empty response".to_string());
     }
 
+    let elapsed = start_time.elapsed();
+    let output_chars = accumulated_text.len();
+    info!(
+        "[Hyperframes LLM] Call completed: {:.1}s, output_size={}chars, speed={:.0}chars/s",
+        elapsed.as_secs_f64(),
+        output_chars,
+        output_chars as f64 / elapsed.as_secs_f64()
+    );
+
     Ok(accumulated_text)
 }
 
@@ -156,15 +181,16 @@ pub fn extract_html(response: &str) -> Result<String, String> {
 /// High-level orchestration: build prompts, call LLM, extract HTML, validate, and retry.
 ///
 /// This function combines the full AI generation pipeline:
-/// 1. Build system prompt (Hyperframes spec + creative instructions)
-/// 2. Build user prompt (timeline data as JSON)
-/// 3. Call LLM with streaming
-/// 4. Extract HTML from response
-/// 5. Validate against Hyperframes lint rules
-/// 6. If validation fails, retry with error feedback (max 2 retries, so up to 3 total LLM calls)
+/// 1. For short scripts (≤ CHUNK_THRESHOLD): single-shot generation (legacy)
+/// 2. For long scripts (> CHUNK_THRESHOLD): try orchestrated pipeline, fallback to chunked
 ///
-/// For long scripts (> CHUNK_THRESHOLD entries), uses chunked generation:
-/// each section is generated independently, then merged into a single composition.
+/// Routing logic:
+/// - entries.len() == 0 → Error
+/// - entries.len() <= CHUNK_THRESHOLD → `generate_single()` (legacy behavior)
+/// - entries.len() > CHUNK_THRESHOLD → try `generate_orchestrated()` with fallback
+///   - On `ContextLengthExceeded` → fallback to `generate_chunked()`
+///   - On `OrchestratorFailed` → fallback to `generate_chunked()`
+///   - On other errors → return error
 ///
 /// The `on_progress` callback receives stage descriptions (e.g. "generating", "validating", "retrying").
 pub async fn generate_composition(
@@ -178,11 +204,36 @@ pub async fn generate_composition(
         }
     };
 
-    // Decide: chunked or single-shot
-    if entries.len() > CHUNK_THRESHOLD {
-        generate_chunked(entries, config, &report).await
-    } else {
-        generate_single(entries, config, &report).await
+    // Empty check (Requirement 1.7)
+    if entries.is_empty() {
+        return Err("Timeline is empty".to_string());
+    }
+
+    // Below threshold: single-shot (legacy behavior, Requirement 7.4)
+    if entries.len() <= CHUNK_THRESHOLD {
+        return generate_single(entries, config, &report).await;
+    }
+
+    // Attempt orchestrated pipeline (Requirement 7.1, 7.2, 7.3)
+    match generate_orchestrated(entries, config, &report).await {
+        Ok(html) => Ok(html),
+        Err(PipelineError::ContextLengthExceeded(_reason)) => {
+            generate_chunked(entries, config, &report).await
+        }
+        Err(PipelineError::OrchestratorFailed(_reason)) => {
+            generate_chunked(entries, config, &report).await
+        }
+        Err(PipelineError::InvalidPlan(_reason)) => {
+            generate_chunked(entries, config, &report).await
+        }
+        Err(PipelineError::AllWorkersFailed(errors)) => Err(format!(
+            "All workers failed:\n- {}",
+            errors.join("\n- ")
+        )),
+        Err(PipelineError::MergerFailed(e)) => {
+            Err(format!("Merge failed: {:?}", e))
+        }
+        Err(PipelineError::Other(e)) => Err(e),
     }
 }
 
@@ -192,12 +243,24 @@ async fn generate_single(
     config: &LlmConfig<'_>,
     report: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<String, String> {
+    let total_start = Instant::now();
+    info!(
+        "[Hyperframes] generate_single: {} entries",
+        entries.len()
+    );
+
     let system_prompt = build_system_prompt();
     let user_prompt = build_user_prompt(entries);
 
     report("正在生成视觉设计...");
 
+    let llm_start = Instant::now();
     let response = call_llm(&system_prompt, &user_prompt, config, None).await?;
+    info!(
+        "[Hyperframes] Single-shot LLM call: {:.1}s",
+        llm_start.elapsed().as_secs_f64()
+    );
+
     let mut html = extract_html(&response)?;
 
     report("正在校验...");
@@ -207,7 +270,14 @@ async fn generate_single(
 
     for attempt in 0..MAX_RETRIES {
         match validate_composition(&html) {
-            Ok(()) => return Ok(html),
+            Ok(()) => {
+                info!(
+                    "[Hyperframes] generate_single completed: {:.1}s total (retries={})",
+                    total_start.elapsed().as_secs_f64(),
+                    attempt
+                );
+                return Ok(html);
+            }
             Err(errors) => {
                 last_errors = errors.clone();
                 report(&format!(
@@ -228,14 +298,193 @@ async fn generate_single(
         }
     }
 
+    info!(
+        "[Hyperframes] generate_single completed: {:.1}s total (all retries exhausted)",
+        total_start.elapsed().as_secs_f64()
+    );
+
     match validate_composition(&html) {
         Ok(()) => Ok(html),
         Err(_) => Err(format!(
-            "AI 生成的 HTML 在 {} 次重试后仍未通过校验。错误：\n- {}",
+            "AI-generated HTML failed validation after {} retries. Errors:\n- {}",
             MAX_RETRIES,
             last_errors.join("\n- ")
         )),
     }
+}
+
+/// Orchestrated pipeline generation for long scripts.
+///
+/// Wires together:
+/// 1. `run_orchestrator()` — get the plan
+/// 2. Build `WorkerInput` list from the plan
+/// 3. `run_workers_concurrent()` — generate HTML for each chunk
+/// 4. `parse_worker_html()` for each successful result
+/// 5. `resolve_track_indices()` — fix track conflicts
+/// 6. `merge_chunks()` — assemble final HTML
+///
+/// Handles partial success (some workers fail, merge successful ones).
+/// Handles single-entry chunks that exceed budget (skip and report).
+pub async fn generate_orchestrated(
+    entries: &[TimelineEntry],
+    config: &LlmConfig<'_>,
+    report: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String, PipelineError> {
+    let total_start = Instant::now();
+    info!(
+        "[Hyperframes] generate_orchestrated: {} entries",
+        entries.len()
+    );
+
+    let token_budget = TokenBudget::default_for_model(config.model);
+
+    // Stage 1: Run orchestrator
+    report("正在规划视觉编排方案...");
+    let orchestrator_start = Instant::now();
+    let plan = run_orchestrator(entries, config, &token_budget).await?;
+    info!(
+        "[Hyperframes] Orchestrator completed: {:.1}s, {} chunks planned",
+        orchestrator_start.elapsed().as_secs_f64(),
+        plan.chunks.len()
+    );
+    report(&format!("编排完成：共 {} 个片段", plan.chunks.len()));
+
+    // Stage 2: Build WorkerInputs
+    let total_duration = entries
+        .iter()
+        .map(|e| e.start_time + e.duration)
+        .fold(0.0_f64, f64::max);
+
+    let mut worker_inputs: Vec<WorkerInput> = Vec::new();
+    let mut skipped_entries: Vec<usize> = Vec::new();
+
+    for (i, chunk_plan) in plan.chunks.iter().enumerate() {
+        let chunk_entries: Vec<TimelineEntry> = entries[chunk_plan.entry_start..chunk_plan.entry_end]
+            .to_vec();
+
+        // Check if single-entry chunk exceeds budget (Requirement 4.6)
+        if chunk_entries.len() == 1 {
+            let entry_cost = super::orchestrator::estimate_token_cost(&chunk_entries);
+            if entry_cost > token_budget.worker_input {
+                skipped_entries.push(chunk_plan.entry_start);
+                report(&format!(
+                    "跳过第 {} 条 entry（超出 token 预算）",
+                    chunk_plan.entry_start
+                ));
+                continue;
+            }
+        }
+
+        let prev_ending_palette = if i > 0 {
+            Some(plan.chunks[i - 1].visual_directive.palette.clone())
+        } else {
+            None
+        };
+
+        worker_inputs.push(WorkerInput {
+            chunk_plan: chunk_plan.clone(),
+            entries: chunk_entries,
+            total_duration,
+            prev_ending_palette,
+            total_chunks: plan.chunks.len(),
+        });
+    }
+
+    if worker_inputs.is_empty() {
+        return Err(PipelineError::Other(
+            "All chunks were skipped due to token budget constraints".to_string(),
+        ));
+    }
+
+    // Stage 3: Run workers concurrently
+    let progress_reporter = |progress: PipelineProgress| {
+        report(&progress.message);
+    };
+
+    let workers_start = Instant::now();
+    let results = run_workers_concurrent(
+        worker_inputs,
+        config,
+        &token_budget,
+        DEFAULT_CONCURRENCY_CAP,
+        &progress_reporter,
+    )
+    .await;
+    info!(
+        "[Hyperframes] Workers completed: {:.1}s total for {} chunks",
+        workers_start.elapsed().as_secs_f64(),
+        results.len()
+    );
+
+    // Stage 4: Parse successful results
+    let mut parsed_chunks = Vec::new();
+    let mut failed_chunks: Vec<String> = Vec::new();
+
+    for result in &results {
+        match result {
+            WorkerResult::Success(output) => {
+                match parse_worker_html(&output.html, output.chunk_index) {
+                    Ok(parsed) => parsed_chunks.push(parsed),
+                    Err(e) => {
+                        failed_chunks.push(format!("Chunk {} parse failed: {:?}", output.chunk_index, e));
+                    }
+                }
+            }
+            WorkerResult::Failed {
+                chunk_index,
+                errors,
+                ..
+            } => {
+                failed_chunks.push(format!(
+                    "Chunk {} generation failed: {}",
+                    chunk_index,
+                    errors.last().unwrap_or(&"unknown".to_string())
+                ));
+            }
+        }
+    }
+
+    if parsed_chunks.is_empty() {
+        return Err(PipelineError::AllWorkersFailed(failed_chunks));
+    }
+
+    // Report partial failures
+    if !failed_chunks.is_empty() {
+        report(&format!(
+            "部分片段生成失败（{}/{}），将合并成功的片段",
+            failed_chunks.len(),
+            results.len()
+        ));
+    }
+
+    if !skipped_entries.is_empty() {
+        report(&format!(
+            "跳过了 {} 条超出预算的 entries",
+            skipped_entries.len()
+        ));
+    }
+
+    // Stage 5: Resolve track indices
+    resolve_track_indices(&mut parsed_chunks);
+
+    // Stage 6: Merge
+    report("正在合并所有片段...");
+    let merge_start = Instant::now();
+    let merged_html = merge_chunks(&parsed_chunks, total_duration, &plan)
+        .map_err(PipelineError::MergerFailed)?;
+    let merge_elapsed = merge_start.elapsed();
+    info!(
+        "[Hyperframes] Merge completed: {:.3}s",
+        merge_elapsed.as_secs_f64()
+    );
+
+    info!(
+        "[Hyperframes] generate_orchestrated total: {:.1}s",
+        total_start.elapsed().as_secs_f64()
+    );
+
+    report("编排式生成完成");
+    Ok(merged_html)
 }
 
 /// Chunked generation for long scripts: generate each section independently, then merge.
@@ -244,9 +493,16 @@ async fn generate_chunked(
     config: &LlmConfig<'_>,
     report: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<String, String> {
+    let total_start = Instant::now();
     let system_prompt = build_system_prompt();
     let chunks = split_into_chunks(entries);
     let total_chunks = chunks.len();
+
+    info!(
+        "[Hyperframes] generate_chunked: {} entries, {} chunks",
+        entries.len(),
+        total_chunks
+    );
 
     report(&format!("长脚本模式：将分 {} 段生成...", total_chunks));
 
@@ -254,6 +510,7 @@ async fn generate_chunked(
 
     for (chunk_idx, (section_title, indices)) in chunks.iter().enumerate() {
         let chunk_entries: Vec<&TimelineEntry> = indices.iter().map(|&i| &entries[i]).collect();
+        let chunk_start = Instant::now();
 
         report(&format!(
             "正在生成第 {}/{} 段「{}」...",
@@ -297,6 +554,13 @@ async fn generate_chunked(
                 chunk_htmls.push(retry_html);
             }
         }
+
+        info!(
+            "[Hyperframes] Chunk {}/{} completed: {:.1}s",
+            chunk_idx + 1,
+            total_chunks,
+            chunk_start.elapsed().as_secs_f64()
+        );
     }
 
     report("正在合并所有段落...");
@@ -305,6 +569,12 @@ async fn generate_chunked(
         .iter()
         .map(|e| e.start_time + e.duration)
         .fold(0.0_f64, f64::max);
+
+    info!(
+        "[Hyperframes] generate_chunked total: {:.1}s for {} chunks",
+        total_start.elapsed().as_secs_f64(),
+        total_chunks
+    );
 
     merge_compositions(&chunk_htmls, total_duration)
 }
