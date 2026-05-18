@@ -217,30 +217,21 @@ pub async fn generate_composition(
     // Attempt orchestrated pipeline (Requirement 7.1, 7.2, 7.3)
     match generate_orchestrated(entries, config, &report).await {
         Ok(html) => Ok(html),
-        Err(PipelineError::ContextLengthExceeded(reason)) => {
-            report(&format!(
-                "编排模式不可用（{}），回退到分段模式...",
-                reason
-            ));
+        Err(PipelineError::ContextLengthExceeded(_reason)) => {
             generate_chunked(entries, config, &report).await
         }
-        Err(PipelineError::OrchestratorFailed(reason)) => {
-            report(&format!("编排失败（{}），回退到分段模式...", reason));
+        Err(PipelineError::OrchestratorFailed(_reason)) => {
             generate_chunked(entries, config, &report).await
         }
-        Err(PipelineError::InvalidPlan(reason)) => {
-            report(&format!(
-                "编排计划无效（{}），回退到分段模式...",
-                reason
-            ));
+        Err(PipelineError::InvalidPlan(_reason)) => {
             generate_chunked(entries, config, &report).await
         }
         Err(PipelineError::AllWorkersFailed(errors)) => Err(format!(
-            "所有 Worker 均失败：\n- {}",
+            "All workers failed:\n- {}",
             errors.join("\n- ")
         )),
         Err(PipelineError::MergerFailed(e)) => {
-            Err(format!("合并失败：{:?}", e))
+            Err(format!("Merge failed: {:?}", e))
         }
         Err(PipelineError::Other(e)) => Err(e),
     }
@@ -315,7 +306,7 @@ async fn generate_single(
     match validate_composition(&html) {
         Ok(()) => Ok(html),
         Err(_) => Err(format!(
-            "AI 生成的 HTML 在 {} 次重试后仍未通过校验。错误：\n- {}",
+            "AI-generated HTML failed validation after {} retries. Errors:\n- {}",
             MAX_RETRIES,
             last_errors.join("\n- ")
         )),

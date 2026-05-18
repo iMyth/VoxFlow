@@ -58,7 +58,7 @@ pub async fn export_hyperframes(
         "hyperframes-progress",
         HyperframesProgress {
             percent: 0.0,
-            stage: "正在加载项目数据...".to_string(),
+            stage: String::new(),
         },
     );
 
@@ -72,14 +72,14 @@ pub async fn export_hyperframes(
 
     // --- Check if there are any audio fragments ---
     if fragments.is_empty() {
-        return Err(AppError::FileSystem("请先生成音频".to_string()));
+        return Err(AppError::FileSystem("Please generate audio first".to_string()));
     }
 
     let _ = app.emit(
         "hyperframes-progress",
         HyperframesProgress {
             percent: 10.0,
-            stage: "正在计算时间轴...".to_string(),
+            stage: String::new(),
         },
     );
 
@@ -88,7 +88,7 @@ pub async fn export_hyperframes(
 
     if timeline_entries.is_empty() {
         return Err(AppError::FileSystem(
-            "没有可用的时间轴数据（所有音频片段缺少时长信息）".to_string(),
+            "No timeline data available (all audio fragments missing duration)".to_string(),
         ));
     }
 
@@ -96,7 +96,7 @@ pub async fn export_hyperframes(
         "hyperframes-progress",
         HyperframesProgress {
             percent: 20.0,
-            stage: "正在生成 HTML...".to_string(),
+            stage: String::new(),
         },
     );
 
@@ -113,8 +113,8 @@ pub async fn export_hyperframes(
         let config_manager = ConfigManager::new(app.clone());
         let api_key = config_manager
             .load_api_key("llm")
-            .map_err(|e| AppError::Config(format!("无法加载 API 密钥: {}", e)))?
-            .ok_or_else(|| AppError::Config("未配置 LLM API 密钥".to_string()))?;
+            .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
+            .ok_or_else(|| AppError::Config("LLM API key not configured".to_string()))?;
 
         let llm_config = LlmConfig {
             api_endpoint: &api_endpoint,
@@ -124,44 +124,13 @@ pub async fn export_hyperframes(
 
         // Create a progress callback that emits events
         let app_clone = app.clone();
-        let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
-            // Map stage messages to progress percentages (20-80% range)
-            // More specific patterns must come before general ones
-            let percent = if stage.contains("编排式生成完成") {
-                78.0
-            } else if stage.contains("Worker 阶段完成") {
-                72.0
-            } else if stage.contains("正在合并所有片段") || stage.contains("正在合并所有段落") {
-                75.0
-            } else if stage.contains("段生成完成") || stage.contains("段生成失败") {
-                // Worker chunks in progress: 35-70% range
-                55.0
-            } else if stage.contains("开始并发生成") {
-                33.0
-            } else if stage.contains("编排完成") {
-                30.0
-            } else if stage.contains("正在规划") {
-                25.0
-            } else if stage.contains("回退到分段模式") {
-                30.0
-            } else if stage.contains("正在生成第") {
-                // Legacy chunked mode
-                45.0
-            } else if stage.contains("正在生成视觉设计") {
-                30.0
-            } else if stage.contains("校验失败") {
-                60.0
-            } else if stage.contains("正在校验") {
-                70.0
-            } else {
-                50.0
-            };
-
+        let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |_stage: &str| {
+            // Only emit percent-based progress; frontend handles display text via i18n
             let _ = app_clone.emit(
                 "hyperframes-progress",
                 HyperframesProgress {
-                    percent,
-                    stage: stage.to_string(),
+                    percent: 50.0,
+                    stage: String::new(),
                 },
             );
         });
@@ -178,7 +147,7 @@ pub async fn export_hyperframes(
         "hyperframes-progress",
         HyperframesProgress {
             percent: 80.0,
-            stage: "正在写入文件...".to_string(),
+            stage: String::new(),
         },
     );
 
@@ -187,11 +156,11 @@ pub async fn export_hyperframes(
 
     // Create output directory and assets subdirectory
     std::fs::create_dir_all(output_path.join("assets"))
-        .map_err(|e| AppError::FileSystem(format!("无法创建输出目录: {}", e)))?;
+        .map_err(|e| AppError::FileSystem(format!("Failed to create output directory: {}", e)))?;
 
     // Write index.html
     std::fs::write(output_path.join("index.html"), &html)
-        .map_err(|e| AppError::FileSystem(format!("无法写入 index.html: {}", e)))?;
+        .map_err(|e| AppError::FileSystem(format!("Failed to write index.html: {}", e)))?;
 
     // Write meta.json
     let total_duration = timeline_entries
@@ -200,7 +169,7 @@ pub async fn export_hyperframes(
         .fold(0.0_f64, f64::max);
     let meta_json = generate_meta_json(&template, &project_id, total_duration);
     std::fs::write(output_path.join("meta.json"), &meta_json)
-        .map_err(|e| AppError::FileSystem(format!("无法写入 meta.json: {}", e)))?;
+        .map_err(|e| AppError::FileSystem(format!("Failed to write meta.json: {}", e)))?;
 
     // Copy audio file if requested
     if include_audio {
@@ -209,7 +178,7 @@ pub async fn export_hyperframes(
             if src.exists() {
                 let dest = output_path.join("assets").join("audio.mp3");
                 std::fs::copy(src, &dest)
-                    .map_err(|e| AppError::FileSystem(format!("无法复制音频文件: {}", e)))?;
+                    .map_err(|e| AppError::FileSystem(format!("Failed to copy audio file: {}", e)))?;
                 info!("[Hyperframes] Copied audio: {:?} -> {:?}", src, dest);
             } else {
                 info!("[Hyperframes] Audio file not found: {:?}", src);
@@ -223,7 +192,7 @@ pub async fn export_hyperframes(
         "hyperframes-progress",
         HyperframesProgress {
             percent: 100.0,
-            stage: "导出完成".to_string(),
+            stage: String::new(),
         },
     );
 
