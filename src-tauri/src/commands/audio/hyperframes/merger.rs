@@ -51,8 +51,9 @@ pub fn parse_worker_html(html: &str, chunk_index: usize) -> Result<ParsedChunk, 
 /// Skips class-like patterns inside url(), @import, and content strings.
 pub fn namespace_css(css: &str, chunk_index: usize) -> String {
     let prefix = format!("_c{}_", chunk_index);
-    // Pre-compile regex once
+    // Pre-compile regexes once
     let class_re = Regex::new(r"\.([a-zA-Z_][a-zA-Z0-9_-]*)").unwrap();
+    let id_re = Regex::new(r"#([a-zA-Z_][a-zA-Z0-9_-]*)").unwrap();
 
     // Process line by line to skip @import and url() lines
     css.lines()
@@ -66,8 +67,13 @@ pub fn namespace_css(css: &str, chunk_index: usize) -> String {
             if line.contains("url(") {
                 return line.to_string();
             }
+            // Skip lines that are inside filter definitions (contain url(#...))
+            if line.contains("url(#") {
+                return line.to_string();
+            }
 
-            class_re
+            // Namespace class selectors
+            let result = class_re
                 .replace_all(line, |caps: &regex::Captures| {
                     let class_name = &caps[1];
                     if is_reserved_class(class_name) {
@@ -76,21 +82,30 @@ pub fn namespace_css(css: &str, chunk_index: usize) -> String {
                         format!(".{}{}", prefix, class_name)
                     }
                 })
+                .to_string();
+
+            // Namespace id selectors
+            id_re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let id_name = &caps[1];
+                    format!("#{}{}", prefix, id_name)
+                })
                 .to_string()
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// Apply namespace prefix to HTML class references.
+/// Apply namespace prefix to HTML class and id references.
 ///
-/// Updates `class="..."` attributes to match namespaced CSS.
+/// Updates `class="..."` and `id="..."` attributes to prevent collisions between chunks.
 pub fn namespace_html(html: &str, chunk_index: usize) -> String {
     let prefix = format!("_c{}_", chunk_index);
-    // Match class="..." attributes
     let class_attr_re = Regex::new(r#"class="([^"]*)""#).unwrap();
+    let id_attr_re = Regex::new(r#"id="([^"]*)""#).unwrap();
 
-    class_attr_re
+    // First namespace classes
+    let result = class_attr_re
         .replace_all(html, |caps: &regex::Captures| {
             let classes = &caps[1];
             let namespaced_classes: Vec<String> = classes
@@ -104,6 +119,14 @@ pub fn namespace_html(html: &str, chunk_index: usize) -> String {
                 })
                 .collect();
             format!("class=\"{}\"", namespaced_classes.join(" "))
+        })
+        .to_string();
+
+    // Then namespace ids
+    id_attr_re
+        .replace_all(&result, |caps: &regex::Captures| {
+            let id = &caps[1];
+            format!("id=\"{}{}\"", prefix, id)
         })
         .to_string()
 }
@@ -166,7 +189,7 @@ fn namespace_gsap(code: &str, chunk_index: usize) -> String {
                 return caps[0].to_string();
             }
 
-            // Namespace all class references
+            // Namespace all class references and id references
             let namespaced_content = class_in_selector_re
                 .replace_all(content, |inner_caps: &regex::Captures| {
                     let class_name = &inner_caps[1];
@@ -175,6 +198,15 @@ fn namespace_gsap(code: &str, chunk_index: usize) -> String {
                     } else {
                         format!(".{}{}", prefix, class_name)
                     }
+                })
+                .to_string();
+
+            // Also namespace #id references
+            let id_in_selector_re = Regex::new(r"#([a-zA-Z_][a-zA-Z0-9_-]*)").unwrap();
+            let namespaced_content = id_in_selector_re
+                .replace_all(&namespaced_content, |inner_caps: &regex::Captures| {
+                    let id_name = &inner_caps[1];
+                    format!("#{}{}", prefix, id_name)
                 })
                 .to_string();
 
