@@ -242,7 +242,7 @@ const VALID_RHYTHMS: &[&str] = &["slow", "moderate", "fast", "dynamic"];
 /// Steps:
 /// 1. If entries is empty, return PipelineError::Other
 /// 2. Build system + user prompts
-/// 3. Call the LLM API (non-streaming, JSON mode)
+/// 3. Call the LLM API (non-streaming, JSON mode) with retry on parse/validation failure
 /// 4. Check for context-length-exceeded errors
 /// 5. Parse JSON response into OrchestrationPlan
 /// 6. Validate the plan
@@ -273,76 +273,149 @@ pub async fn run_orchestrator(
         config.api_endpoint.trim_end_matches('/')
     );
 
-    let body = json!({
-        "model": config.model,
-        "messages": [
-            { "role": "system", "content": system_prompt },
-            { "role": "user", "content": user_prompt }
-        ],
-        "temperature": 0.7,
-        "response_format": { "type": "json_object" }
-    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(90))
+        .build()
+        .map_err(|e| {
+            PipelineError::OrchestratorFailed(format!("Failed to build HTTP client: {}", e))
+        })?;
 
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header(CONTENT_TYPE, "application/json")
-        .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| PipelineError::OrchestratorFailed(format!("Request failed: {}", e)))?;
+    const MAX_ORCHESTRATOR_RETRIES: usize = 1;
+    let mut last_error: Option<PipelineError> = None;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body_text = response.text().await.unwrap_or_default();
+    for attempt in 0..=MAX_ORCHESTRATOR_RETRIES {
+        let body = if attempt == 0 {
+            json!({
+                "model": config.model,
+                "messages": [
+                    { "role": "system", "content": system_prompt },
+                    { "role": "user", "content": user_prompt }
+                ],
+                "temperature": 0.7,
+                "response_format": { "type": "json_object" }
+            })
+        } else {
+            // Retry with error feedback
+            let error_msg = match &last_error {
+                Some(PipelineError::InvalidPlan(msg)) => msg.clone(),
+                _ => "JSON 解析或验证失败".to_string(),
+            };
+            json!({
+                "model": config.model,
+                "messages": [
+                    { "role": "system", "content": system_prompt },
+                    { "role": "user", "content": user_prompt },
+                    { "role": "assistant", "content": "(上次输出有误)" },
+                    { "role": "user", "content": format!("上次输出的 JSON 存在问题：{}。请严格按照 schema 重新输出。", error_msg) }
+                ],
+                "temperature": 0.5,
+                "response_format": { "type": "json_object" }
+            })
+        };
 
-        // Requirement 7.2 / 5.3: detect context-length-exceeded errors
-        if body_text.contains("context_length_exceeded")
-            || body_text.contains("maximum context length")
-            || body_text.contains("token limit")
-        {
-            return Err(PipelineError::ContextLengthExceeded(format!(
+        let response = client
+            .post(&url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(AUTHORIZATION, format!("Bearer {}", config.api_key))
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| PipelineError::OrchestratorFailed(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response.text().await.unwrap_or_default();
+
+            // Requirement 7.2 / 5.3: detect context-length-exceeded errors
+            if body_text.contains("context_length_exceeded")
+                || body_text.contains("maximum context length")
+                || body_text.contains("token limit")
+            {
+                return Err(PipelineError::ContextLengthExceeded(format!(
+                    "LLM API error {}: {}",
+                    status, body_text
+                )));
+            }
+
+            return Err(PipelineError::OrchestratorFailed(format!(
                 "LLM API error {}: {}",
                 status, body_text
             )));
         }
 
-        return Err(PipelineError::OrchestratorFailed(format!(
-            "LLM API error {}: {}",
-            status, body_text
-        )));
-    }
-
-    let response_text = response.text().await.map_err(|e| {
-        PipelineError::OrchestratorFailed(format!("Failed to read response: {}", e))
-    })?;
-
-    // Parse the OpenAI-compatible response to extract the content
-    let response_json: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
-        PipelineError::OrchestratorFailed(format!("Failed to parse API response: {}", e))
-    })?;
-
-    let content = response_json["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or_else(|| {
-            PipelineError::OrchestratorFailed("No content in LLM response".to_string())
+        let response_text = response.text().await.map_err(|e| {
+            PipelineError::OrchestratorFailed(format!("Failed to read response: {}", e))
         })?;
 
-    // Parse the JSON content into OrchestrationPlan
-    let plan: OrchestrationPlan = serde_json::from_str(content)
-        .map_err(|e| PipelineError::InvalidPlan(format!("Failed to parse plan JSON: {}", e)))?;
+        // Parse the OpenAI-compatible response to extract the content
+        let response_json: serde_json::Value =
+            serde_json::from_str(&response_text).map_err(|e| {
+                PipelineError::OrchestratorFailed(format!("Failed to parse API response: {}", e))
+            })?;
 
-    // Validate the plan
-    validate_plan(&plan, entries.len()).map_err(PipelineError::InvalidPlan)?;
+        let content = match response_json["choices"][0]["message"]["content"].as_str() {
+            Some(c) => c,
+            None => {
+                last_error = Some(PipelineError::OrchestratorFailed(
+                    "No content in LLM response".to_string(),
+                ));
+                if attempt < MAX_ORCHESTRATOR_RETRIES {
+                    info!("[Hyperframes Orchestrator] No content in response, retrying...");
+                    continue;
+                }
+                return Err(last_error.unwrap());
+            }
+        };
 
-    info!(
-        "[Hyperframes Orchestrator] Completed: {:.1}s, {} chunks",
-        start_time.elapsed().as_secs_f64(),
-        plan.chunks.len()
-    );
+        // Parse the JSON content into OrchestrationPlan
+        let plan: OrchestrationPlan = match serde_json::from_str(content) {
+            Ok(p) => p,
+            Err(e) => {
+                last_error = Some(PipelineError::InvalidPlan(format!(
+                    "Failed to parse plan JSON: {}",
+                    e
+                )));
+                if attempt < MAX_ORCHESTRATOR_RETRIES {
+                    info!(
+                        "[Hyperframes Orchestrator] JSON parse failed (attempt {}), retrying: {}",
+                        attempt + 1,
+                        e
+                    );
+                    continue;
+                }
+                return Err(last_error.unwrap());
+            }
+        };
 
-    Ok(plan)
+        // Validate the plan
+        match validate_plan(&plan, entries.len()) {
+            Ok(()) => {
+                info!(
+                    "[Hyperframes Orchestrator] Completed: {:.1}s, {} chunks (attempts={})",
+                    start_time.elapsed().as_secs_f64(),
+                    plan.chunks.len(),
+                    attempt + 1
+                );
+                return Ok(plan);
+            }
+            Err(e) => {
+                last_error = Some(PipelineError::InvalidPlan(e.clone()));
+                if attempt < MAX_ORCHESTRATOR_RETRIES {
+                    info!(
+                        "[Hyperframes Orchestrator] Validation failed (attempt {}), retrying: {}",
+                        attempt + 1,
+                        e
+                    );
+                    continue;
+                }
+                return Err(PipelineError::InvalidPlan(e));
+            }
+        }
+    }
+
+    // Should not reach here, but just in case
+    Err(last_error
+        .unwrap_or_else(|| PipelineError::Other("Orchestrator failed unexpectedly".to_string())))
 }
 
 /// Validate that the orchestration plan is internally consistent.

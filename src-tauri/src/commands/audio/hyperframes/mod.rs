@@ -125,14 +125,20 @@ pub async fn export_hyperframes(
         };
 
         // Create a progress callback that emits events
+        // Maps internal pipeline progress to the 20%-80% range for the frontend
         let app_clone = app.clone();
-        let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |_stage: &str| {
-            // Only emit percent-based progress; frontend handles display text via i18n
+        let progress_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
+            // Increment progress counter for each stage report
+            let count = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Map to 20%-80% range with diminishing increments
+            let internal_percent = (1.0 - (-0.15 * count as f64).exp()) * 100.0;
+            let mapped_percent = 20.0 + (internal_percent / 100.0) * 60.0;
             let _ = app_clone.emit(
                 "hyperframes-progress",
                 HyperframesProgress {
-                    percent: 50.0,
-                    stage: String::new(),
+                    percent: mapped_percent.min(78.0) as f32,
+                    stage: stage.to_string(),
                 },
             );
         });

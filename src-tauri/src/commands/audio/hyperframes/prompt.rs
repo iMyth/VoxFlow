@@ -156,7 +156,9 @@ pub fn build_chunk_user_prompt(
 /// Determine whether chunked generation should be used based on entry count.
 ///
 /// Returns the threshold: if entries exceed this count, use chunked mode.
-pub const CHUNK_THRESHOLD: usize = 8;
+/// Set to 15 to avoid unnecessary orchestration overhead for medium-length scripts
+/// (a typical audiobook chapter with 15 entries is ~60-90 seconds, manageable in one shot).
+pub const CHUNK_THRESHOLD: usize = 15;
 
 /// Split timeline entries into chunks by section for independent generation.
 ///

@@ -70,10 +70,13 @@ pub async fn call_llm(
         ],
         "stream": true,
         "max_tokens": 65536,
-        "temperature": 1.3
+        "temperature": 0.9
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let response = client
         .post(&url)
         .header(CONTENT_TYPE, "application/json")
@@ -89,16 +92,22 @@ pub async fn call_llm(
         return Err(format!("LLM API error {}: {}", status, body_text));
     }
 
-    // Stream SSE response and accumulate content
+    // Stream SSE response and accumulate content with line buffering
     let mut accumulated_text = String::new();
     let mut stream = response.bytes_stream();
+    let mut line_buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Failed to read LLM response: {}", e))?;
 
         let body_str = String::from_utf8_lossy(&chunk);
-        for line in body_str.lines() {
-            let line = line.trim();
+        line_buffer.push_str(&body_str);
+
+        // Process only complete lines (ending with \n)
+        while let Some(newline_pos) = line_buffer.find('\n') {
+            let line = line_buffer[..newline_pos].trim().to_string();
+            line_buffer = line_buffer[newline_pos + 1..].to_string();
+
             if line.is_empty() || line == "data: [DONE]" {
                 continue;
             }
@@ -110,6 +119,18 @@ pub async fn call_llm(
                             cb(accumulated_text.len());
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // Process any remaining data in the buffer
+    let remaining = line_buffer.trim().to_string();
+    if !remaining.is_empty() && remaining != "data: [DONE]" {
+        if let Some(data) = remaining.strip_prefix("data: ") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                    accumulated_text.push_str(content);
                 }
             }
         }
@@ -710,7 +731,10 @@ fn extract_composition_body(html: &str) -> Option<String> {
 }
 
 /// Extract GSAP timeline animation code from a chunk's script, rebinding to the merged timeline.
-fn extract_timeline_code(html: &str, _chunk_index: usize) -> Option<String> {
+/// Namespaces CSS selectors in the GSAP code to match the namespaced HTML/CSS.
+fn extract_timeline_code(html: &str, chunk_index: usize) -> Option<String> {
+    use super::merger::namespace_gsap;
+
     // Find script content after GSAP CDN
     let scripts: Vec<&str> = html.split("<script>").collect();
     if scripts.len() < 2 {
@@ -725,7 +749,8 @@ fn extract_timeline_code(html: &str, _chunk_index: usize) -> Option<String> {
         let content = &last[content_start + 1..];
         let end = content.find("</script>")?;
         let code = &content[..end];
-        return Some(clean_timeline_code(code));
+        let cleaned = clean_timeline_code(code);
+        return Some(namespace_gsap(&cleaned, chunk_index));
     }
 
     // Get the last <script> block (the one with timeline code)
@@ -733,7 +758,8 @@ fn extract_timeline_code(html: &str, _chunk_index: usize) -> Option<String> {
     let end = last_script.find("</script>")?;
     let code = &last_script[..end];
 
-    Some(clean_timeline_code(code))
+    let cleaned = clean_timeline_code(code);
+    Some(namespace_gsap(&cleaned, chunk_index))
 }
 
 /// Clean timeline code: remove boilerplate (window.__timelines init, const tl = ..., registration)
@@ -755,21 +781,18 @@ fn clean_timeline_code(code: &str) -> String {
 }
 
 /// Add a chunk-specific prefix to CSS class names to avoid collisions between chunks.
+///
+/// Reuses the merger's `namespace_css` function for proper isolation.
 fn prefix_css_classes(css: &str, chunk_index: usize) -> String {
-    if chunk_index == 0 {
-        // First chunk keeps original names (they're already unique enough in practice)
-        return format!("    /* chunk-{} */\n{}", chunk_index, css);
-    }
-    // For subsequent chunks, add a prefix comment but keep classes as-is.
-    // In practice, LLM-generated classes are usually unique per chunk because
-    // each chunk has different visual concepts. If collisions occur, the later
-    // chunk's styles will override (which is acceptable for layered compositions).
-    format!("    /* chunk-{} */\n{}", chunk_index, css)
+    use super::merger::namespace_css;
+    let namespaced = namespace_css(css, chunk_index);
+    format!("    /* chunk-{} */\n{}", chunk_index, namespaced)
 }
 
-/// Prefix HTML class references for a chunk (placeholder - keeps as-is for now).
-fn prefix_html_classes(html: &str, _chunk_index: usize) -> String {
-    html.to_string()
+/// Prefix HTML class references for a chunk using the merger's namespace function.
+fn prefix_html_classes(html: &str, chunk_index: usize) -> String {
+    use super::merger::namespace_html;
+    namespace_html(html, chunk_index)
 }
 
 #[cfg(test)]
@@ -879,13 +902,13 @@ window.__timelines["c2"] = tl;
         assert!(result.contains("data-composition-id=\"ai-generated\""));
         assert!(result.contains("data-duration=\"10\""));
 
-        // Should contain styles from both chunks
-        assert!(result.contains(".star"));
-        assert!(result.contains(".nebula"));
+        // Should contain namespaced styles from both chunks
+        assert!(result.contains("._c0_star"));
+        assert!(result.contains("._c1_nebula"));
 
-        // Should contain animation code from both (without boilerplate)
-        assert!(result.contains("tl.from(\".star\""));
-        assert!(result.contains("tl.from(\".nebula\""));
+        // Should contain namespaced animation code from both (without boilerplate)
+        assert!(result.contains("._c0_star"));
+        assert!(result.contains("._c1_nebula"));
 
         // Should have single GSAP CDN and single timeline registration
         assert!(result.contains("window.__timelines[\"ai-generated\"] = tl;"));

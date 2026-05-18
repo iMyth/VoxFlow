@@ -407,10 +407,13 @@ async fn call_worker_llm(
         ],
         "stream": true,
         "max_tokens": max_tokens,
-        "temperature": 1.3
+        "temperature": 0.85
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let response = client
         .post(&url)
         .header(CONTENT_TYPE, "application/json")
@@ -426,16 +429,22 @@ async fn call_worker_llm(
         return Err(format!("LLM API error {}: {}", status, body_text));
     }
 
-    // Stream SSE response and accumulate content
+    // Stream SSE response and accumulate content with line buffering
     let mut accumulated_text = String::new();
     let mut stream = response.bytes_stream();
+    let mut line_buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Failed to read LLM response: {}", e))?;
 
         let body_str = String::from_utf8_lossy(&chunk);
-        for line in body_str.lines() {
-            let line = line.trim();
+        line_buffer.push_str(&body_str);
+
+        // Process only complete lines (ending with \n)
+        while let Some(newline_pos) = line_buffer.find('\n') {
+            let line = line_buffer[..newline_pos].trim().to_string();
+            line_buffer = line_buffer[newline_pos + 1..].to_string();
+
             if line.is_empty() || line == "data: [DONE]" {
                 continue;
             }
@@ -444,6 +453,18 @@ async fn call_worker_llm(
                     if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
                         accumulated_text.push_str(content);
                     }
+                }
+            }
+        }
+    }
+
+    // Process any remaining data in the buffer
+    let remaining = line_buffer.trim().to_string();
+    if !remaining.is_empty() && remaining != "data: [DONE]" {
+        if let Some(data) = remaining.strip_prefix("data: ") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                    accumulated_text.push_str(content);
                 }
             }
         }

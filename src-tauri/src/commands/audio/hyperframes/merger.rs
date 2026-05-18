@@ -140,7 +140,7 @@ pub fn namespace_html(html: &str, chunk_index: usize) -> String {
 /// - With pseudo-classes: ".el:nth-child(2)"
 ///
 /// Skips strings that are clearly not CSS selectors (URLs, CSS values, SVG paths, etc.)
-fn namespace_gsap(code: &str, chunk_index: usize) -> String {
+pub fn namespace_gsap(code: &str, chunk_index: usize) -> String {
     let prefix = format!("_c{}_", chunk_index);
 
     // Only match CSS class selectors that appear as GSAP targets:
