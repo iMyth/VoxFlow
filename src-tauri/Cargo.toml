@@ -53,6 +53,7 @@ arrayvec = "0.7"
 wgpu = "25"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
+regex = "1"
 
 [dev-dependencies]
 proptest = "1"

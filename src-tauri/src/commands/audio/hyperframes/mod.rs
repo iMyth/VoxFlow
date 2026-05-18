@@ -4,10 +4,14 @@
 //! for rendering audiobook videos with synchronized text/animations.
 
 pub mod ai_generate;
+pub mod merger;
+pub mod orchestrator;
+pub mod pipeline_types;
 pub mod prompt;
 pub mod templates;
 pub mod timeline;
 pub mod validation;
+pub mod worker;
 
 use std::sync::Mutex;
 
@@ -121,10 +125,42 @@ pub async fn export_hyperframes(
         // Create a progress callback that emits events
         let app_clone = app.clone();
         let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
+            // Map stage messages to progress percentages (20-80% range)
+            // More specific patterns must come before general ones
+            let percent = if stage.contains("编排式生成完成") {
+                78.0
+            } else if stage.contains("Worker 阶段完成") {
+                72.0
+            } else if stage.contains("正在合并所有片段") || stage.contains("正在合并所有段落") {
+                75.0
+            } else if stage.contains("段生成完成") || stage.contains("段生成失败") {
+                // Worker chunks in progress: 35-70% range
+                55.0
+            } else if stage.contains("开始并发生成") {
+                33.0
+            } else if stage.contains("编排完成") {
+                30.0
+            } else if stage.contains("正在规划") {
+                25.0
+            } else if stage.contains("回退到分段模式") {
+                30.0
+            } else if stage.contains("正在生成第") {
+                // Legacy chunked mode
+                45.0
+            } else if stage.contains("正在生成视觉设计") {
+                30.0
+            } else if stage.contains("校验失败") {
+                60.0
+            } else if stage.contains("正在校验") {
+                70.0
+            } else {
+                50.0
+            };
+
             let _ = app_clone.emit(
                 "hyperframes-progress",
                 HyperframesProgress {
-                    percent: 50.0,
+                    percent,
                     stage: stage.to_string(),
                 },
             );
