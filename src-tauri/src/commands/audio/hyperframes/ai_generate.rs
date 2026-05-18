@@ -226,13 +226,10 @@ pub async fn generate_composition(
         Err(PipelineError::InvalidPlan(_reason)) => {
             generate_chunked(entries, config, &report).await
         }
-        Err(PipelineError::AllWorkersFailed(errors)) => Err(format!(
-            "All workers failed:\n- {}",
-            errors.join("\n- ")
-        )),
-        Err(PipelineError::MergerFailed(e)) => {
-            Err(format!("Merge failed: {:?}", e))
+        Err(PipelineError::AllWorkersFailed(errors)) => {
+            Err(format!("All workers failed:\n- {}", errors.join("\n- ")))
         }
+        Err(PipelineError::MergerFailed(e)) => Err(format!("Merge failed: {:?}", e)),
         Err(PipelineError::Other(e)) => Err(e),
     }
 }
@@ -244,10 +241,7 @@ async fn generate_single(
     report: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<String, String> {
     let total_start = Instant::now();
-    info!(
-        "[Hyperframes] generate_single: {} entries",
-        entries.len()
-    );
+    info!("[Hyperframes] generate_single: {} entries", entries.len());
 
     let system_prompt = build_system_prompt();
     let user_prompt = build_user_prompt(entries);
@@ -359,8 +353,8 @@ pub async fn generate_orchestrated(
     let mut skipped_entries: Vec<usize> = Vec::new();
 
     for (i, chunk_plan) in plan.chunks.iter().enumerate() {
-        let chunk_entries: Vec<TimelineEntry> = entries[chunk_plan.entry_start..chunk_plan.entry_end]
-            .to_vec();
+        let chunk_entries: Vec<TimelineEntry> =
+            entries[chunk_plan.entry_start..chunk_plan.entry_end].to_vec();
 
         // Check if single-entry chunk exceeds budget (Requirement 4.6)
         if chunk_entries.len() == 1 {
@@ -426,7 +420,10 @@ pub async fn generate_orchestrated(
                 match parse_worker_html(&output.html, output.chunk_index) {
                     Ok(parsed) => parsed_chunks.push(parsed),
                     Err(e) => {
-                        failed_chunks.push(format!("Chunk {} parse failed: {:?}", output.chunk_index, e));
+                        failed_chunks.push(format!(
+                            "Chunk {} parse failed: {:?}",
+                            output.chunk_index, e
+                        ));
                     }
                 }
             }
@@ -470,8 +467,8 @@ pub async fn generate_orchestrated(
     // Stage 6: Merge
     report("正在合并所有片段...");
     let merge_start = Instant::now();
-    let merged_html = merge_chunks(&parsed_chunks, total_duration, &plan)
-        .map_err(PipelineError::MergerFailed)?;
+    let merged_html =
+        merge_chunks(&parsed_chunks, total_duration, &plan).map_err(PipelineError::MergerFailed)?;
     let merge_elapsed = merge_start.elapsed();
     info!(
         "[Hyperframes] Merge completed: {:.3}s",

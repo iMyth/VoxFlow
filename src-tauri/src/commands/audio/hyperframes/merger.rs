@@ -162,22 +162,37 @@ fn namespace_gsap(code: &str, chunk_index: usize) -> String {
             }
 
             // Skip strings that are clearly not CSS selectors
-            if content.contains("px") || content.contains("deg")
-                || content.contains("rgb") || content.contains("hsl")
-                || content.contains("blur(") || content.contains("rotate(")
-                || content.contains("polygon(") || content.contains("gradient")
-                || content.contains("inOut") || content.contains("ease")
-                || content.contains("http") || content.contains("data:")
-                || content.starts_with('+') || content.starts_with('-')
+            if content.contains("px")
+                || content.contains("deg")
+                || content.contains("rgb")
+                || content.contains("hsl")
+                || content.contains("blur(")
+                || content.contains("rotate(")
+                || content.contains("polygon(")
+                || content.contains("gradient")
+                || content.contains("inOut")
+                || content.contains("ease")
+                || content.contains("http")
+                || content.contains("data:")
+                || content.starts_with('+')
+                || content.starts_with('-')
                 || content.starts_with('=')
-                || content.contains("none") || content.contains("auto")
-                || content.contains("hidden") || content.contains("visible")
-                || content.contains("block") || content.contains("flex")
-                || content.contains("absolute") || content.contains("relative")
-                || content.contains("center") || content.contains("left")
-                || content.contains("right") || content.contains("top")
-                || content.contains("bottom") || content.contains("solid")
-                || content.contains("screen") || content.contains("overlay")
+                || content.contains("none")
+                || content.contains("auto")
+                || content.contains("hidden")
+                || content.contains("visible")
+                || content.contains("block")
+                || content.contains("flex")
+                || content.contains("absolute")
+                || content.contains("relative")
+                || content.contains("center")
+                || content.contains("left")
+                || content.contains("right")
+                || content.contains("top")
+                || content.contains("bottom")
+                || content.contains("solid")
+                || content.contains("screen")
+                || content.contains("overlay")
                 || content.contains("multiply")
             {
                 return caps[0].to_string();
@@ -217,10 +232,7 @@ fn namespace_gsap(code: &str, chunk_index: usize) -> String {
 
 /// Check if a class name is reserved and should not be namespaced.
 fn is_reserved_class(name: &str) -> bool {
-    matches!(
-        name,
-        "clip" | "layer" | "clip-path" | "mix-blend-mode"
-    )
+    matches!(name, "clip" | "layer" | "clip-path" | "mix-blend-mode")
 }
 
 /// Extract content from `<style>` tags.
@@ -463,7 +475,7 @@ pub fn merge_chunks(
 ) -> Result<String, MergerError> {
     if chunks.is_empty() {
         return Err(MergerError::ValidationFailed(vec![
-            "No chunks to merge".to_string(),
+            "No chunks to merge".to_string()
         ]));
     }
 
@@ -518,7 +530,12 @@ pub fn merge_chunks(
     let all_gsap: String = chunks
         .iter()
         .filter(|c| !c.gsap_code.is_empty())
-        .map(|c| format!("      // chunk-{}\n      {{\n      {}\n      }}", c.chunk_index, c.gsap_code))
+        .map(|c| {
+            format!(
+                "      // chunk-{}\n      {{\n      {}\n      }}",
+                c.chunk_index, c.gsap_code
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -1050,8 +1067,10 @@ window.__timelines["ai-generated"] = tl;
 
     #[test]
     fn test_deduplicate_font_faces() {
-        let css1 = "@font-face { font-family: 'Test'; src: url('test.woff2'); }\n.a { color: red; }";
-        let css2 = "@font-face { font-family: 'Test'; src: url('test.woff2'); }\n.b { color: blue; }";
+        let css1 =
+            "@font-face { font-family: 'Test'; src: url('test.woff2'); }\n.a { color: red; }";
+        let css2 =
+            "@font-face { font-family: 'Test'; src: url('test.woff2'); }\n.b { color: blue; }";
 
         let mut seen = Vec::new();
         let result1 = deduplicate_font_faces(css1, &mut seen);

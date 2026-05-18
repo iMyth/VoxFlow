@@ -72,7 +72,9 @@ pub async fn export_hyperframes(
 
     // --- Check if there are any audio fragments ---
     if fragments.is_empty() {
-        return Err(AppError::FileSystem("Please generate audio first".to_string()));
+        return Err(AppError::FileSystem(
+            "Please generate audio first".to_string(),
+        ));
     }
 
     let _ = app.emit(
@@ -177,8 +179,9 @@ pub async fn export_hyperframes(
             let src = std::path::Path::new(src_audio_path);
             if src.exists() {
                 let dest = output_path.join("assets").join("audio.mp3");
-                std::fs::copy(src, &dest)
-                    .map_err(|e| AppError::FileSystem(format!("Failed to copy audio file: {}", e)))?;
+                std::fs::copy(src, &dest).map_err(|e| {
+                    AppError::FileSystem(format!("Failed to copy audio file: {}", e))
+                })?;
                 info!("[Hyperframes] Copied audio: {:?} -> {:?}", src, dest);
             } else {
                 info!("[Hyperframes] Audio file not found: {:?}", src);

@@ -53,7 +53,10 @@ pub fn build_worker_user_prompt(input: &WorkerInput) -> String {
     let transition_out_str = format!(
         "{}, 向 {} 渐变",
         transition_out.transition_type,
-        transition_out.colors.first().unwrap_or(&"#000000".to_string())
+        transition_out
+            .colors
+            .first()
+            .unwrap_or(&"#000000".to_string())
     );
 
     // Build timeline entries as JSON
@@ -168,14 +171,15 @@ pub async fn run_worker(
 
     for attempt in 0..=MAX_RETRIES {
         // Call LLM
-        let response = match call_worker_llm(&system_prompt, &current_prompt, config, max_tokens).await {
-            Ok(text) => text,
-            Err(e) => {
-                errors.push(format!("LLM call failed (attempt {}): {}", attempt + 1, e));
-                retries_used = attempt;
-                continue;
-            }
-        };
+        let response =
+            match call_worker_llm(&system_prompt, &current_prompt, config, max_tokens).await {
+                Ok(text) => text,
+                Err(e) => {
+                    errors.push(format!("LLM call failed (attempt {}): {}", attempt + 1, e));
+                    retries_used = attempt;
+                    continue;
+                }
+            };
 
         // Check for truncation
         if is_truncated(&response) {
@@ -197,7 +201,11 @@ pub async fn run_worker(
         let html = match extract_html(&response) {
             Ok(h) => h,
             Err(e) => {
-                errors.push(format!("HTML extraction failed (attempt {}): {}", attempt + 1, e));
+                errors.push(format!(
+                    "HTML extraction failed (attempt {}): {}",
+                    attempt + 1,
+                    e
+                ));
                 retries_used = attempt;
                 current_prompt = format!(
                     "{}\n\n---\n\n你上次的输出无法提取有效 HTML：{}。请直接输出完整 HTML 文件（从 <!DOCTYPE html> 开始）。",
@@ -277,7 +285,10 @@ pub async fn run_workers_concurrent(
     // Emit initial progress
     on_progress(PipelineProgress {
         stage: PipelineStage::GeneratingChunk,
-        message: format!("开始并发生成 {} 个片段（并发上限 {}）...", total_chunks, concurrency_cap),
+        message: format!(
+            "开始并发生成 {} 个片段（并发上限 {}）...",
+            total_chunks, concurrency_cap
+        ),
         percent: 0.0,
         chunk_info: Some(ChunkProgress {
             chunk_index: 0,
@@ -312,7 +323,8 @@ pub async fn run_workers_concurrent(
             let completed = chunks_completed.load(std::sync::atomic::Ordering::Relaxed);
             let failed_count = chunks_failed.load(std::sync::atomic::Ordering::Relaxed);
 
-            let progress_percent = ((completed + failed_count) as f32 / total_chunks as f32) * 100.0;
+            let progress_percent =
+                ((completed + failed_count) as f32 / total_chunks as f32) * 100.0;
 
             match &result {
                 WorkerResult::Success(_) => {
@@ -452,9 +464,9 @@ async fn call_worker_llm(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::pipeline_types::{ChunkPlan, TransitionSpec, VisualDirective};
     use super::super::timeline::TimelineEntry;
+    use super::*;
 
     fn make_test_input() -> WorkerInput {
         WorkerInput {
@@ -579,10 +591,7 @@ mod tests {
     #[test]
     fn test_build_worker_user_prompt_with_prev_palette() {
         let mut input = make_test_input();
-        input.prev_ending_palette = Some(vec![
-            "#0f3460".to_string(),
-            "#16213e".to_string(),
-        ]);
+        input.prev_ending_palette = Some(vec!["#0f3460".to_string(), "#16213e".to_string()]);
         input.chunk_plan.index = 1;
 
         let prompt = build_worker_user_prompt(&input);

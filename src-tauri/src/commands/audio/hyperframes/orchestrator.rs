@@ -152,9 +152,8 @@ pub fn estimate_token_cost(entries: &[TimelineEntry]) -> usize {
     let total_chars: usize = entries
         .iter()
         .map(|e| {
-            e.text.len()
-                + e.character_name.as_ref().map_or(0, |n| n.len())
-                + 50 // overhead per entry (field names, formatting, etc.)
+            e.text.len() + e.character_name.as_ref().map_or(0, |n| n.len()) + 50
+            // overhead per entry (field names, formatting, etc.)
         })
         .sum();
     total_chars / 4
@@ -213,14 +212,8 @@ fn build_full_timeline(entries: &[TimelineEntry]) -> String {
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let character = e
-                .character_name
-                .as_deref()
-                .unwrap_or("旁白");
-            let section = e
-                .section_title
-                .as_deref()
-                .unwrap_or("");
+            let character = e.character_name.as_deref().unwrap_or("旁白");
+            let section = e.section_title.as_deref().unwrap_or("");
             let section_info = if section.is_empty() {
                 String::new()
             } else {
@@ -321,21 +314,19 @@ pub async fn run_orchestrator(
         )));
     }
 
-    let response_text = response
-        .text()
-        .await
-        .map_err(|e| PipelineError::OrchestratorFailed(format!("Failed to read response: {}", e)))?;
+    let response_text = response.text().await.map_err(|e| {
+        PipelineError::OrchestratorFailed(format!("Failed to read response: {}", e))
+    })?;
 
     // Parse the OpenAI-compatible response to extract the content
-    let response_json: serde_json::Value = serde_json::from_str(&response_text)
-        .map_err(|e| PipelineError::OrchestratorFailed(format!("Failed to parse API response: {}", e)))?;
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
+        PipelineError::OrchestratorFailed(format!("Failed to parse API response: {}", e))
+    })?;
 
     let content = response_json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| {
-            PipelineError::OrchestratorFailed(
-                "No content in LLM response".to_string(),
-            )
+            PipelineError::OrchestratorFailed("No content in LLM response".to_string())
         })?;
 
     // Parse the JSON content into OrchestrationPlan
@@ -343,8 +334,7 @@ pub async fn run_orchestrator(
         .map_err(|e| PipelineError::InvalidPlan(format!("Failed to parse plan JSON: {}", e)))?;
 
     // Validate the plan
-    validate_plan(&plan, entries.len())
-        .map_err(PipelineError::InvalidPlan)?;
+    validate_plan(&plan, entries.len()).map_err(PipelineError::InvalidPlan)?;
 
     info!(
         "[Hyperframes Orchestrator] Completed: {:.1}s, {} chunks",
@@ -457,13 +447,18 @@ pub fn validate_plan(plan: &OrchestrationPlan, entry_count: usize) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::pipeline_types::{
         ChunkPlan, ColorProgression, GlobalTheme, OrchestrationPlan, TransitionSpec,
         VisualDirective,
     };
+    use super::*;
 
-    fn make_entry(text: &str, character_name: Option<&str>, start: f64, duration: f64) -> TimelineEntry {
+    fn make_entry(
+        text: &str,
+        character_name: Option<&str>,
+        start: f64,
+        duration: f64,
+    ) -> TimelineEntry {
         TimelineEntry {
             line_id: "test-id".to_string(),
             text: text.to_string(),
@@ -474,7 +469,13 @@ mod tests {
         }
     }
 
-    fn make_chunk(index: usize, entry_start: usize, entry_end: usize, palette: Vec<&str>, rhythm: &str) -> ChunkPlan {
+    fn make_chunk(
+        index: usize,
+        entry_start: usize,
+        entry_end: usize,
+        palette: Vec<&str>,
+        rhythm: &str,
+    ) -> ChunkPlan {
         ChunkPlan {
             index,
             entry_start,
@@ -623,12 +624,7 @@ mod tests {
         // Need 64000 / 255 ≈ 251 entries
         let entries: Vec<TimelineEntry> = (0..300)
             .map(|i| {
-                let mut entry = make_entry(
-                    &"A".repeat(200),
-                    Some("Alice"),
-                    i as f64 * 2.0,
-                    1.5,
-                );
+                let mut entry = make_entry(&"A".repeat(200), Some("Alice"), i as f64 * 2.0, 1.5);
                 entry.section_title = Some("Chapter 1".to_string());
                 entry
             })
@@ -769,7 +765,11 @@ mod tests {
         for rhythm in &["slow", "moderate", "fast", "dynamic"] {
             let mut plan = make_valid_plan(10, 1);
             plan.chunks[0].visual_directive.rhythm = rhythm.to_string();
-            assert!(validate_plan(&plan, 10).is_ok(), "rhythm '{}' should be valid", rhythm);
+            assert!(
+                validate_plan(&plan, 10).is_ok(),
+                "rhythm '{}' should be valid",
+                rhythm
+            );
         }
     }
 
