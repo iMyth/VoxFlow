@@ -63,6 +63,12 @@ pub struct VisualDirective {
     pub rhythm: String,
     /// Specific visual concept description for this chunk.
     pub concept: String,
+    /// Primary visual technique for this chunk (e.g., "svg-path-drawing", "kinetic-typography").
+    #[serde(default)]
+    pub technique: Option<String>,
+    /// Layout strategy description (e.g., "左对齐标题+右侧装饰").
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 /// Specification for a transition between chunks.
@@ -89,6 +95,8 @@ pub struct WorkerInput {
     pub prev_ending_palette: Option<Vec<String>>,
     /// Total number of chunks (for context).
     pub total_chunks: usize,
+    /// Optional user instructions to include in the prompt.
+    pub user_instructions: Option<String>,
 }
 
 /// Output from a successful Worker call.

@@ -28,8 +28,9 @@ pub fn build_worker_system_prompt() -> String {
 /// Build the Worker user prompt for a specific chunk.
 ///
 /// Includes:
-/// - Visual directive (palette, style keywords, rhythm, concept, transitions)
+/// - Visual directive (palette, style keywords, rhythm, concept, technique, layout, transitions)
 /// - Previous chunk's ending palette (for transition context)
+/// - Motion design rules specific to the rhythm
 /// - Timeline entries as JSON
 pub fn build_worker_user_prompt(input: &WorkerInput) -> String {
     let directive = &input.chunk_plan.visual_directive;
@@ -39,6 +40,9 @@ pub fn build_worker_user_prompt(input: &WorkerInput) -> String {
     // Build visual directive section
     let palette_str = directive.palette.join(", ");
     let keywords_str = directive.style_keywords.join(", ");
+
+    let technique_str = directive.technique.as_deref().unwrap_or("自由选择");
+    let layout_str = directive.layout.as_deref().unwrap_or("自由布局");
 
     let transition_in_str = if let Some(ref prev_palette) = input.prev_ending_palette {
         format!(
@@ -58,6 +62,14 @@ pub fn build_worker_user_prompt(input: &WorkerInput) -> String {
             .first()
             .unwrap_or(&"#000000".to_string())
     );
+
+    // Rhythm-specific motion guidance
+    let rhythm_guidance = match directive.rhythm.as_str() {
+        "slow" => "动画时长 0.6-1.2s，ease 用 sine.inOut 或 power1。stagger 间隔 0.08-0.12s。环境动画时长 6-10s。整体感觉：沉稳、电影感、呼吸感。",
+        "fast" => "动画时长 0.15-0.35s，ease 用 power3.out 或 expo.out。stagger 间隔 0.02-0.04s。环境动画时长 2-4s。整体感觉：能量、自信、冲击力。",
+        "dynamic" => "混合快慢：入场快（0.2-0.4s），呼吸慢（4-8s），重点元素用 elastic 或 back ease。stagger 间隔变化。整体感觉：戏剧性、对比强烈。",
+        _ => "动画时长 0.3-0.6s，ease 用 power2.out。stagger 间隔 0.04-0.08s。环境动画时长 4-6s。整体感觉：专业、流畅。",
+    };
 
     // Build timeline entries as JSON
     let entries_json: Vec<serde_json::Value> = input
@@ -95,17 +107,34 @@ pub fn build_worker_user_prompt(input: &WorkerInput) -> String {
 风格关键词: {keywords}
 动画节奏: {rhythm}
 视觉概念: {concept}
+主要技术: {technique}
+布局策略: {layout}
 过渡入场: {trans_in}
 过渡退场: {trans_out}
+
+[节奏指导]
+{rhythm_guide}
+
+[运动设计规则 — 必须遵守]
+1. 入场动画使用 fromTo（不是 from），确保 seek 时状态确定
+2. 每个元素的入场 ease 不同 — 至少用 3 种不同的 ease
+3. 入场方向要变化 — 不要所有元素都从下方 y:30 进入
+4. 首个动画从 clip 的 data-start + 0.2s 开始（不是 data-start + 0）
+5. 背景层必须有 2-5 个装饰元素，每个都有环境动画（挂在 tl 上）
+6. 环境动画（yoyo+repeat）必须用 tl.to()，不能用独立的 gsap.to()
+7. 不要在同一元素上叠加两个 transform tween — 合并为一个 fromTo 或拆分到父子元素
+8. 不要使用退场动画（clip 结束时自动消失）
+9. 呼吸/环境动画只能作用在装饰元素上（光晕、粒子、线条、SVG 图形），绝对不要对文字内容（标题、正文、引用）添加 y/x 位移。文字入场后必须静止。
 
 [约束]
 - 只使用上述色彩方案中的颜色（可以调整明度/透明度）
 - 风格关键词必须体现在视觉设计中
-- 动画节奏决定了动画速度和 stagger 间隔
 - composition 的 data-start 应为 "0"，data-duration 应为 "{total_duration}"
 - 本段 clip 的 data-start 从 {chunk_start:.1} 秒开始
 - GSAP timeline 中所有动画的时间偏移使用绝对时间（从 {chunk_start:.1} 秒开始）
 - 本段时长约 {chunk_duration:.0} 秒
+- 标题字号 ≥ 60px，正文 ≥ 20px
+- 背景不能是纯黑 #000000，向主色调倾斜
 
 [时间轴数据]
 {entries}
@@ -117,8 +146,11 @@ pub fn build_worker_user_prompt(input: &WorkerInput) -> String {
         keywords = keywords_str,
         rhythm = directive.rhythm,
         concept = directive.concept,
+        technique = technique_str,
+        layout = layout_str,
         trans_in = transition_in_str,
         trans_out = transition_out_str,
+        rhythm_guide = rhythm_guidance,
         total_duration = input.total_duration,
         chunk_start = chunk_start,
         chunk_duration = chunk_duration,
@@ -162,6 +194,21 @@ pub async fn run_worker(
 
     let system_prompt = build_worker_system_prompt();
     let user_prompt = build_worker_user_prompt(input);
+
+    // Append user instructions if provided
+    let user_prompt = if let Some(ref instructions) = input.user_instructions {
+        if !instructions.is_empty() {
+            format!(
+                "{}\n\n---\n用户额外要求（请务必遵循）：\n{}\n",
+                user_prompt, instructions
+            )
+        } else {
+            user_prompt
+        }
+    } else {
+        user_prompt
+    };
+
     let max_tokens = (token_budget.worker_output as f64 * 0.9) as usize;
 
     const MAX_RETRIES: usize = 2;
@@ -285,10 +332,7 @@ pub async fn run_workers_concurrent(
     // Emit initial progress
     on_progress(PipelineProgress {
         stage: PipelineStage::GeneratingChunk,
-        message: format!(
-            "开始并发生成 {} 个片段（并发上限 {}）...",
-            total_chunks, concurrency_cap
-        ),
+        message: format!("workers_start:{}/{}", total_chunks, concurrency_cap),
         percent: 0.0,
         chunk_info: Some(ChunkProgress {
             chunk_index: 0,
@@ -330,7 +374,7 @@ pub async fn run_workers_concurrent(
                 WorkerResult::Success(_) => {
                     on_progress(PipelineProgress {
                         stage: PipelineStage::ChunkCompleted,
-                        message: format!("第 {} 段生成完成", chunk_index + 1),
+                        message: format!("chunk_done:{}", chunk_index + 1),
                         percent: progress_percent,
                         chunk_info: Some(ChunkProgress {
                             chunk_index,
@@ -344,7 +388,7 @@ pub async fn run_workers_concurrent(
                     let reason = errors.last().cloned().unwrap_or_default();
                     on_progress(PipelineProgress {
                         stage: PipelineStage::ChunkFailed,
-                        message: format!("第 {} 段生成失败: {}", chunk_index + 1, reason),
+                        message: format!("chunk_failed:{}:{}", chunk_index + 1, reason),
                         percent: progress_percent,
                         chunk_info: Some(ChunkProgress {
                             chunk_index,
@@ -368,7 +412,7 @@ pub async fn run_workers_concurrent(
     on_progress(PipelineProgress {
         stage: PipelineStage::Complete,
         message: format!(
-            "Worker 阶段完成：共 {} 段，成功 {}，失败 {}",
+            "workers_done:{}/{}/{}",
             total_chunks, final_completed, final_failed
         ),
         percent: 100.0,
@@ -509,6 +553,8 @@ mod tests {
                     ],
                     rhythm: "moderate".to_string(),
                     concept: "深海中的生物发光，水母群缓慢漂浮".to_string(),
+                    technique: Some("organic-shapes".to_string()),
+                    layout: Some("全屏居中+漂浮元素".to_string()),
                 },
                 transition_in: TransitionSpec {
                     transition_type: "fade".to_string(),
@@ -548,6 +594,7 @@ mod tests {
             total_duration: 120.0,
             prev_ending_palette: None,
             total_chunks: 5,
+            user_instructions: None,
         }
     }
 
@@ -581,6 +628,17 @@ mod tests {
 
         // Should include concept
         assert!(prompt.contains("深海中的生物发光"));
+
+        // Should include technique and layout
+        assert!(prompt.contains("organic-shapes"));
+        assert!(prompt.contains("全屏居中"));
+
+        // Should include rhythm guidance
+        assert!(prompt.contains("节奏指导"));
+
+        // Should include motion design rules
+        assert!(prompt.contains("运动设计规则"));
+        assert!(prompt.contains("fromTo"));
 
         // Should include transition info
         assert!(prompt.contains("fade"));

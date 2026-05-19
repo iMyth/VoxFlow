@@ -218,6 +218,7 @@ pub async fn generate_composition(
     entries: &[TimelineEntry],
     config: &LlmConfig<'_>,
     on_progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    user_instructions: Option<&str>,
 ) -> Result<String, String> {
     let report = |msg: &str| {
         if let Some(ref cb) = on_progress {
@@ -232,20 +233,20 @@ pub async fn generate_composition(
 
     // Below threshold: single-shot (legacy behavior, Requirement 7.4)
     if entries.len() <= CHUNK_THRESHOLD {
-        return generate_single(entries, config, &report).await;
+        return generate_single(entries, config, &report, user_instructions).await;
     }
 
     // Attempt orchestrated pipeline (Requirement 7.1, 7.2, 7.3)
-    match generate_orchestrated(entries, config, &report).await {
+    match generate_orchestrated(entries, config, &report, user_instructions).await {
         Ok(html) => Ok(html),
         Err(PipelineError::ContextLengthExceeded(_reason)) => {
-            generate_chunked(entries, config, &report).await
+            generate_chunked(entries, config, &report, user_instructions).await
         }
         Err(PipelineError::OrchestratorFailed(_reason)) => {
-            generate_chunked(entries, config, &report).await
+            generate_chunked(entries, config, &report, user_instructions).await
         }
         Err(PipelineError::InvalidPlan(_reason)) => {
-            generate_chunked(entries, config, &report).await
+            generate_chunked(entries, config, &report, user_instructions).await
         }
         Err(PipelineError::AllWorkersFailed(errors)) => {
             Err(format!("All workers failed:\n- {}", errors.join("\n- ")))
@@ -260,14 +261,25 @@ async fn generate_single(
     entries: &[TimelineEntry],
     config: &LlmConfig<'_>,
     report: &(dyn Fn(&str) + Send + Sync),
+    user_instructions: Option<&str>,
 ) -> Result<String, String> {
     let total_start = Instant::now();
     info!("[Hyperframes] generate_single: {} entries", entries.len());
 
     let system_prompt = build_system_prompt();
-    let user_prompt = build_user_prompt(entries);
+    let mut user_prompt = build_user_prompt(entries);
 
-    report("正在生成视觉设计...");
+    // Append user instructions if provided
+    if let Some(instructions) = user_instructions {
+        if !instructions.is_empty() {
+            user_prompt.push_str(&format!(
+                "\n\n---\n用户额外要求（请务必遵循）：\n{}\n",
+                instructions
+            ));
+        }
+    }
+
+    report("generating");
 
     let llm_start = Instant::now();
     let response = call_llm(&system_prompt, &user_prompt, config, None).await?;
@@ -278,7 +290,7 @@ async fn generate_single(
 
     let mut html = extract_html(&response)?;
 
-    report("正在校验...");
+    report("validating");
 
     const MAX_RETRIES: usize = 2;
     let mut last_errors: Vec<String> = Vec::new();
@@ -295,11 +307,7 @@ async fn generate_single(
             }
             Err(errors) => {
                 last_errors = errors.clone();
-                report(&format!(
-                    "校验失败，正在重试 ({}/{})...",
-                    attempt + 1,
-                    MAX_RETRIES
-                ));
+                report(&format!("retrying:{}/{}", attempt + 1, MAX_RETRIES));
 
                 let error_list = errors.join("\n- ");
                 let retry_prompt = format!(
@@ -344,6 +352,7 @@ pub async fn generate_orchestrated(
     entries: &[TimelineEntry],
     config: &LlmConfig<'_>,
     report: &(dyn Fn(&str) + Send + Sync),
+    user_instructions: Option<&str>,
 ) -> Result<String, PipelineError> {
     let total_start = Instant::now();
     info!(
@@ -354,7 +363,7 @@ pub async fn generate_orchestrated(
     let token_budget = TokenBudget::default_for_model(config.model);
 
     // Stage 1: Run orchestrator
-    report("正在规划视觉编排方案...");
+    report("planning");
     let orchestrator_start = Instant::now();
     let plan = run_orchestrator(entries, config, &token_budget).await?;
     info!(
@@ -362,7 +371,7 @@ pub async fn generate_orchestrated(
         orchestrator_start.elapsed().as_secs_f64(),
         plan.chunks.len()
     );
-    report(&format!("编排完成：共 {} 个片段", plan.chunks.len()));
+    report(&format!("planned:{}", plan.chunks.len()));
 
     // Stage 2: Build WorkerInputs
     let total_duration = entries
@@ -382,10 +391,7 @@ pub async fn generate_orchestrated(
             let entry_cost = super::orchestrator::estimate_token_cost(&chunk_entries);
             if entry_cost > token_budget.worker_input {
                 skipped_entries.push(chunk_plan.entry_start);
-                report(&format!(
-                    "跳过第 {} 条 entry（超出 token 预算）",
-                    chunk_plan.entry_start
-                ));
+                report(&format!("skipped_entry:{}", chunk_plan.entry_start));
                 continue;
             }
         }
@@ -402,6 +408,7 @@ pub async fn generate_orchestrated(
             total_duration,
             prev_ending_palette,
             total_chunks: plan.chunks.len(),
+            user_instructions: user_instructions.map(|s| s.to_string()),
         });
     }
 
@@ -469,24 +476,21 @@ pub async fn generate_orchestrated(
     // Report partial failures
     if !failed_chunks.is_empty() {
         report(&format!(
-            "部分片段生成失败（{}/{}），将合并成功的片段",
+            "partial_failure:{}/{}",
             failed_chunks.len(),
             results.len()
         ));
     }
 
     if !skipped_entries.is_empty() {
-        report(&format!(
-            "跳过了 {} 条超出预算的 entries",
-            skipped_entries.len()
-        ));
+        report(&format!("skipped_entries:{}", skipped_entries.len()));
     }
 
     // Stage 5: Resolve track indices
     resolve_track_indices(&mut parsed_chunks);
 
     // Stage 6: Merge
-    report("正在合并所有片段...");
+    report("merging");
     let merge_start = Instant::now();
     let merged_html =
         merge_chunks(&parsed_chunks, total_duration, &plan).map_err(PipelineError::MergerFailed)?;
@@ -501,7 +505,7 @@ pub async fn generate_orchestrated(
         total_start.elapsed().as_secs_f64()
     );
 
-    report("编排式生成完成");
+    report("orchestrated_done");
     Ok(merged_html)
 }
 
@@ -510,6 +514,7 @@ async fn generate_chunked(
     entries: &[TimelineEntry],
     config: &LlmConfig<'_>,
     report: &(dyn Fn(&str) + Send + Sync),
+    user_instructions: Option<&str>,
 ) -> Result<String, String> {
     let total_start = Instant::now();
     let system_prompt = build_system_prompt();
@@ -522,7 +527,7 @@ async fn generate_chunked(
         total_chunks
     );
 
-    report(&format!("长脚本模式：将分 {} 段生成...", total_chunks));
+    report(&format!("chunked_start:{}", total_chunks));
 
     let mut chunk_htmls: Vec<String> = Vec::new();
 
@@ -531,7 +536,7 @@ async fn generate_chunked(
         let chunk_start = Instant::now();
 
         report(&format!(
-            "正在生成第 {}/{} 段「{}」...",
+            "generating_chunk:{}/{}/{}",
             chunk_idx + 1,
             total_chunks,
             section_title
@@ -547,6 +552,20 @@ async fn generate_chunked(
             section_title,
         );
 
+        // Append user instructions if provided
+        let user_prompt = if let Some(instructions) = user_instructions {
+            if !instructions.is_empty() {
+                format!(
+                    "{}\n\n---\n用户额外要求（请务必遵循）：\n{}\n",
+                    user_prompt, instructions
+                )
+            } else {
+                user_prompt
+            }
+        } else {
+            user_prompt
+        };
+
         let response = call_llm(&system_prompt, &user_prompt, config, None).await?;
         let html = extract_html(&response)?;
 
@@ -557,7 +576,7 @@ async fn generate_chunked(
             }
             Err(errors) => {
                 // One retry for failed chunks
-                report(&format!("第 {} 段校验失败，正在重试...", chunk_idx + 1));
+                report(&format!("chunk_retry:{}", chunk_idx + 1));
 
                 let error_list = errors.join("\n- ");
                 let retry_prompt = format!(
@@ -581,7 +600,7 @@ async fn generate_chunked(
         );
     }
 
-    report("正在合并所有段落...");
+    report("merging");
 
     let total_duration = entries
         .iter()

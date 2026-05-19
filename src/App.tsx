@@ -114,7 +114,9 @@ function App() {
       <main className="flex-1 overflow-auto">
         {activeTab === 'editor' && <ScriptEditor />}
         {activeTab === 'characters' && <CharacterPanel />}
-        {activeTab === 'export' && <ExportPanel />}
+        <div className={activeTab === 'export' ? '' : 'hidden'}>
+          <ExportPanel />
+        </div>
       </main>
 
       {settingsOpen && (

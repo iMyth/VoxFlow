@@ -629,6 +629,7 @@ export interface HyperframesExportConfig {
   include_audio: boolean;
   audio_path?: string | null;
   use_ai: boolean;
+  user_prompt?: string | null;
 }
 
 export interface HyperframesProgress {
@@ -644,11 +645,39 @@ export async function exportHyperframes(config: HyperframesExportConfig): Promis
     includeAudio: config.include_audio,
     audioPath: config.audio_path ?? null,
     useAi: config.use_ai,
+    userPrompt: config.user_prompt ?? null,
   });
 }
 
 export function onHyperframesProgress(callback: (progress: HyperframesProgress) => void): Promise<UnlistenFn> {
   return listen<HyperframesProgress>('hyperframes-progress', (event) => {
+    callback(event.payload);
+  });
+}
+
+// ---- Hyperframes Video Render ----
+
+export interface RenderHyperframesConfig {
+  composition_dir: string;
+  output_path: string;
+  audio_path?: string | null;
+}
+
+export interface RenderProgress {
+  percent: number;
+  stage: string;
+}
+
+export async function renderHyperframesVideo(config: RenderHyperframesConfig): Promise<string> {
+  return ipcCall<string>('render_hyperframes_video', {
+    compositionDir: config.composition_dir,
+    outputPath: config.output_path,
+    audioPath: config.audio_path ?? null,
+  });
+}
+
+export function onHyperframesRenderProgress(callback: (progress: RenderProgress) => void): Promise<UnlistenFn> {
+  return listen<RenderProgress>('hyperframes-render-progress', (event) => {
     callback(event.payload);
   });
 }

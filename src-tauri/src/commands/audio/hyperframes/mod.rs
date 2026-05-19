@@ -3,11 +3,13 @@
 //! Exports VoxFlow projects as Hyperframes HTML compositions
 //! for rendering audiobook videos with synchronized text/animations.
 
+pub mod agent;
 pub mod ai_generate;
 pub mod merger;
 pub mod orchestrator;
 pub mod pipeline_types;
 pub mod prompt;
+pub mod render;
 pub mod templates;
 pub mod timeline;
 pub mod validation;
@@ -22,6 +24,7 @@ use crate::core::config::ConfigManager;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 
+use self::agent::{generate_with_agent, AgentConfig};
 use self::ai_generate::{generate_composition, LlmConfig};
 use self::templates::{generate_html, generate_meta_json};
 use self::timeline::compute_timeline;
@@ -47,10 +50,13 @@ pub async fn export_hyperframes(
     include_audio: bool,
     audio_path: Option<String>,
     use_ai: bool,
+    use_agent: Option<bool>,
+    user_prompt: Option<String>,
 ) -> Result<String, AppError> {
+    let use_agent_mode = use_agent.unwrap_or(false);
     info!(
-        "[Hyperframes] export_hyperframes: project={}, template={}, use_ai={}, include_audio={}, audio_path={:?}",
-        project_id, template, use_ai, include_audio, audio_path
+        "[Hyperframes] export_hyperframes: project={}, template={}, use_ai={}, use_agent={}, include_audio={}, audio_path={:?}, user_prompt={:?}",
+        project_id, template, use_ai, use_agent_mode, include_audio, audio_path, user_prompt.as_deref().map(|s| &s[..s.len().min(50)])
     );
 
     // --- Emit initial progress ---
@@ -102,8 +108,56 @@ pub async fn export_hyperframes(
         },
     );
 
-    // --- Generate HTML based on use_ai flag ---
-    let html = if use_ai {
+    // --- Generate HTML based on mode ---
+    let html = if use_agent_mode {
+        // Agent mode: use rig-based agent with skills
+        let (api_endpoint, model) = {
+            let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+            let settings = db.load_settings()?;
+            (settings.llm_endpoint, settings.llm_model)
+        };
+
+        let config_manager = ConfigManager::new(app.clone());
+        let api_key = config_manager
+            .load_api_key("llm")
+            .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
+            .ok_or_else(|| AppError::Config("LLM API key not configured".to_string()))?;
+
+        // Determine project root (where .agents/ lives)
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+        let agent_config = AgentConfig {
+            api_endpoint,
+            api_key,
+            model,
+            project_root,
+        };
+
+        let app_clone = app.clone();
+        let progress_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
+            let count = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let internal_percent = (1.0 - (-0.15 * count as f64).exp()) * 100.0;
+            let mapped_percent = 20.0 + (internal_percent / 100.0) * 60.0;
+            let _ = app_clone.emit(
+                "hyperframes-progress",
+                HyperframesProgress {
+                    percent: mapped_percent.min(78.0) as f32,
+                    stage: stage.to_string(),
+                },
+            );
+        });
+
+        generate_with_agent(
+            &timeline_entries,
+            &agent_config,
+            Some(on_progress),
+            user_prompt.as_deref(),
+        )
+        .await
+        .map_err(AppError::LlmService)?
+    } else if use_ai {
         // AI generation path: load LLM settings and call AI pipeline
         let (api_endpoint, model) = {
             let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
@@ -143,9 +197,14 @@ pub async fn export_hyperframes(
             );
         });
 
-        generate_composition(&timeline_entries, &llm_config, Some(on_progress))
-            .await
-            .map_err(AppError::LlmService)?
+        generate_composition(
+            &timeline_entries,
+            &llm_config,
+            Some(on_progress),
+            user_prompt.as_deref(),
+        )
+        .await
+        .map_err(AppError::LlmService)?
     } else {
         // Fixed template path
         generate_html(&template, &timeline_entries).map_err(AppError::FileSystem)?
