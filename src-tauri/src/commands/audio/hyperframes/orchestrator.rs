@@ -25,7 +25,34 @@ pub fn build_orchestrator_system_prompt() -> String {
 
 ## 你的职责
 
-分析完整的时间轴数据，制定分片策略和每个片段的视觉指令，确保最终作品在视觉上连贯统一。
+分析完整的时间轴数据，制定分片策略和每个片段的视觉指令，确保最终作品在视觉上连贯统一、节奏丰富。
+
+## 编排原则
+
+1. **节奏变化**：不要所有 chunk 都用同一个节奏。好的作品像音乐一样有快有慢：
+   - 开场：中等节奏，建立氛围
+   - 发展：可以加速，增加能量
+   - 高潮：最快或最戏剧化
+   - 收尾：放慢，让观众呼吸
+   典型模式：moderate → fast → dynamic → slow → moderate
+
+2. **视觉技术多样性**：每个 chunk 应该使用不同的主要视觉技术，避免全程一个风格：
+   - SVG 路径描边动画（适合揭示、连接线、品牌标记）
+   - Canvas 2D 程序化艺术（适合粒子场、数据可视化）
+   - CSS 3D 变换（适合产品展示、卡片翻转、空间感）
+   - 动态排版/逐字动画（适合叙事驱动的内容）
+   - clip-path 遮罩揭示（适合戏剧性的内容展现）
+   - 大量元素 stagger（适合群体运动感）
+
+3. **过渡选择逻辑**：
+   - 相关内容之间：fade 或 dissolve（「这个继续」）
+   - 话题切换：wipe 或 slide（「新章节」）
+   - 高潮时刻：zoom-in 或 morph（「注意这里」）
+   - 收尾：fade（「结束了」）
+   不要每个过渡都不同，选一个主要过渡（60-70%使用）+ 1-2个点缀过渡。
+
+4. **色彩叙事**：全局色彩应该有方向感，从 start_palette 自然演变到 end_palette。
+   不是突变，而是相邻 chunk 共享颜色的渐进过渡。
 
 ## 输出格式
 
@@ -50,7 +77,9 @@ pub fn build_orchestrator_system_prompt() -> String {
         "palette": ["#hex", "#hex", "#hex"],
         "style_keywords": ["keyword1", "keyword2"],
         "rhythm": "moderate",
-        "concept": "描述这个片段的视觉概念"
+        "concept": "描述这个片段的视觉概念",
+        "technique": "primary_technique_name",
+        "layout": "layout_description"
       },
       "transition_in": {
         "transition_type": "fade",
@@ -78,10 +107,25 @@ pub fn build_orchestrator_system_prompt() -> String {
 6. **过渡类型**：可选值包括 "fade"、"wipe-left"、"wipe-right"、"dissolve"、"morph"、"slide-up"、"slide-down"、"zoom-in"、"zoom-out"
 7. **Entry 范围**：所有 chunk 的 [entry_start, entry_end) 必须连续覆盖 [0, N)，不能有间隙或重叠
 8. **Chunk 索引**：chunk.index 必须从 0 开始连续递增
+9. **technique 字段**：每个 chunk 必须指定一个主要视觉技术，可选值：
+   "svg-path-drawing", "canvas-procedural", "css-3d", "kinetic-typography",
+   "clip-path-reveal", "stagger-particles", "organic-shapes", "geometric-patterns",
+   "gradient-morphing", "perspective-depth"
+   相邻 chunk 不应使用相同的 technique。
+10. **layout 字段**：简短描述该 chunk 的布局策略（如 "左对齐标题+右侧装饰"、"全屏居中大字"、"分栏数据面板"）
 
 ## Hyperframes 风格词汇表
 
 可用的风格关键词包括：organic, geometric, flowing, angular, luminescent, matte, translucent, textured, minimal, layered, kinetic, static, rhythmic, chaotic, symmetrical, asymmetrical, gradient, flat, dimensional, ethereal, bold, subtle, warm, cool, vibrant, muted, retro, futuristic, natural, synthetic
+
+## AI 默认行为警告
+
+避免以下「懒惰默认」出现在你的编排中：
+- 所有 chunk 都用 "moderate" 节奏
+- 所有 chunk 都用相同的 technique
+- 所有过渡都用 "fade"
+- 色彩方案全是蓝紫色系
+- 所有 layout 都是居中堆叠
 
 仅输出 JSON，不要包含任何其他文本或解释。"##.to_string()
 }
@@ -558,6 +602,8 @@ mod tests {
                 style_keywords: vec!["organic".to_string()],
                 rhythm: rhythm.to_string(),
                 concept: "test concept".to_string(),
+                technique: None,
+                layout: None,
             },
             transition_in: TransitionSpec {
                 transition_type: "fade".to_string(),

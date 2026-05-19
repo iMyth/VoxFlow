@@ -750,6 +750,8 @@ window.__timelines["ai-generated"] = tl;
                         style_keywords: vec![],
                         rhythm: "moderate".to_string(),
                         concept: "test".to_string(),
+                        technique: None,
+                        layout: None,
                     },
                     transition_in: TransitionSpec {
                         transition_type: "fade".to_string(),
@@ -769,6 +771,8 @@ window.__timelines["ai-generated"] = tl;
                         style_keywords: vec![],
                         rhythm: "fast".to_string(),
                         concept: "test2".to_string(),
+                        technique: None,
+                        layout: None,
                     },
                     transition_in: TransitionSpec {
                         transition_type: "dissolve".to_string(),
@@ -808,6 +812,8 @@ window.__timelines["ai-generated"] = tl;
                         style_keywords: vec![],
                         rhythm: "slow".to_string(),
                         concept: "".to_string(),
+                        technique: None,
+                        layout: None,
                     },
                     transition_in: TransitionSpec {
                         transition_type: "fade".to_string(),
@@ -827,6 +833,8 @@ window.__timelines["ai-generated"] = tl;
                         style_keywords: vec![],
                         rhythm: "fast".to_string(),
                         concept: "".to_string(),
+                        technique: None,
+                        layout: None,
                     },
                     transition_in: TransitionSpec {
                         transition_type: "dissolve".to_string(),
@@ -1022,6 +1030,8 @@ window.__timelines["ai-generated"] = tl;
                         style_keywords: vec![],
                         rhythm: "moderate".to_string(),
                         concept: "".to_string(),
+                        technique: None,
+                        layout: None,
                     },
                     transition_in: TransitionSpec {
                         transition_type: "fade".to_string(),
@@ -1041,6 +1051,8 @@ window.__timelines["ai-generated"] = tl;
                         style_keywords: vec![],
                         rhythm: "fast".to_string(),
                         concept: "".to_string(),
+                        technique: None,
+                        layout: None,
                     },
                     transition_in: TransitionSpec {
                         transition_type: "dissolve".to_string(),

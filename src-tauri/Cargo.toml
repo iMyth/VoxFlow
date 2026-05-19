@@ -30,7 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", features = ["stream", "json"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "process", "io-util"] }
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
@@ -41,7 +41,8 @@ http = "1"
 env_logger = "0.11.10"
 rodio = "0.19"
 cpal = "0.15"
-rig-core = "0.17"
+rig-core = { version = "0.37", features = ["derive"] }
+schemars = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 tiny-skia = "0.11"

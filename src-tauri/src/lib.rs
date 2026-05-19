@@ -104,6 +104,7 @@ pub fn run() {
             commands::check_for_updates,
             commands::install_update,
             commands::audio::hyperframes::export_hyperframes,
+            commands::audio::hyperframes::render::render_hyperframes_video,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
