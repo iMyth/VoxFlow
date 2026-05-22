@@ -16,6 +16,7 @@ pub async fn export_audio_mix(
     output_path: String,
     bgm_path: Option<String>,
     bgm_volume: f32,
+    sleep_mode: Option<bool>,
 ) -> Result<String, AppError> {
     // Load script lines (ordered) and audio fragments from database
     let (script_lines, fragments) = {
@@ -106,6 +107,7 @@ pub async fn export_audio_mix(
         bgm_volume,
         &gaps_ms,
         &output_path,
+        sleep_mode.unwrap_or(false),
     );
 
     let _ = app.emit(

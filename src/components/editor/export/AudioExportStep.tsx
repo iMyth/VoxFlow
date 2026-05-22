@@ -30,6 +30,7 @@ export default function AudioExportStep({ audioReady, missingLines, onAudioExpor
   const [bgmPath, setBgmPath] = useState<string | null>(null);
   const [bgmVolume, setBgmVolume] = useState(0.3);
   const [bgmPlaying, setBgmPlaying] = useState(false);
+  const [sleepMode, setSleepMode] = useState(false);
   const [outputPath, setOutputPath] = useState('');
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState<MixProgress | null>(null);
@@ -114,7 +115,7 @@ export default function AudioExportStep({ audioReady, missingLines, onAudioExpor
     });
 
     try {
-      await ipc.exportAudioMix(currentProject.project.id, selectedPath, bgmPath, bgmVolume);
+      await ipc.exportAudioMix(currentProject.project.id, selectedPath, bgmPath, bgmVolume, sleepMode);
       onAudioExported(selectedPath);
     } catch (e) {
       setError(extractErrorMessage(e));
@@ -187,6 +188,33 @@ export default function AudioExportStep({ audioReady, missingLines, onAudioExpor
                 onValueChange={(v) => void handleBgmVolumeChange(v)}
               />
             </div>
+          )}
+        </div>
+
+        {/* Sleep mode toggle */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              {t('export.sleepMode', '助眠模式')}
+            </Label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={sleepMode}
+              onClick={() => {
+                setSleepMode(!sleepMode);
+              }}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${sleepMode ? 'bg-primary' : 'bg-input'}`}
+            >
+              <span
+                className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform ${sleepMode ? 'translate-x-4' : 'translate-x-0'}`}
+              />
+            </button>
+          </div>
+          {sleepMode && (
+            <p className="text-[11px] text-muted-foreground">
+              {t('export.sleepModeDesc', '降低音调、柔化高频、增加低频温暖感，适合睡前聆听')}
+            </p>
           )}
         </div>
 

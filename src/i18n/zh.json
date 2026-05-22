@@ -237,6 +237,8 @@
     "browse": "浏览",
     "bgmVolume": "BGM 音量 ({{percent}}%)",
     "selectBgm": "选择背景音乐文件",
+    "sleepMode": "助眠模式",
+    "sleepModeDesc": "降低音调、柔化高频、增加低频温暖感，适合睡前聆听",
     "outputLabel": "输出文件名",
     "exportSuccess": "导出成功！",
     "exportFailed": "导出失败",

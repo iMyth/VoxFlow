@@ -237,6 +237,8 @@
     "browse": "Browse",
     "bgmVolume": "BGM Volume ({{percent}}%)",
     "selectBgm": "Select background music file",
+    "sleepMode": "Sleep Mode",
+    "sleepModeDesc": "Lower pitch, soften highs, add bass warmth — ideal for bedtime listening",
     "outputLabel": "Output Filename",
     "exportSuccess": "Export successful!",
     "exportFailed": "Export failed",

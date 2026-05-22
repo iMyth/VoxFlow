@@ -523,13 +523,15 @@ export async function exportAudioMix(
   projectId: string,
   outputPath: string,
   bgmPath: string | null,
-  bgmVolume: number
+  bgmVolume: number,
+  sleepMode?: boolean
 ): Promise<string> {
   return ipcCall<string>('export_audio_mix', {
     projectId,
     outputPath,
     bgmPath,
     bgmVolume,
+    sleepMode: sleepMode ?? false,
   });
 }
 
