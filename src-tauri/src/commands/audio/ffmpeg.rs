@@ -3,6 +3,9 @@
 /// `gaps_ms` is a slice of per-line gap durations (in ms) after each audio clip.
 /// gaps_ms[i] is the silence after audio_paths[i]. The last element is ignored (no gap after last clip).
 /// If gaps_ms is empty, no gaps are inserted.
+///
+/// Each voice clip is normalized to -16 LUFS (EBU R128) using the `loudnorm` filter
+/// to ensure consistent volume across TTS fragments before concatenation.
 pub fn build_ffmpeg_args(
     audio_paths: &[String],
     bgm_path: Option<&str>,
@@ -24,14 +27,31 @@ pub fn build_ffmpeg_args(
         args.push(bgm.to_string());
     }
 
+    // Single file without BGM or gaps: still normalize for consistency
     if n == 1 && bgm_path.is_none() && (gaps_ms.is_empty() || gaps_ms[0] == 0) {
-        args.push("-c".to_string());
-        args.push("copy".to_string());
+        let filter = "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11[voice]".to_string();
+        args.push("-filter_complex".to_string());
+        args.push(filter);
+        args.push("-map".to_string());
+        args.push("[voice]".to_string());
         args.push(output_path.to_string());
         return args;
     }
 
     let mut filter = String::new();
+
+    // Step 1: Normalize each voice clip to -16 LUFS (EBU R128)
+    // This ensures consistent volume across TTS fragments without distortion.
+    // loudnorm parameters:
+    //   I=-16    target integrated loudness (LUFS)
+    //   TP=-1.5  true peak limit (dBTP) — prevents clipping
+    //   LRA=11   loudness range target (LU) — preserves natural dynamics
+    for i in 0..n {
+        filter.push_str(&format!(
+            "[{i}:a]loudnorm=I=-16:TP=-1.5:LRA=11[norm{i}];",
+            i = i
+        ));
+    }
 
     // Check if any gap > 0 exists between clips
     let has_gaps = n > 1 && !gaps_ms.is_empty() && gaps_ms.iter().take(n - 1).any(|&g| g > 0);
@@ -51,10 +71,10 @@ pub fn build_ffmpeg_args(
                 gap_count += 1;
             }
         }
-        // Interleave audio and gaps
+        // Interleave normalized audio and gaps
         let total_segments = n + gap_count;
         for i in 0..n {
-            filter.push_str(&format!("[{}:a]", i));
+            filter.push_str(&format!("[norm{}]", i));
             if i < n - 1 {
                 let gap = gaps_ms.get(i).copied().unwrap_or(0);
                 if gap > 0 {
@@ -65,7 +85,7 @@ pub fn build_ffmpeg_args(
         filter.push_str(&format!("concat=n={}:v=0:a=1[voice]", total_segments));
     } else {
         for i in 0..n {
-            filter.push_str(&format!("[{}:a]", i));
+            filter.push_str(&format!("[norm{}]", i));
         }
         if n > 1 {
             filter.push_str(&format!("concat=n={}:v=0:a=1[voice]", n));
