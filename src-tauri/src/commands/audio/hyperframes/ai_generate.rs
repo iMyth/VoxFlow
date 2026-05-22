@@ -74,7 +74,8 @@ pub async fn call_llm(
     });
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let response = client

@@ -5,6 +5,7 @@ import { Download, CheckCircle, Loader2, FolderOpen, Play, Pause, AlertTriangle 
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { extractErrorMessage } from '../../../lib/extractErrorMessage';
 import * as ipc from '../../../lib/ipc';
 import { useProjectStore } from '../../../store/projectStore';
 import { Alert, AlertTitle, AlertDescription } from '../../ui/alert';
@@ -116,7 +117,7 @@ export default function AudioExportStep({ audioReady, missingLines, onAudioExpor
       await ipc.exportAudioMix(currentProject.project.id, selectedPath, bgmPath, bgmVolume);
       onAudioExported(selectedPath);
     } catch (e) {
-      setError(String(e));
+      setError(extractErrorMessage(e));
     } finally {
       unlisten();
       setExporting(false);

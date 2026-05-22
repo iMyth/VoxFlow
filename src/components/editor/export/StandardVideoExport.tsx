@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle, Loader2, Video, Image, ExternalLink, Folder
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { extractErrorMessage } from '../../../lib/extractErrorMessage';
 import * as ipc from '../../../lib/ipc';
 import { useProjectStore } from '../../../store/projectStore';
 import { Alert, AlertTitle, AlertDescription } from '../../ui/alert';
@@ -90,7 +91,7 @@ export default function StandardVideoExport({
       setDone(true);
       setOutputPath(selectedPath);
     } catch (e) {
-      setError(String(e));
+      setError(extractErrorMessage(e));
     } finally {
       unlisten();
       setExporting(false);
