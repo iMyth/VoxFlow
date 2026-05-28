@@ -14,6 +14,9 @@ import type {
   MixProgress,
   TtsBatchProgress,
   UserSettings,
+  SectionStyleConfig,
+  SectionVideoResult,
+  BatchGenerationResult,
 } from '../types';
 
 // ---- Unified IPC call wrapper with error handling ----
@@ -541,33 +544,6 @@ export function onMixProgress(callback: (progress: MixProgress) => void): Promis
   });
 }
 
-// ---- Video Export ----
-
-export type VideoStyle = 'particles' | 'vinyl' | 'starfield' | 'fractal';
-
-export interface VideoExportConfig {
-  audio_path: string;
-  output_path: string;
-  style: VideoStyle;
-  width?: number;
-  height?: number;
-  fg_color?: string;
-  bg_color?: string;
-  bg_image_path?: string | null;
-  fps?: number;
-  symmetry_folds?: number;
-}
-
-export async function exportVideo(config: VideoExportConfig): Promise<string> {
-  return ipcCall<string>('export_video', { config });
-}
-
-export function onVideoProgress(callback: (progress: MixProgress) => void): Promise<UnlistenFn> {
-  return listen<MixProgress>('video-progress', (event) => {
-    callback(event.payload);
-  });
-}
-
 // ---- Audio Position / Seek ----
 
 export async function getAudioPosition(): Promise<number> {
@@ -616,10 +592,6 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
 
 export async function installUpdate(): Promise<void> {
   return ipcCall<void>('install_update');
-}
-
-export async function cancelVideoExport(): Promise<void> {
-  return ipcCall<void>('cancel_video_export', {});
 }
 
 // ---- Hyperframes Export ----
@@ -680,6 +652,73 @@ export async function renderHyperframesVideo(config: RenderHyperframesConfig): P
 
 export function onHyperframesRenderProgress(callback: (progress: RenderProgress) => void): Promise<UnlistenFn> {
   return listen<RenderProgress>('hyperframes-render-progress', (event) => {
+    callback(event.payload);
+  });
+}
+
+// ---- Section Video Generation ----
+
+export interface SectionVideoProgress {
+  section_id: string;
+  percent: number;
+  stage: string;
+}
+
+export async function generateSectionVideo(
+  projectId: string,
+  sectionId: string,
+  styleConfig: SectionStyleConfig
+): Promise<SectionVideoResult> {
+  return ipcCall<SectionVideoResult>('generate_section_video', {
+    projectId,
+    sectionId,
+    styleConfig,
+  });
+}
+
+export function onSectionVideoProgress(callback: (progress: SectionVideoProgress) => void): Promise<UnlistenFn> {
+  return listen<SectionVideoProgress>('section-video-progress', (event) => {
+    callback(event.payload);
+  });
+}
+
+// ---- Batch Section Video Generation ----
+
+export async function generateAllSections(
+  projectId: string,
+  sectionConfigs: [string, SectionStyleConfig][]
+): Promise<BatchGenerationResult> {
+  return ipcCall<BatchGenerationResult>('generate_all_sections', {
+    projectId,
+    sectionConfigs,
+  });
+}
+
+export async function cancelSectionGeneration(sectionId: string): Promise<void> {
+  return ipcCall<void>('cancel_section_generation', { sectionId });
+}
+
+// ---- Video Merger ----
+
+export interface MergeProgress {
+  percent: number;
+  stage: string;
+}
+
+export async function mergeSectionVideos(
+  projectId: string,
+  outputPath: string,
+  transitionDurationMs?: number
+): Promise<string> {
+  return ipcCall<string>('merge_section_videos', {
+    projectId,
+    outputPath,
+    transitionDurationMs: transitionDurationMs ?? null,
+  });
+}
+
+export function onMergeProgress(callback: (progress: MergeProgress) => void): Promise<UnlistenFn> {
+  return listen<MergeProgress>('merge-progress', (event) => {
     callback(event.payload);
   });
 }

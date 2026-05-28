@@ -211,7 +211,7 @@ pub async fn render_hyperframes_video(
 
 /// Try to parse a progress percentage from hyperframes render output.
 /// Expected formats: "Rendering frame 30/900" or "3%" or "Progress: 45%"
-fn parse_render_progress(line: &str) -> Option<f32> {
+pub fn parse_render_progress(line: &str) -> Option<f32> {
     // Try "frame X/Y" pattern
     if let Some(pos) = line.find('/') {
         let before_slash = &line[..pos];

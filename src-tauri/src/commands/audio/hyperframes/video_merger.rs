@@ -1,0 +1,547 @@
+//! Video merger module for paragraph-level video generation.
+//!
+//! Merges multiple section videos into a single final output with cross-fade transitions.
+
+use std::path::Path;
+use std::sync::Mutex;
+
+use log::info;
+use tauri::{Emitter, Manager};
+
+use crate::commands::audio::ffmpeg::find_ffmpeg;
+use crate::core::db::Database;
+use crate::core::error::AppError;
+
+use super::section_types::{MergeProgress, SectionVideoFile};
+
+/// Probe a video file's codec and resolution using ffprobe.
+fn probe_video(file_path: &str) -> Result<(String, String), AppError> {
+    let ffmpeg_path = find_ffmpeg();
+    let ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe");
+
+    let output = std::process::Command::new(&ffprobe_path)
+        .args([
+            "-v", "quiet",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,width,height",
+            "-of", "csv=p=0",
+            file_path,
+        ])
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::FFmpeg("ffprobe not found. Please install FFmpeg.".to_string())
+            } else {
+                AppError::FFmpeg(format!("Failed to run ffprobe: {}", e))
+            }
+        })?;
+
+    if !output.status.success() {
+        return Err(AppError::FFmpeg(format!(
+            "ffprobe failed for '{}': {}",
+            file_path,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.trim().split(',').collect();
+    if parts.len() >= 3 {
+        let codec = parts[0].to_string();
+        let resolution = format!("{}x{}", parts[1], parts[2]);
+        Ok((codec, resolution))
+    } else {
+        Err(AppError::FFmpeg(format!(
+            "Unexpected ffprobe output for '{}': {}",
+            file_path, stdout
+        )))
+    }
+}
+
+/// Merge section videos into a final output with cross-fade transitions.
+///
+/// - Validates all section files exist
+/// - Probes codec/resolution via ffprobe
+/// - Uses concat demuxer if uniform, re-encodes if mixed
+/// - Applies cross-fade transition (default 500ms, range 100-2000ms, clamped to min adjacent duration)
+/// - Single section: copies without transition
+/// - Emits progress via callback
+/// - Cleans up partial output on failure
+pub async fn merge_videos(
+    section_videos: &[SectionVideoFile],
+    output_path: &Path,
+    transition_duration_ms: u32,
+    on_progress: impl Fn(f32, &str),
+) -> Result<String, AppError> {
+    if section_videos.is_empty() {
+        return Err(AppError::FFmpeg("No section videos to merge".to_string()));
+    }
+
+    // Validate all files exist
+    on_progress(5.0, "validating");
+    let mut missing: Vec<String> = Vec::new();
+    for sv in section_videos {
+        if !Path::new(&sv.file_path).exists() {
+            missing.push(format!(
+                "Section '{}' (order {}): {}",
+                sv.section_id, sv.section_order, sv.file_path
+            ));
+        }
+    }
+    if !missing.is_empty() {
+        return Err(AppError::FFmpeg(format!(
+            "Missing section video files:\n{}",
+            missing.join("\n")
+        )));
+    }
+
+    // Single section: just copy
+    if section_videos.len() == 1 {
+        on_progress(50.0, "concatenating");
+        std::fs::copy(&section_videos[0].file_path, output_path).map_err(|e| {
+            AppError::FFmpeg(format!("Failed to copy single section video: {}", e))
+        })?;
+        on_progress(100.0, "finalizing");
+        return Ok(output_path.to_string_lossy().to_string());
+    }
+
+    // Probe all videos
+    on_progress(10.0, "validating");
+    let mut probes: Vec<(String, String)> = Vec::new();
+    for sv in section_videos {
+        let probe = probe_video(&sv.file_path)?;
+        probes.push(probe);
+    }
+
+    // Check if all uniform
+    let first_codec = &probes[0].0;
+    let first_resolution = &probes[0].1;
+    let is_uniform = probes
+        .iter()
+        .all(|(c, r)| c == first_codec && r == first_resolution);
+
+    on_progress(20.0, "concatenating");
+
+    // Clamp transition duration to valid range
+    let transition_ms = transition_duration_ms.clamp(100, 2000);
+
+    let ffmpeg_bin = find_ffmpeg();
+    let output_str = output_path.to_string_lossy().to_string();
+
+    if is_uniform && transition_ms == 0 {
+        // Use concat demuxer (no re-encode, no transitions)
+        let concat_path = output_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("_concat_list.txt");
+        let concat_path_str = concat_path.to_string_lossy().to_string();
+
+        let mut content = String::new();
+        for sv in section_videos {
+            content.push_str(&format!("file '{}'\n", sv.file_path));
+        }
+        std::fs::write(&concat_path, &content).map_err(|e| {
+            AppError::FFmpeg(format!("Failed to write concat list: {}", e))
+        })?;
+
+        on_progress(40.0, "concatenating");
+
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&ffmpeg_bin)
+                .args([
+                    "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", &concat_path_str,
+                    "-c", "copy",
+                    &output_str,
+                ])
+                .stderr(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .output()
+        })
+        .await
+        .map_err(|e| AppError::FFmpeg(format!("spawn_blocking failed: {}", e)))?;
+
+        // Clean up concat list file
+        let _ = std::fs::remove_file(&concat_path);
+
+        match result {
+            Ok(output) if output.status.success() => {
+                on_progress(100.0, "finalizing");
+                Ok(output_path.to_string_lossy().to_string())
+            }
+            Ok(output) => {
+                let _ = std::fs::remove_file(output_path);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(AppError::FFmpeg(format!(
+                    "ffmpeg concat failed: {}",
+                    stderr.chars().take(500).collect::<String>()
+                )))
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(output_path);
+                Err(AppError::FFmpeg(format!("Failed to execute ffmpeg: {}", e)))
+            }
+        }
+    } else {
+        // Use xfade filter for cross-fade transitions (requires re-encoding)
+        let mut args: Vec<String> = vec!["-y".to_string()];
+
+        // Add all input files
+        for sv in section_videos {
+            args.push("-i".to_string());
+            args.push(sv.file_path.clone());
+        }
+
+        // Build xfade filter chain
+        let n = section_videos.len();
+        let mut filter_complex = String::new();
+        let mut video_label = "[0:v]".to_string();
+        let mut audio_label = "[0:a]".to_string();
+        let mut offset: f64 = 0.0;
+
+        for i in 1..n {
+            // Clamp transition to min of adjacent durations
+            let prev_dur_ms = section_videos[i - 1].duration_ms;
+            let curr_dur_ms = section_videos[i].duration_ms;
+            let min_dur_ms = prev_dur_ms.min(curr_dur_ms);
+            let effective_transition_ms =
+                (transition_ms as i64).min(min_dur_ms).max(0) as u32;
+            let transition_sec = effective_transition_ms as f64 / 1000.0;
+
+            // Calculate offset: cumulative duration minus cumulative transitions
+            if i == 1 {
+                offset = section_videos[0].duration_ms as f64 / 1000.0 - transition_sec;
+            } else {
+                offset += section_videos[i - 1].duration_ms as f64 / 1000.0 - transition_sec;
+            }
+
+            let out_v = format!("[v{}]", i);
+            let out_a = format!("[a{}]", i);
+
+            // Video xfade
+            filter_complex.push_str(&format!(
+                "{}[{}:v]xfade=transition=fade:duration={:.3}:offset={:.3}{};",
+                video_label,
+                i,
+                transition_sec,
+                offset,
+                out_v
+            ));
+
+            // Audio crossfade
+            filter_complex.push_str(&format!(
+                "{}[{}:a]acrossfade=d={:.3}:c1=tri:c2=tri{};",
+                audio_label,
+                i,
+                transition_sec,
+                out_a
+            ));
+
+            video_label = out_v;
+            audio_label = out_a;
+
+            // Emit progress
+            let progress = 20.0 + (i as f32 / (n - 1) as f32) * 60.0;
+            on_progress(progress, "concatenating");
+        }
+
+        // Map final outputs
+        filter_complex.push_str(&format!(
+            "{}setpts=PTS-STARTPTS[vout];{}asetpts=PTS-STARTPTS[aout]",
+            video_label, audio_label
+        ));
+
+        args.push("-filter_complex".to_string());
+        args.push(filter_complex);
+        args.push("-map".to_string());
+        args.push("[vout]".to_string());
+        args.push("-map".to_string());
+        args.push("[aout]".to_string());
+
+        // Output encoding settings
+        args.push("-c:v".to_string());
+        args.push("libx264".to_string());
+        args.push("-preset".to_string());
+        args.push("medium".to_string());
+        args.push("-crf".to_string());
+        args.push("23".to_string());
+        args.push("-c:a".to_string());
+        args.push("aac".to_string());
+        args.push("-b:a".to_string());
+        args.push("192k".to_string());
+
+        args.push(output_str.clone());
+
+        on_progress(80.0, "concatenating");
+
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&ffmpeg_bin)
+                .args(&args)
+                .stderr(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .output()
+        })
+        .await
+        .map_err(|e| AppError::FFmpeg(format!("spawn_blocking failed: {}", e)))?;
+
+        match result {
+            Ok(output) if output.status.success() => {
+                on_progress(100.0, "finalizing");
+                Ok(output_path.to_string_lossy().to_string())
+            }
+            Ok(output) => {
+                let _ = std::fs::remove_file(output_path);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(AppError::FFmpeg(format!(
+                    "ffmpeg merge with transitions failed: {}",
+                    stderr.chars().take(500).collect::<String>()
+                )))
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(output_path);
+                Err(AppError::FFmpeg(format!("Failed to execute ffmpeg: {}", e)))
+            }
+        }
+    }
+}
+
+/// Tauri command to merge all section videos into a final output.
+#[tauri::command]
+pub async fn merge_section_videos(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+    output_path: String,
+    transition_duration_ms: Option<u32>,
+) -> Result<String, AppError> {
+    info!(
+        "[Video Merger] Starting merge: project={}, output={}, transition={}ms",
+        project_id,
+        output_path,
+        transition_duration_ms.unwrap_or(500)
+    );
+
+    // Load sections from DB to get section_order
+    let sections = {
+        let db_guard = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        db_guard.list_sections(&project_id)?
+    };
+
+    // Resolve section video file paths
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::FileSystem(format!("Failed to resolve app data dir: {}", e)))?;
+
+    let mut section_videos: Vec<SectionVideoFile> = Vec::new();
+    for section in &sections {
+        let video_path = app_data_dir
+            .join("projects")
+            .join(&project_id)
+            .join("export")
+            .join("sections")
+            .join(&section.id)
+            .join("output.mp4");
+
+        if video_path.exists() {
+            // Get duration from file metadata or use a default
+            let duration_ms = get_video_duration_ms(&video_path.to_string_lossy()).unwrap_or(0);
+
+            section_videos.push(SectionVideoFile {
+                section_id: section.id.clone(),
+                section_order: section.section_order,
+                file_path: video_path.to_string_lossy().to_string(),
+                duration_ms,
+            });
+        }
+    }
+
+    if section_videos.is_empty() {
+        return Err(AppError::FFmpeg(
+            "No section videos found. Generate section videos first.".to_string(),
+        ));
+    }
+
+    // Sort by section_order
+    section_videos.sort_by_key(|sv| sv.section_order);
+
+    let transition_ms = transition_duration_ms.unwrap_or(500);
+    let out_path = Path::new(&output_path);
+
+    // Create output directory if needed
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            AppError::FileSystem(format!("Failed to create output directory: {}", e))
+        })?;
+    }
+
+    let app_clone = app.clone();
+    let on_progress = move |percent: f32, stage: &str| {
+        let _ = app_clone.emit(
+            "merge-progress",
+            MergeProgress {
+                percent,
+                stage: stage.to_string(),
+            },
+        );
+    };
+
+    let result = merge_videos(&section_videos, out_path, transition_ms, on_progress).await?;
+
+    info!("[Video Merger] Merge complete: {}", result);
+    Ok(result)
+}
+
+/// Get video duration in milliseconds using ffprobe.
+fn get_video_duration_ms(file_path: &str) -> Result<i64, AppError> {
+    let ffmpeg_path = find_ffmpeg();
+    let ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe");
+
+    let output = std::process::Command::new(&ffprobe_path)
+        .args([
+            "-v", "quiet",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            file_path,
+        ])
+        .output()
+        .map_err(|e| AppError::FFmpeg(format!("Failed to run ffprobe: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(AppError::FFmpeg("ffprobe duration query failed".to_string()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let duration_secs: f64 = stdout
+        .trim()
+        .parse()
+        .map_err(|_| AppError::FFmpeg("Failed to parse duration".to_string()))?;
+
+    Ok((duration_secs * 1000.0) as i64)
+}
+
+
+// ---- Pure duration calculation functions for testing ----
+
+/// Calculate the final merged video duration given section durations and transition duration.
+///
+/// Formula: final_duration = sum(section_durations) - (N-1) * transition_duration
+/// where N = number of sections.
+///
+/// The transition duration is clamped per-pair to min(adjacent durations), and the
+/// overall result is clamped to be non-negative.
+pub fn calculate_merged_duration(section_durations_ms: &[i64], transition_duration_ms: u32) -> i64 {
+    if section_durations_ms.is_empty() {
+        return 0;
+    }
+    if section_durations_ms.len() == 1 {
+        return section_durations_ms[0].max(0);
+    }
+
+    let sum: i64 = section_durations_ms.iter().sum();
+    let n = section_durations_ms.len();
+
+    // Calculate total overlap: sum of effective transitions between each pair
+    let mut total_overlap_ms: i64 = 0;
+    for i in 0..(n - 1) {
+        let min_adjacent = section_durations_ms[i].min(section_durations_ms[i + 1]);
+        let effective_transition = (transition_duration_ms as i64).min(min_adjacent);
+        total_overlap_ms += effective_transition.max(0);
+    }
+
+    (sum - total_overlap_ms).max(0)
+}
+
+/// Calculate the effective transition duration between two adjacent sections,
+/// clamping to the minimum of their durations.
+pub fn clamp_transition(duration_a_ms: i64, duration_b_ms: i64, transition_ms: u32) -> u32 {
+    let min_dur = duration_a_ms.min(duration_b_ms).max(0) as u32;
+    transition_ms.min(min_dur)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ---- Property-based tests for video merger duration calculation ----
+
+    proptest! {
+        /// **Validates: Requirements 10.3**
+        /// Property: final_duration = sum(section_durations) - sum(effective_transitions)
+        /// where each effective transition is clamped to min(adjacent durations)
+        #[test]
+        fn prop_final_duration_formula(
+            durations in prop::collection::vec(1i64..=60_000, 2..10),
+            transition_ms in 100u32..=2000,
+        ) {
+            let result = calculate_merged_duration(&durations, transition_ms);
+
+            // Manually compute expected
+            let sum: i64 = durations.iter().sum();
+            let mut total_overlap: i64 = 0;
+            for i in 0..(durations.len() - 1) {
+                let min_adj = durations[i].min(durations[i + 1]);
+                let eff = (transition_ms as i64).min(min_adj).max(0);
+                total_overlap += eff;
+            }
+            let expected = (sum - total_overlap).max(0);
+
+            prop_assert_eq!(result, expected);
+        }
+
+        /// **Validates: Requirements 10.4**
+        /// Property: clamping ensures non-negative results
+        #[test]
+        fn prop_clamping_non_negative(
+            durations in prop::collection::vec(0i64..=60_000, 1..15),
+            transition_ms in 0u32..=5000,
+        ) {
+            let result = calculate_merged_duration(&durations, transition_ms);
+            prop_assert!(
+                result >= 0,
+                "Duration should be non-negative but got {}",
+                result
+            );
+        }
+
+        /// **Validates: Requirements 10.5**
+        /// Property: single section produces output without transitions (duration unchanged)
+        #[test]
+        fn prop_single_section_no_transition(
+            duration in 1i64..=120_000,
+            transition_ms in 100u32..=2000,
+        ) {
+            let result = calculate_merged_duration(&[duration], transition_ms);
+            prop_assert_eq!(
+                result, duration,
+                "Single section duration should be unchanged: got {} expected {}",
+                result, duration
+            );
+        }
+
+        /// **Validates: Requirements 10.4**
+        /// Property: clamp_transition never exceeds min of adjacent durations
+        #[test]
+        fn prop_clamp_transition_bounded(
+            dur_a in 0i64..=60_000,
+            dur_b in 0i64..=60_000,
+            transition_ms in 0u32..=5000,
+        ) {
+            let result = clamp_transition(dur_a, dur_b, transition_ms);
+            let min_dur = dur_a.min(dur_b).max(0) as u32;
+            prop_assert!(
+                result <= min_dur,
+                "Clamped transition {} exceeds min adjacent duration {}",
+                result, min_dur
+            );
+            prop_assert!(
+                result <= transition_ms,
+                "Clamped transition {} exceeds requested transition {}",
+                result, transition_ms
+            );
+        }
+    }
+}

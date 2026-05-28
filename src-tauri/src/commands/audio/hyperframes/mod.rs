@@ -5,12 +5,17 @@
 
 pub mod agent;
 pub mod ai_generate;
+pub mod batch_video;
 pub mod merger;
 pub mod orchestrator;
 pub mod pipeline_types;
 pub mod prompt;
 pub mod render;
+pub mod section_audio;
+pub mod section_types;
+pub mod section_video;
 pub mod templates;
+pub mod video_merger;
 pub mod timeline;
 pub mod validation;
 pub mod worker;

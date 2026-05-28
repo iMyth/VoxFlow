@@ -45,16 +45,8 @@ rig-core = { version = "0.37", features = ["derive"] }
 schemars = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
-tiny-skia = "0.11"
-symphonia = { version = "0.5", features = ["mp3", "aac", "pcm", "wav"] }
-rand = "0.8"
-rayon = "1.10"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-arrayvec = "0.7"
-wgpu = "25"
-pollster = "0.4"
-bytemuck = { version = "1", features = ["derive"] }
 regex = "1"
+tokio-util = "0.7"
 
 [dev-dependencies]
 proptest = "1"
