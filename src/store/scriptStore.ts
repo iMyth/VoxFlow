@@ -83,6 +83,7 @@ export interface ToolCallEntry {
 interface ScriptStore {
   lines: ScriptLine[];
   sections: ScriptSection[];
+  globalVideoStyle: string;
   isGenerating: boolean;
   isAnalyzing: boolean;
   isDirty: boolean;
@@ -96,6 +97,7 @@ interface ScriptStore {
   agentPlan: ipc.AgentPlan | null;
   workflow: 'ai' | 'manual' | null;
   setWorkflow: (mode: 'ai' | 'manual' | null) => void;
+  setGlobalVideoStyle: (style: string) => void;
   analyzeOutline: (outline: string) => Promise<void>;
   generateScript: (outline: string, extraInstructions?: string, confirmedCharNames?: string[]) => Promise<void>;
   runAgentPipeline: (outline: string, extraInstructions?: string) => Promise<void>;
@@ -130,6 +132,7 @@ export const useScriptStore = create<ScriptStore>()(
     (set, get) => ({
       lines: [],
       sections: [],
+      globalVideoStyle: '',
       isGenerating: false,
       isAnalyzing: false,
       isDirty: false,
@@ -141,6 +144,10 @@ export const useScriptStore = create<ScriptStore>()(
       batchTtsProgress: null,
       agentPlan: null,
       workflow: null,
+
+      setGlobalVideoStyle: (style: string) => {
+        set({ globalVideoStyle: style });
+      },
 
       setEnableThinking: (v: boolean) => {
         set({ enableThinking: v });

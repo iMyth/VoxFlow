@@ -60,6 +60,10 @@ export async function saveOutline(projectId: string, outline: string): Promise<v
   return ipcCall<void>('save_outline', { projectId, outline });
 }
 
+export async function saveGlobalVideoStyle(projectId: string, style: string): Promise<void> {
+  return ipcCall<void>('save_global_video_style', { projectId, style });
+}
+
 export async function exportScriptText(projectId: string, outputPath: string): Promise<void> {
   return ipcCall<void>('export_script_text', { projectId, outputPath });
 }
@@ -599,10 +603,8 @@ export async function installUpdate(): Promise<void> {
 export interface HyperframesExportConfig {
   project_id: string;
   output_dir: string;
-  template: 'minimal-subtitle' | 'dialogue-cards' | 'chapter-sections';
   include_audio: boolean;
   audio_path?: string | null;
-  use_ai: boolean;
   user_prompt?: string | null;
 }
 
@@ -615,10 +617,8 @@ export async function exportHyperframes(config: HyperframesExportConfig): Promis
   return ipcCall<string>('export_hyperframes', {
     projectId: config.project_id,
     outputDir: config.output_dir,
-    template: config.template,
     includeAudio: config.include_audio,
     audioPath: config.audio_path ?? null,
-    useAi: config.use_ai,
     userPrompt: config.user_prompt ?? null,
   });
 }
@@ -673,6 +673,13 @@ export async function generateSectionVideo(
     projectId,
     sectionId,
     styleConfig,
+  });
+}
+
+export async function checkSectionVideoExists(projectId: string, sectionId: string): Promise<boolean> {
+  return ipcCall<boolean>('check_section_video_exists', {
+    projectId,
+    sectionId,
   });
 }
 

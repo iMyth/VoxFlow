@@ -5,7 +5,6 @@ import { Button } from '../../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Label } from '../../ui/label';
 import { Progress } from '../../ui/progress';
-import { Tabs, TabsList, TabsTrigger } from '../../ui/tabs';
 
 import type { ScriptSection, SectionStatus, SectionStyleConfig } from '../../../types';
 
@@ -24,8 +23,6 @@ const STATUS_DOT_COLORS: Record<SectionStatus['state'], string> = {
   completed: 'bg-green-500',
   failed: 'bg-red-500',
 };
-
-type TemplateId = 'minimal-subtitle' | 'dialogue-cards' | 'chapter-sections';
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -51,35 +48,9 @@ export default function SectionConfigCard({
 }: SectionConfigCardProps) {
   const { t } = useTranslation();
 
-  const templates: { id: TemplateId; name: string; desc: string }[] = [
-    {
-      id: 'minimal-subtitle',
-      name: t('export.hyperframesTemplateMinimalSubtitle'),
-      desc: t('export.hyperframesTemplateMinimalSubtitleDesc'),
-    },
-    {
-      id: 'dialogue-cards',
-      name: t('export.hyperframesTemplateDialogueCards'),
-      desc: t('export.hyperframesTemplateDialogueCardsDesc'),
-    },
-    {
-      id: 'chapter-sections',
-      name: t('export.hyperframesTemplateChapterSections'),
-      desc: t('export.hyperframesTemplateChapterSectionsDesc'),
-    },
-  ];
-
-  const handleModeChange = (mode: string) => {
-    onConfigChange({ ...config, mode: mode as SectionStyleConfig['mode'] });
-  };
-
-  const handleTemplateChange = (templateId: TemplateId) => {
-    onConfigChange({ ...config, template: templateId });
-  };
-
   const handlePromptChange = (prompt: string) => {
     if (prompt.length <= 500) {
-      onConfigChange({ ...config, ai_prompt: prompt });
+      onConfigChange({ ...config, user_prompt: prompt });
     }
   };
 
@@ -93,108 +64,26 @@ export default function SectionConfigCard({
       </CardHeader>
 
       <CardContent className="space-y-3">
-        {/* Mode toggle tabs */}
-        <div className="space-y-1.5">
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            {t('export.sectionMode')}
-          </Label>
-          <Tabs value={config.mode} onValueChange={handleModeChange}>
-            <TabsList className="w-full">
-              <TabsTrigger value="template" className="flex-1">
-                {t('export.sectionModeTemplate')}
-              </TabsTrigger>
-              <TabsTrigger value="ai" className="flex-1">
-                <Sparkles className="h-3.5 w-3.5 mr-1" />
-                {t('export.sectionModeAi')}
-              </TabsTrigger>
-              <TabsTrigger value="agent" className="flex-1">
-                <Wand2 className="h-3.5 w-3.5 mr-1" />
-                {t('export.sectionModeAgent')}
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </div>
-
-        {/* Template picker */}
-        {config.mode === 'template' && (
-          <div className="space-y-1.5">
-            <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              {t('export.sectionSelectTemplate')}
-            </Label>
-            <div className="grid gap-2">
-              {templates.map((tmpl) => (
-                <button
-                  key={tmpl.id}
-                  type="button"
-                  className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
-                    (config.template ?? 'minimal-subtitle') === tmpl.id
-                      ? 'border-primary bg-primary/5'
-                      : 'border-border hover:border-primary/50 hover:bg-muted/50'
-                  }`}
-                  onClick={() => {
-                    handleTemplateChange(tmpl.id);
-                  }}
-                >
-                  <div
-                    className={`mt-0.5 h-3 w-3 rounded-full border-2 shrink-0 ${
-                      (config.template ?? 'minimal-subtitle') === tmpl.id
-                        ? 'border-primary bg-primary'
-                        : 'border-muted-foreground/40'
-                    }`}
-                  />
-                  <div>
-                    <div className="text-sm font-medium">{tmpl.name}</div>
-                    <div className="text-xs text-muted-foreground">{tmpl.desc}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* AI prompt */}
-        {config.mode === 'ai' && (
-          <div className="space-y-2">
-            <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              {t('export.sectionAiPromptLabel')}
-            </Label>
-            <textarea
-              className="w-full min-h-[80px] rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-              placeholder={t('export.sectionAiPromptPlaceholder')}
-              value={config.ai_prompt ?? ''}
-              maxLength={500}
-              onChange={(e) => {
-                handlePromptChange(e.target.value);
-              }}
-            />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{t('export.sectionAiHint')}</span>
-              <span>{(config.ai_prompt ?? '').length}/500</span>
-            </div>
-          </div>
-        )}
-
         {/* Agent prompt */}
-        {config.mode === 'agent' && (
-          <div className="space-y-2">
-            <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              {t('export.sectionAgentPromptLabel')}
-            </Label>
-            <textarea
-              className="w-full min-h-[80px] rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-              placeholder={t('export.sectionAgentPromptPlaceholder')}
-              value={config.ai_prompt ?? ''}
-              maxLength={500}
-              onChange={(e) => {
-                handlePromptChange(e.target.value);
-              }}
-            />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{t('export.sectionAgentHint')}</span>
-              <span>{(config.ai_prompt ?? '').length}/500</span>
-            </div>
+        <div className="space-y-2">
+          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <Wand2 className="h-3.5 w-3.5 inline mr-1" />
+            {t('export.sectionAgentPromptLabel')}
+          </Label>
+          <textarea
+            className="w-full min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+            placeholder={t('export.sectionAgentPromptPlaceholder')}
+            value={config.user_prompt ?? ''}
+            maxLength={500}
+            onChange={(e) => {
+              handlePromptChange(e.target.value);
+            }}
+          />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>{t('export.sectionAgentHint')}</span>
+            <span>{(config.user_prompt ?? '').length}/500</span>
           </div>
-        )}
+        </div>
 
         {/* Progress bar when generating */}
         {status.state === 'generating' && (

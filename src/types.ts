@@ -2,6 +2,7 @@ export interface Project {
   id: string;
   name: string;
   outline: string;
+  global_video_style: string;
   created_at: string;
   updated_at: string;
 }
@@ -105,9 +106,10 @@ export interface CharacterInput {
 // Section video generation types
 
 export interface SectionStyleConfig {
-  mode: 'template' | 'ai' | 'agent';
-  template?: string;
-  ai_prompt?: string;
+  mode: 'agent';
+  user_prompt?: string;
+  useGlobalStyle?: boolean;
+  customStyle?: string;
 }
 
 export type SectionStatus =

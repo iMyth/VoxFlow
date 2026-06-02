@@ -4,7 +4,7 @@
 //! 1. Loading section data from DB
 //! 2. Computing section timeline
 //! 3. Merging section audio
-//! 4. Generating HTML composition (template/AI/agent)
+//! 4. Generating HTML composition via agent
 //! 5. Rendering HTML to MP4 via `npx hyperframes render`
 //! 6. Merging audio into the final video
 
@@ -21,11 +21,9 @@ use crate::core::db::Database;
 use crate::core::error::AppError;
 
 use super::agent::{generate_with_agent, AgentConfig};
-use super::ai_generate::{generate_composition, LlmConfig};
 use super::render::parse_render_progress;
 use super::section_audio::merge_section_audio;
-use super::section_types::{GenerationMode, SectionProgress, SectionStyleConfig, SectionVideoResult};
-use super::templates::{generate_html, generate_meta_json};
+use super::section_types::{SectionProgress, SectionStyleConfig, SectionVideoResult};
 use super::timeline::compute_section_timeline;
 
 /// Emit a section-video-progress event.
@@ -122,115 +120,51 @@ pub async fn generate_section_video(
         audio_result.total_duration_ms, audio_result.file_path
     );
 
-    // --- Stage 4: Generate HTML composition (15% → 50%) ---
+    // --- Stage 4: Generate HTML composition via agent (15% → 50%) ---
     emit_section_progress(&app, &section_id, 20.0, "html_generation");
 
-    let html = match style_config.mode {
-        GenerationMode::Agent => {
-            // Agent mode: use rig-based agent with skills
-            let (api_endpoint, model) = {
-                let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
-                let settings = db.load_settings()?;
-                (settings.llm_endpoint, settings.llm_model)
-            };
-
-            let config_manager = ConfigManager::new(app.clone());
-            let api_key = config_manager
-                .load_api_key("llm")
-                .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
-                .ok_or_else(|| AppError::Config("LLM API key not configured".to_string()))?;
-
-            let project_root =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-            let agent_config = AgentConfig {
-                api_endpoint,
-                api_key,
-                model,
-                project_root,
-            };
-
-            let app_clone = app.clone();
-            let section_id_clone = section_id.clone();
-            let progress_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-            let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
-                let count =
-                    progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let internal_percent = (1.0 - (-0.15 * count as f64).exp()) * 100.0;
-                // Map to 20%-50% range
-                let mapped_percent = 20.0 + (internal_percent / 100.0) * 30.0;
-                emit_section_progress(
-                    &app_clone,
-                    &section_id_clone,
-                    mapped_percent.min(48.0) as f32,
-                    stage,
-                );
-            });
-
-            generate_with_agent(
-                &timeline_entries,
-                &agent_config,
-                Some(on_progress),
-                style_config.ai_prompt.as_deref(),
-            )
-            .await
-            .map_err(AppError::LlmService)?
-        }
-        GenerationMode::Ai => {
-            // AI generation path
-            let (api_endpoint, model) = {
-                let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
-                let settings = db.load_settings()?;
-                (settings.llm_endpoint, settings.llm_model)
-            };
-
-            let config_manager = ConfigManager::new(app.clone());
-            let api_key = config_manager
-                .load_api_key("llm")
-                .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
-                .ok_or_else(|| AppError::Config("LLM API key not configured".to_string()))?;
-
-            let llm_config = LlmConfig {
-                api_endpoint: &api_endpoint,
-                api_key: &api_key,
-                model: &model,
-            };
-
-            let app_clone = app.clone();
-            let section_id_clone = section_id.clone();
-            let progress_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-            let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
-                let count =
-                    progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let internal_percent = (1.0 - (-0.15 * count as f64).exp()) * 100.0;
-                // Map to 20%-50% range
-                let mapped_percent = 20.0 + (internal_percent / 100.0) * 30.0;
-                emit_section_progress(
-                    &app_clone,
-                    &section_id_clone,
-                    mapped_percent.min(48.0) as f32,
-                    stage,
-                );
-            });
-
-            generate_composition(
-                &timeline_entries,
-                &llm_config,
-                Some(on_progress),
-                style_config.ai_prompt.as_deref(),
-            )
-            .await
-            .map_err(AppError::LlmService)?
-        }
-        GenerationMode::Template => {
-            // Template mode
-            let template_name = style_config
-                .template
-                .as_deref()
-                .unwrap_or("minimal-subtitle");
-            generate_html(template_name, &timeline_entries).map_err(AppError::FileSystem)?
-        }
+    let (api_endpoint, model) = {
+        let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+        let settings = db.load_settings()?;
+        (settings.llm_endpoint, settings.llm_model)
     };
+
+    let config_manager = ConfigManager::new(app.clone());
+    let api_key = config_manager
+        .load_api_key("llm")
+        .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
+        .ok_or_else(|| AppError::Config("LLM API key not configured".to_string()))?;
+
+    let agent_config = AgentConfig {
+        api_endpoint,
+        api_key,
+        model,
+    };
+
+    let app_clone = app.clone();
+    let section_id_clone = section_id.clone();
+    let progress_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
+        let count = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let internal_percent = (1.0 - (-0.15 * count as f64).exp()) * 100.0;
+        // Map to 20%-50% range
+        let mapped_percent = 20.0 + (internal_percent / 100.0) * 30.0;
+        emit_section_progress(
+            &app_clone,
+            &section_id_clone,
+            mapped_percent.min(48.0) as f32,
+            stage,
+        );
+    });
+
+    let html = generate_with_agent(
+        &timeline_entries,
+        &agent_config,
+        Some(on_progress),
+        style_config.user_prompt.as_deref(),
+    )
+    .await
+    .map_err(AppError::LlmService)?;
 
     emit_section_progress(&app, &section_id, 50.0, "html_generation");
 
@@ -242,8 +176,16 @@ pub async fn generate_section_video(
         .iter()
         .map(|e| e.start_time + e.duration)
         .fold(0.0_f64, f64::max);
-    let meta_json = generate_meta_json(&section_id, &format!("Section {}", section_id), total_duration);
-    std::fs::write(composition_dir.join("meta.json"), &meta_json)
+    let meta_json = serde_json::json!({
+        "id": &section_id,
+        "title": format!("Section {}", section_id),
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "duration": total_duration
+    });
+    let meta_str = serde_json::to_string_pretty(&meta_json).unwrap_or_default();
+    std::fs::write(composition_dir.join("meta.json"), meta_str)
         .map_err(|e| AppError::FileSystem(format!("Failed to write meta.json: {}", e)))?;
 
     info!(
@@ -257,18 +199,32 @@ pub async fn generate_section_video(
     let silent_video = composition_dir.join("_render_output.mp4");
     let silent_video_str = silent_video.to_string_lossy().to_string();
 
-    let render_result = Command::new("npx")
+    let node_env = super::render::find_node_env();
+    info!(
+        "[Section Video] Node env: npx={}, bin_dir={}",
+        node_env.npx, node_env.bin_dir
+    );
+
+    let mut render_cmd = Command::new(&node_env.npx);
+    render_cmd
         .args(["hyperframes", "render", "--output", &silent_video_str])
         .current_dir(&composition_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+        .stderr(Stdio::piped());
+    if !node_env.bin_dir.is_empty() {
+        let path = super::render::prepend_to_path(&node_env.bin_dir);
+        render_cmd.env("PATH", &path);
+    }
+    let render_result = render_cmd.spawn();
 
     let mut render_child = render_result.map_err(|e| {
         AppError::FileSystem(format!("Failed to start hyperframes render: {}", e))
     })?;
 
-    // Read stderr for progress
+    // Read stderr for progress and error capture
+    let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_capture_clone = stderr_capture.clone();
+
     if let Some(stderr) = render_child.stderr.take() {
         let app_clone = app.clone();
         let section_id_clone = section_id.clone();
@@ -276,6 +232,11 @@ pub async fn generate_section_video(
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                // Capture all stderr for error reporting
+                if let Ok(mut captured) = stderr_capture_clone.lock() {
+                    captured.push_str(&line);
+                    captured.push('\n');
+                }
                 if let Some(pct) = parse_render_progress(&line) {
                     // Map render progress to 55%-88% range
                     let mapped = 55.0 + pct * 33.0;
@@ -295,9 +256,14 @@ pub async fn generate_section_video(
     })?;
 
     if !render_status.success() {
+        let stderr_output = stderr_capture
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default();
         return Err(AppError::FileSystem(format!(
-            "hyperframes render failed with exit code: {:?}",
-            render_status.code()
+            "hyperframes render failed with exit code: {:?}\nstderr: {}",
+            render_status.code(),
+            stderr_output.trim()
         )));
     }
 
@@ -378,4 +344,27 @@ pub async fn generate_section_video(
     );
 
     Ok(result)
+}
+
+/// Check if a section video file exists.
+#[tauri::command]
+pub fn check_section_video_exists(
+    app: tauri::AppHandle,
+    project_id: String,
+    section_id: String,
+) -> Result<bool, AppError> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::FileSystem(format!("Failed to resolve app data dir: {}", e)))?;
+
+    let output_video_path = app_data_dir
+        .join("projects")
+        .join(&project_id)
+        .join("export")
+        .join("sections")
+        .join(&section_id)
+        .join("output.mp4");
+
+    Ok(output_video_path.exists())
 }

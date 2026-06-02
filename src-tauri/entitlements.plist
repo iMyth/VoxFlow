@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Allow JIT compilation (needed for Node.js V8 engine) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Allow unsigned executable memory (needed for Node.js) -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Disable library validation (allow loading external dylibs like hyperframes) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Inherit entitlements to child processes (npx, node, ffmpeg) -->
+    <key>com.apple.security.inherit</key>
+    <true/>
+</dict>
+</plist>

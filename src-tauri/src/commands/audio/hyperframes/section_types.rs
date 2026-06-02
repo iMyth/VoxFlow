@@ -7,17 +7,14 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SectionStyleConfig {
     pub mode: GenerationMode,
-    /// Template name for template mode.
-    pub template: Option<String>,
-    /// User prompt for AI or agent mode.
-    pub ai_prompt: Option<String>,
+    /// Optional user instructions for the agent.
+    pub user_prompt: Option<String>,
 }
 
 /// The generation approach for a section's video.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GenerationMode {
-    Template,
-    Ai,
     Agent,
 }
 

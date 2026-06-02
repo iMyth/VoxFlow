@@ -5,6 +5,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub outline: String,
+    pub global_video_style: String,
     pub created_at: String,
     pub updated_at: String,
 }

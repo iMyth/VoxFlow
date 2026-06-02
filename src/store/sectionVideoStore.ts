@@ -5,6 +5,8 @@ import type { SectionStyleConfig, SectionStatus } from '../types';
 interface SectionVideoState {
   configs: Record<string, SectionStyleConfig>;
   statuses: Record<string, SectionStatus>;
+  audioReady: Record<string, boolean>;
+  videoReady: Record<string, boolean>;
   batchInProgress: boolean;
   batchCompleted: number;
   batchFailed: number;
@@ -13,6 +15,8 @@ interface SectionVideoState {
 
   setConfig: (sectionId: string, config: SectionStyleConfig) => void;
   setStatus: (sectionId: string, status: SectionStatus) => void;
+  setAudioReady: (sectionId: string, ready: boolean) => void;
+  setVideoReady: (sectionId: string, ready: boolean) => void;
   setBatchState: (
     partial: Partial<Pick<SectionVideoState, 'batchInProgress' | 'batchCompleted' | 'batchFailed' | 'batchTotal'>>
   ) => void;
@@ -22,6 +26,8 @@ interface SectionVideoState {
 const initialState = {
   configs: {} as Record<string, SectionStyleConfig>,
   statuses: {} as Record<string, SectionStatus>,
+  audioReady: {} as Record<string, boolean>,
+  videoReady: {} as Record<string, boolean>,
   batchInProgress: false,
   batchCompleted: 0,
   batchFailed: 0,
@@ -41,6 +47,18 @@ export const useSectionVideoStore = create<SectionVideoState>((set) => ({
   setStatus: (sectionId, status) => {
     set((state) => ({
       statuses: { ...state.statuses, [sectionId]: status },
+    }));
+  },
+
+  setAudioReady: (sectionId, ready) => {
+    set((state) => ({
+      audioReady: { ...state.audioReady, [sectionId]: ready },
+    }));
+  },
+
+  setVideoReady: (sectionId, ready) => {
+    set((state) => ({
+      videoReady: { ...state.videoReady, [sectionId]: ready },
     }));
   },
 

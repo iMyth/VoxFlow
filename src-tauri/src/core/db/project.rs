@@ -8,8 +8,8 @@ use super::super::models::Project;
 /// Insert a new project into the database.
 pub fn insert_project(conn: &Connection, project: &Project) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO projects (id, name, outline, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![project.id, project.name, project.outline, project.created_at, project.updated_at],
+        "INSERT INTO projects (id, name, outline, global_video_style, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![project.id, project.name, project.outline, project.global_video_style, project.created_at, project.updated_at],
     )
     .map_err(|e| AppError::Database(e.to_string()))?;
     Ok(())
@@ -18,7 +18,7 @@ pub fn insert_project(conn: &Connection, project: &Project) -> Result<(), AppErr
 /// List all projects ordered by creation time (newest first).
 pub fn list_projects(conn: &Connection) -> Result<Vec<Project>, AppError> {
     let mut stmt = conn
-        .prepare("SELECT id, name, outline, created_at, updated_at FROM projects ORDER BY created_at DESC")
+        .prepare("SELECT id, name, outline, global_video_style, created_at, updated_at FROM projects ORDER BY created_at DESC")
         .map_err(|e| AppError::Database(e.to_string()))?;
 
     let projects = stmt
@@ -27,8 +27,9 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>, AppError> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 outline: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                global_video_style: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })
         .map_err(|e| AppError::Database(e.to_string()))?
@@ -41,15 +42,16 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<Project>, AppError> {
 /// Get a single project by ID.
 pub fn get_project(conn: &Connection, id: &str) -> Result<Project, AppError> {
     conn.query_row(
-        "SELECT id, name, outline, created_at, updated_at FROM projects WHERE id = ?1",
+        "SELECT id, name, outline, global_video_style, created_at, updated_at FROM projects WHERE id = ?1",
         rusqlite::params![id],
         |row| {
             Ok(Project {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 outline: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                global_video_style: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         },
     )
@@ -73,6 +75,16 @@ pub fn save_project_outline(conn: &Connection, id: &str, outline: &str) -> Resul
     conn.execute(
         "UPDATE projects SET outline = ?1, updated_at = datetime('now') WHERE id = ?2",
         rusqlite::params![outline, id],
+    )
+    .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(())
+}
+
+/// Save the global video style for a project.
+pub fn save_global_video_style(conn: &Connection, id: &str, style: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE projects SET global_video_style = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![style, id],
     )
     .map_err(|e| AppError::Database(e.to_string()))?;
     Ok(())

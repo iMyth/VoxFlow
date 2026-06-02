@@ -60,6 +60,7 @@ function App() {
     useScriptStore.setState({
       lines: [],
       sections: [],
+      globalVideoStyle: '',
       isDirty: false,
       streamingText: '',
       thinkingText: '',
@@ -79,6 +80,7 @@ function App() {
       useScriptStore.setState({
         lines: currentProject.script_lines,
         sections: currentProject.sections,
+        globalVideoStyle: currentProject.project.global_video_style,
         isDirty: false,
       });
     }
