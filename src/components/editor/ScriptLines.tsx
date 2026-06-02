@@ -435,15 +435,24 @@ export default function ScriptLines({
             </div>
             <p className="text-sm text-muted-foreground max-w-xs">{emptyHint}</p>
             {workflow === 'manual' && (
-              <Button
-                variant="outline"
-                className="mt-4 border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
-                onClick={() => {
-                  addLine(-1);
-                }}
-              >
-                <Plus className="h-4 w-4" /> {t('editor.addLine')}
-              </Button>
+              <div className="flex gap-2 mt-4">
+                <Button
+                  variant="outline"
+                  className="border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+                  onClick={() => {
+                    addLine(-1);
+                  }}
+                >
+                  <Plus className="h-4 w-4" /> {t('editor.addLine')}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+                  onClick={addSection}
+                >
+                  <Plus className="h-4 w-4" /> {t('editor.addSection')}
+                </Button>
+              </div>
             )}
           </div>
         )}
@@ -460,15 +469,24 @@ export default function ScriptLines({
           />
         ))}
         {lines.length > 0 && (
-          <Button
-            variant="outline"
-            className="w-full border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
-            onClick={() => {
-              addLine(lines.length - 1);
-            }}
-          >
-            <Plus className="h-4 w-4" /> {t('editor.addLine')}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1 border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+              onClick={() => {
+                addLine(lines.length - 1);
+              }}
+            >
+              <Plus className="h-4 w-4" /> {t('editor.addLine')}
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1 border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+              onClick={addSection}
+            >
+              <Plus className="h-4 w-4" /> {t('editor.addSection')}
+            </Button>
+          </div>
         )}
       </div>
     </div>
