@@ -142,11 +142,24 @@ pub async fn generate_with_agent(
 总时长：{duration:.1} 秒
 条目数：{count}
 
-关键约束：
-- composition-id 使用 "ai-generated"
-- 尺寸 1920x1080
-- 所有动画挂在 paused timeline 上
-- 不要用 Math.random()、repeat: -1"#,
+关键约束（必须遵守）：
+1. composition-id 使用 "ai-generated"
+2. 尺寸 1920x1080，FPS 30
+3. 所有动画使用 GSAP，挂在 paused timeline 上
+4. 不要用 Math.random()、Date.now()、repeat: -1
+5. **必须实现 window.__hf 接口**（hyperframes 0.6.x 要求）：
+   ```javascript
+   window.__hf = {{
+     duration: {duration:.2},
+     seek: function(time) {{
+       if (window.__timelines) {{
+         Object.values(window.__timelines).forEach(tl => tl.seek(time));
+       }}
+     }}
+   }};
+   ```
+6. 注册 timeline: `window.__timelines["ai-generated"] = gsap.timeline({{ paused: true }});`
+7. 确保 window.__hf 在页面加载时同步创建（不要在 async/await 或 setTimeout 中）"#,
         user_section = match user_instructions {
             Some(instructions) if !instructions.is_empty() =>
                 format!("\n用户额外要求（请务必遵循）：\n{}\n", instructions),
