@@ -40,27 +40,26 @@ fn emit_section_progress(app: &tauri::AppHandle, section_id: &str, percent: f32,
     );
 }
 
-/// Generate video for a single ScriptSection.
+/// Generate HTML composition for a section (Phase 1 - can run in parallel).
 ///
-/// Steps:
-/// 1. Load ScriptLines and AudioFragments from DB
-/// 2. Compute section timeline
-/// 3. Merge section audio into MP3
-/// 4. Generate HTML composition based on style_config.mode
-/// 5. Render HTML → silent MP4 via `npx hyperframes render`
-/// 6. Merge audio + video → final MP4
-/// 7. Emit progress events at each stage
-#[tauri::command]
-pub async fn generate_section_video(
+/// This function handles:
+/// - Loading section data from DB
+/// - Computing timeline
+/// - Merging section audio
+/// - Calling LLM agent to generate HTML
+/// - Writing HTML and meta.json files
+///
+/// Returns the path to the composition directory.
+pub async fn generate_section_html(
     app: tauri::AppHandle,
     db: tauri::State<'_, Mutex<Database>>,
     project_id: String,
     section_id: String,
     style_config: SectionStyleConfig,
-) -> Result<SectionVideoResult, AppError> {
+) -> Result<std::path::PathBuf, AppError> {
     info!(
-        "[Section Video] Starting generation: project={}, section={}, mode={:?}",
-        project_id, section_id, style_config.mode
+        "[Section HTML] Starting generation: project={}, section={}",
+        project_id, section_id
     );
 
     // --- Determine output directory ---
@@ -75,7 +74,6 @@ pub async fn generate_section_video(
         .join("sections")
         .join(&section_id);
     let composition_dir = export_dir.join("composition");
-    let output_video_path = export_dir.join("output.mp4");
 
     // Create directories
     std::fs::create_dir_all(&composition_dir).map_err(|e| {
@@ -85,7 +83,7 @@ pub async fn generate_section_video(
         AppError::FileSystem(format!("Failed to create assets directory: {}", e))
     })?;
 
-    // --- Stage 1: Load data from DB ---
+    // --- Load data from DB ---
     let (script_lines, fragments) = {
         let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         let lines = db.load_script_lines(&project_id)?;
@@ -93,7 +91,7 @@ pub async fn generate_section_video(
         (lines, frags)
     };
 
-    // --- Stage 2: Compute section timeline (5%) ---
+    // --- Compute section timeline ---
     emit_section_progress(&app, &section_id, 5.0, "timeline_computation");
 
     let timeline_entries = compute_section_timeline(&section_id, &script_lines, &fragments);
@@ -105,12 +103,12 @@ pub async fn generate_section_video(
     }
 
     info!(
-        "[Section Video] Timeline computed: {} entries for section {}",
+        "[Section HTML] Timeline computed: {} entries for section {}",
         timeline_entries.len(),
         section_id
     );
 
-    // --- Stage 3: Merge section audio (15%) ---
+    // --- Merge section audio ---
     emit_section_progress(&app, &section_id, 15.0, "audio_merge");
 
     let audio_output_path = composition_dir.join("assets").join("audio.mp3");
@@ -118,11 +116,11 @@ pub async fn generate_section_video(
         merge_section_audio(&section_id, &script_lines, &fragments, &audio_output_path).await?;
 
     info!(
-        "[Section Video] Audio merged: {}ms, path={}",
+        "[Section HTML] Audio merged: {}ms, path={}",
         audio_result.total_duration_ms, audio_result.file_path
     );
 
-    // --- Stage 4: Generate HTML composition via agent (15% → 50%) ---
+    // --- Generate HTML composition via agent ---
     emit_section_progress(&app, &section_id, 20.0, "html_generation");
 
     let (api_endpoint, model) = {
@@ -149,7 +147,6 @@ pub async fn generate_section_video(
     let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
         let count = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let internal_percent = (1.0 - (-0.15 * count as f64).exp()) * 100.0;
-        // Map to 20%-50% range
         let mapped_percent = 20.0 + (internal_percent / 100.0) * 30.0;
         emit_section_progress(
             &app_clone,
@@ -191,11 +188,45 @@ pub async fn generate_section_video(
         .map_err(|e| AppError::FileSystem(format!("Failed to write meta.json: {}", e)))?;
 
     info!(
-        "[Section Video] HTML composition written to {:?}",
-        composition_dir
+        "[Section HTML] HTML generation complete: section={}, dir={:?}",
+        section_id, composition_dir
     );
 
-    // --- Stage 5: Render HTML → MP4 (50% → 90%) ---
+    Ok(composition_dir)
+}
+
+/// Render HTML composition to video (Phase 2 - must run sequentially).
+///
+/// This function handles:
+/// - Rendering HTML to silent MP4 via npx hyperframes render
+/// - Merging audio into the final video
+///
+/// Should be called after generate_section_html() has completed.
+pub async fn render_section_video(
+    app: tauri::AppHandle,
+    project_id: String,
+    section_id: String,
+) -> Result<SectionVideoResult, AppError> {
+    info!(
+        "[Section Render] Starting render: project={}, section={}",
+        project_id, section_id
+    );
+
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::FileSystem(format!("Failed to resolve app data dir: {}", e)))?;
+    let export_dir = app_data_dir
+        .join("projects")
+        .join(&project_id)
+        .join("export")
+        .join("sections")
+        .join(&section_id);
+    let composition_dir = export_dir.join("composition");
+    let audio_output_path = composition_dir.join("assets").join("audio.mp3");
+    let output_video_path = export_dir.join("output.mp4");
+
+    // --- Render HTML → MP4 ---
     emit_section_progress(&app, &section_id, 55.0, "rendering");
 
     let silent_video = composition_dir.join("_render_output.mp4");
@@ -203,7 +234,7 @@ pub async fn generate_section_video(
 
     let node_env = super::render::find_node_env();
     info!(
-        "[Section Video] Node env: npx={}, bin_dir={}",
+        "[Section Render] Node env: npx={}, bin_dir={}",
         node_env.npx, node_env.bin_dir
     );
 
@@ -236,13 +267,11 @@ pub async fn generate_section_video(
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    // Capture all stderr for error reporting
                     if let Ok(mut captured) = stderr_capture_clone.lock() {
                         captured.push_str(&line);
                         captured.push('\n');
                     }
                     if let Some(pct) = parse_render_progress(&line) {
-                        // Map render progress to 55%-88% range
                         let mapped = 55.0 + pct * 33.0;
                         emit_section_progress(
                             &app_clone,
@@ -277,32 +306,29 @@ pub async fn generate_section_video(
             ));
         }
 
-        info!("[Section Video] Render complete: {:?}", silent_video);
+        info!("[Section Render] Render complete: {:?}", silent_video);
         Ok(())
-    }).await;
+    })
+    .await;
 
     // Handle timeout
     match render_result {
-        Ok(Ok(())) => {
-            // Render completed successfully
-        }
-        Ok(Err(e)) => {
-            return Err(e);
-        }
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
         Err(_) => {
             return Err(AppError::FileSystem(
-                "Video rendering timed out (5 minutes). Please try again or reduce the video length.".to_string(),
+                "Video rendering timed out (5 minutes). Please try again or reduce the video length."
+                    .to_string(),
             ));
         }
     }
 
-    // --- Stage 6: Merge audio into video (90%) ---
+    // --- Merge audio into video ---
     emit_section_progress(&app, &section_id, 90.0, "rendering");
 
     let output_path_str = output_video_path.to_string_lossy().to_string();
 
     if audio_output_path.exists() {
-        // Merge audio + video with ffmpeg
         let audio_path_str = audio_output_path.to_string_lossy().to_string();
 
         let ffmpeg_status = Command::new("ffmpeg")
@@ -326,45 +352,72 @@ pub async fn generate_section_video(
             .map_err(|e| AppError::FileSystem(format!("Failed to run ffmpeg: {}", e)))?;
 
         if !ffmpeg_status.success() {
-            // Fallback: use silent video as output
-            info!("[Section Video] ffmpeg merge failed, using silent video");
+            info!("[Section Render] ffmpeg merge failed, using silent video");
             std::fs::rename(&silent_video, &output_video_path)
                 .or_else(|_| std::fs::copy(&silent_video, &output_video_path).map(|_| ()))
-                .map_err(|e| {
-                    AppError::FileSystem(format!("Failed to move output: {}", e))
-                })?;
+                .map_err(|e| AppError::FileSystem(format!("Failed to move output: {}", e)))?;
         } else {
-            // Clean up intermediate silent video
             let _ = std::fs::remove_file(&silent_video);
         }
     } else {
-        // No audio, just move silent video to output
         std::fs::rename(&silent_video, &output_video_path)
             .or_else(|_| std::fs::copy(&silent_video, &output_video_path).map(|_| ()))
             .map_err(|e| AppError::FileSystem(format!("Failed to move output: {}", e)))?;
     }
 
-    // --- Done (100%) ---
+    // --- Done ---
     emit_section_progress(&app, &section_id, 100.0, "done");
 
-    // Get file size
     let file_size_bytes = std::fs::metadata(&output_video_path)
         .map(|m| m.len())
         .unwrap_or(0);
 
+    // Get duration from meta.json or audio file
+    let duration_ms = 0i64; // Will be calculated from meta.json if needed
+
     let result = SectionVideoResult {
         section_id: section_id.clone(),
         video_path: output_path_str,
-        duration_ms: audio_result.total_duration_ms,
+        duration_ms,
         file_size_bytes,
     };
 
     info!(
-        "[Section Video] Generation complete: section={}, duration={}ms, size={}bytes",
+        "[Section Render] Generation complete: section={}, duration={}ms, size={}bytes",
         section_id, result.duration_ms, result.file_size_bytes
     );
 
     Ok(result)
+}
+
+/// Generate video for a single ScriptSection (convenience wrapper).
+///
+/// Combines generate_section_html() and render_section_video() for single-section generation.
+#[tauri::command]
+pub async fn generate_section_video(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+    section_id: String,
+    style_config: SectionStyleConfig,
+) -> Result<SectionVideoResult, AppError> {
+    info!(
+        "[Section Video] Starting generation: project={}, section={}, mode={:?}",
+        project_id, section_id, style_config.mode
+    );
+
+    // Phase 1: Generate HTML
+    generate_section_html(
+        app.clone(),
+        db,
+        project_id.clone(),
+        section_id.clone(),
+        style_config,
+    )
+    .await?;
+
+    // Phase 2: Render video
+    render_section_video(app, project_id, section_id).await
 }
 
 /// Check if a section video file exists.

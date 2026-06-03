@@ -1,7 +1,8 @@
 //! Batch video generation and cancellation commands.
 //!
 //! Provides:
-//! - `generate_all_sections`: Processes multiple sections concurrently in parallel.
+//! - `generate_all_sections`: Two-phase processing - LLM generation in parallel,
+//!   rendering sequential to avoid overloading Chrome instances.
 //! - `cancel_section_generation`: Cancels an active section generation using a shared
 //!   CancellationToken map.
 
@@ -16,7 +17,7 @@ use crate::core::db::Database;
 use crate::core::error::AppError;
 
 use super::section_types::{BatchGenerationResult, SectionProgress, SectionStyleConfig};
-use super::section_video::generate_section_video;
+use super::section_video::{generate_section_html, render_section_video};
 
 /// Shared state for tracking active section generation cancellation tokens.
 /// Keyed by section_id.
@@ -28,12 +29,14 @@ impl Default for SectionCancelTokens {
     }
 }
 
-/// Generate videos for all configured sections in parallel.
+/// Generate videos for all configured sections using two-phase processing.
 ///
-/// - Accepts a list of (section_id, SectionStyleConfig) pairs
-/// - Processes all sections concurrently using tokio::spawn
-/// - Returns BatchGenerationResult with completed/failed lists
-/// - Emits progress events for each section
+/// Phase 1 (Parallel): Generate HTML compositions for all sections simultaneously.
+/// Phase 2 (Sequential): Render each HTML to video one at a time to avoid
+///                       overloading system resources with multiple Chrome instances.
+///
+/// This approach maximizes LLM utilization while preventing memory/CPU exhaustion
+/// from concurrent browser rendering.
 #[tauri::command]
 pub async fn generate_all_sections(
     app: tauri::AppHandle,
@@ -43,7 +46,7 @@ pub async fn generate_all_sections(
     section_configs: Vec<(String, SectionStyleConfig)>,
 ) -> Result<BatchGenerationResult, AppError> {
     info!(
-        "[Batch Video] Starting parallel batch generation: project={}, configs={}",
+        "[Batch Video] Starting two-phase generation: project={}, configs={}",
         project_id,
         section_configs.len()
     );
@@ -68,23 +71,16 @@ pub async fn generate_all_sections(
         sections.len()
     );
 
-    // Spawn all section generation tasks in parallel
-    let mut tasks = Vec::new();
+    // Track which sections we're processing
+    let mut sections_to_process: Vec<(String, SectionStyleConfig)> = Vec::new();
 
     for section in &sections {
-        // Skip sections without config
         let style_config = match config_map.get(&section.id) {
             Some(config) => config.clone(),
-            None => {
-                info!(
-                    "[Batch Video] Skipping unconfigured section: {}",
-                    section.id
-                );
-                continue;
-            }
+            None => continue,
         };
 
-        // Register a cancellation token for this section
+        // Register a cancellation token
         let cancel_token = CancellationToken::new();
         {
             let mut tokens = cancel_tokens
@@ -94,7 +90,7 @@ pub async fn generate_all_sections(
             tokens.insert(section.id.clone(), cancel_token.clone());
         }
 
-        // Emit batch progress event
+        // Emit starting event
         let _ = app.emit(
             "section-video-progress",
             SectionProgress {
@@ -104,69 +100,53 @@ pub async fn generate_all_sections(
             },
         );
 
-        // Check if cancelled before starting
-        if cancel_token.is_cancelled() {
-            info!(
-                "[Batch Video] Section {} cancelled before start",
-                section.id
-            );
-            if let Ok(mut tokens) = cancel_tokens.0.lock() {
-                tokens.remove(&section.id);
-            }
-            continue;
-        }
+        sections_to_process.push((section.id.clone(), style_config));
+    }
 
-        // Spawn async task for this section
+    // ===== PHASE 1: Parallel HTML Generation =====
+    info!("[Batch Video] Phase 1: Generating HTML compositions in parallel...");
+
+    let mut html_tasks = Vec::new();
+
+    for (section_id, style_config) in &sections_to_process {
         let app_clone = app.clone();
         let project_id_clone = project_id.clone();
-        let section_id_clone = section.id.clone();
+        let section_id_clone = section_id.clone();
+        let style_config_clone = style_config.clone();
 
         let task = tokio::spawn(async move {
             let db_state: tauri::State<'_, Mutex<Database>> = app_clone.state();
-            let result = generate_section_video(
+            let result = generate_section_html(
                 app_clone.clone(),
                 db_state,
                 project_id_clone,
                 section_id_clone.clone(),
-                style_config,
-            ).await;
-
+                style_config_clone,
+            )
+            .await;
             (section_id_clone, result)
         });
 
-        tasks.push(task);
+        html_tasks.push(task);
     }
 
-    // Wait for all tasks to complete
-    let mut completed: Vec<String> = Vec::new();
+    // Wait for all HTML generation tasks
+    let mut completed_html: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
 
-    for task in tasks {
+    for task in html_tasks {
         match task.await {
-            Ok((section_id, result)) => {
-                // Remove the cancellation token after completion
-                if let Ok(mut tokens) = cancel_tokens.0.lock() {
-                    tokens.remove(&section_id);
+            Ok((section_id, result)) => match result {
+                Ok(_) => {
+                    info!("[Batch Video] HTML generated for section {}", section_id);
+                    completed_html.push(section_id);
                 }
-
-                match result {
-                    Ok(_video_result) => {
-                        info!(
-                            "[Batch Video] Section {} completed successfully",
-                            section_id
-                        );
-                        completed.push(section_id);
-                    }
-                    Err(e) => {
-                        let error_msg = e.to_string();
-                        info!(
-                            "[Batch Video] Section {} failed: {}",
-                            section_id, error_msg
-                        );
-                        failed.push((section_id, error_msg));
-                    }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    info!("[Batch Video] HTML generation failed for section {}: {}", section_id, error_msg);
+                    failed.push((section_id, error_msg));
                 }
-            }
+            },
             Err(e) => {
                 let error_msg = format!("Task join error: {}", e);
                 info!("[Batch Video] Task failed: {}", error_msg);
@@ -175,7 +155,73 @@ pub async fn generate_all_sections(
         }
     }
 
-    let result = BatchGenerationResult { completed, failed };
+    info!(
+        "[Batch Video] Phase 1 complete: {} HTML generated, {} failed",
+        completed_html.len(),
+        failed.len()
+    );
+
+    // ===== PHASE 2: Sequential Video Rendering =====
+    info!("[Batch Video] Phase 2: Rendering videos sequentially...");
+
+    let mut completed_videos: Vec<String> = Vec::new();
+
+    for section_id in &completed_html {
+        // Check if cancelled
+        {
+            let tokens = cancel_tokens
+                .0
+                .lock()
+                .map_err(|e| AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e)))?;
+            if let Some(token) = tokens.get(section_id) {
+                if token.is_cancelled() {
+                    info!("[Batch Video] Section {} cancelled, skipping render", section_id);
+                    failed.push((section_id.clone(), "Cancelled".to_string()));
+                    continue;
+                }
+            }
+        }
+
+        // Emit render starting event
+        let _ = app.emit(
+            "section-video-progress",
+            SectionProgress {
+                section_id: section_id.clone(),
+                percent: 50.0,
+                stage: "rendering".to_string(),
+            },
+        );
+
+        // Render this section
+        let render_result = render_section_video(
+            app.clone(),
+            project_id.clone(),
+            section_id.clone(),
+        )
+        .await;
+
+        // Remove cancellation token
+        if let Ok(mut tokens) = cancel_tokens.0.lock() {
+            tokens.remove(section_id);
+        }
+
+        match render_result {
+            Ok(_) => {
+                info!("[Batch Video] Video rendered for section {}", section_id);
+                completed_videos.push(section_id.clone());
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                info!("[Batch Video] Render failed for section {}: {}", section_id, error_msg);
+                failed.push((section_id.clone(), error_msg));
+            }
+        }
+    }
+
+    let result = BatchGenerationResult {
+        completed: completed_videos,
+        failed,
+    };
 
     info!(
         "[Batch Video] Batch complete: {} completed, {} failed",
