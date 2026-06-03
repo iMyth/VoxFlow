@@ -137,13 +137,25 @@ pub async fn generate_with_agent(
     let user_prompt = format!(
         r#"为以下有声书时间轴生成 Hyperframes HTML 作品。
 
-时间轴数据：
+时间轴数据（JSON）：
 {timeline}
 
-总时长：{duration:.1} 秒，条目数：{count}
+总时长：{duration:.2} 秒，条目数：{count}
 {user_section}
 
-技术要求：
+【时间轴同步 - 最关键要求】
+时间轴 JSON 中每个条目的 start 和 duration 对应音频的精确时间。
+你必须让每个 clip 元素的 data-start 和 data-duration 严格匹配这些值。
+- clip 的 data-start = 对应条目的 start（秒）
+- clip 的 data-duration = 对应条目的 duration（秒）
+- 条目之间的空白间隔（gap）必须保留，不要将 clips 紧密排列
+- 整个作品的动画必须从 t=0 开始，在 t={duration:.2}s 结束
+
+示例：如果时间轴条目 start=5.0, duration=3.0，则 clip 必须设置：
+  data-start="5.0" data-duration="3.0"
+
+【技术要求】
+- 根元素（composition）必须设置 data-duration="{duration:.2}"，确保总帧数正确
 - composition-id="ai-generated"，尺寸 1920x1080
 - GSAP 动画，timeline 用 paused: true
 - 实现 window.__hf = {{ duration: {duration:.2}, seek: fn(t) {{ Object.values(window.__timelines).forEach(tl => tl.seek(t)) }} }}
@@ -196,6 +208,7 @@ pub async fn generate_with_agent(
     // Post-process: fix common issues as a safety net
     let html = fix_css_font_variables(&html);
     let html = ensure_hyperframes_interfaces(&html, total_duration);
+    let html = ensure_root_duration(&html, total_duration);
 
     // Final validation
     match validate_composition(&html) {
@@ -340,6 +353,79 @@ fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
         "[Agent] Post-processed: injected missing interfaces (has_hf={}, has_timelines={})",
         has_hf, has_timelines
     );
+
+    result
+}
+
+/// Ensure the root composition element has the correct `data-duration` attribute.
+/// This is critical because hyperframes uses this value to determine how many frames to render.
+/// If the duration is wrong, the video will be too long (black frames) or too short (cut off).
+fn ensure_root_duration(html: &str, duration: f64) -> String {
+    let mut result = html.to_string();
+
+    // Find the root composition element (has data-composition-id)
+    let Some(comp_start) = result.find("data-composition-id") else {
+        info!("[Agent] No data-composition-id found, cannot set data-duration");
+        return result;
+    };
+
+    // Find the opening < tag that contains this attribute
+    let Some(tag_start) = result[..comp_start].rfind('<') else {
+        return result;
+    };
+
+    // Find the end of this tag (either > or />)
+    let Some(tag_end) = result[tag_start..].find('>') else {
+        return result;
+    };
+    let tag_end = tag_start + tag_end;
+
+    let tag_content = &result[tag_start..=tag_end];
+
+    // Check if data-duration already exists in this tag
+    if let Some(attr_pos) = tag_content.find("data-duration=") {
+        // Find the value (could be quoted with " or ')
+        let after_eq = attr_pos + "data-duration=".len();
+        let quote_char = tag_content[after_eq..].chars().next();
+
+        if let Some(quote) = quote_char {
+            if quote == '"' || quote == '\'' {
+                // Find the closing quote
+                let value_start = after_eq + 1;
+                if let Some(value_end) = tag_content[value_start..].find(quote) {
+                    // Replace the entire attribute (including quotes) with double-quoted version
+                    let new_attr = format!("data-duration=\"{}\"", duration);
+                    let attr_end = attr_pos + 1 + value_end + 1; // "data-duration=" + quote + value + quote
+                    let new_tag = format!(
+                        "{}{}{}",
+                        &tag_content[..attr_pos],
+                        new_attr,
+                        &tag_content[attr_end..]
+                    );
+                    result.replace_range(tag_start..=tag_end, &new_tag);
+                    info!(
+                        "[Agent] Updated root data-duration to {:.2}",
+                        duration
+                    );
+                    return result;
+                }
+            }
+        }
+    } else {
+        // data-duration doesn't exist, add it before the closing >
+        let new_tag = format!(
+            "{} data-duration=\"{}\"{}",
+            &result[tag_start..tag_end],
+            duration,
+            &result[tag_end..=tag_end]
+        );
+        result.replace_range(tag_start..=tag_end, &new_tag);
+        info!(
+            "[Agent] Added root data-duration=\"{}\"",
+            duration
+        );
+        return result;
+    }
 
     result
 }
@@ -616,5 +702,54 @@ window.__hf = { duration: 10, seek: function() {} };
         let input = "<!DOCTYPE html>\n<html><head><title>Test</title></head><body><div>Long content that gets cut off...";
         let result = extract_html(input).unwrap();
         assert!(result.starts_with("<!DOCTYPE html>"));
+    }
+
+    // ── ensure_root_duration tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_ensure_root_duration_adds_missing() {
+        let html = r#"<html data-composition-id="test" data-width="1920">
+            <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
+        </html>"#;
+        let result = ensure_root_duration(html, 8.5);
+        assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
+    }
+
+    #[test]
+    fn test_ensure_root_duration_updates_wrong_value() {
+        let html = r#"<html data-composition-id="test" data-duration="100" data-width="1920">
+            <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
+        </html>"#;
+        let result = ensure_root_duration(html, 8.5);
+        assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
+        // Should not contain the old wrong value
+        assert!(!result.contains("data-duration=\"100\""), "Should have replaced 100");
+    }
+
+    #[test]
+    fn test_ensure_root_duration_preserves_correct_value() {
+        let html = r#"<html data-composition-id="test" data-duration="8.5" data-width="1920">
+            <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
+        </html>"#;
+        let result = ensure_root_duration(html, 8.5);
+        // Should still have the correct value
+        assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
+    }
+
+    #[test]
+    fn test_ensure_root_duration_no_composition_id() {
+        // No data-composition-id → should not crash, return unchanged
+        let html = r#"<html data-width="1920"><body>No composition id</body></html>"#;
+        let result = ensure_root_duration(html, 8.5);
+        assert_eq!(result, html);
+    }
+
+    #[test]
+    fn test_ensure_root_duration_single_quotes() {
+        let html = r#"<html data-composition-id='test' data-duration='100'>
+            <body>Content</body>
+        </html>"#;
+        let result = ensure_root_duration(html, 8.5);
+        assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
     }
 }
