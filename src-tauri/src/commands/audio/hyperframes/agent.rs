@@ -248,6 +248,7 @@ fn fix_css_font_variables(html: &str) -> String {
     let mut result = html.to_string();
 
     // Replace common font variable patterns with hyperframes-supported fonts
+    // Pattern 1: Standard --font-* naming
     result = result
         .replace("var(--font-body)", "'inter', sans-serif")
         .replace("var(--font-heading)", "'montserrat', sans-serif")
@@ -256,6 +257,25 @@ fn fix_css_font_variables(html: &str) -> String {
         .replace("var(--font-display)", "'montserrat', sans-serif")
         .replace("var(--font-serif)", "'eb-garamond', serif")
         .replace("var(--font-sans)", "'roboto', sans-serif");
+
+    // Pattern 2: Short naming (--mono, --sans, --serif)
+    result = result
+        .replace("var(--mono)", "'jetbrains-mono', monospace")
+        .replace("var(--sans)", "'roboto', sans-serif")
+        .replace("var(--serif)", "'eb-garamond', serif")
+        .replace("var(--body)", "'inter', sans-serif")
+        .replace("var(--heading)", "'montserrat', sans-serif");
+
+    // Pattern 3: Suffix naming (--body-font, --heading-font)
+    result = result
+        .replace("var(--body-font)", "'inter', sans-serif")
+        .replace("var(--heading-font)", "'montserrat', sans-serif")
+        .replace("var(--mono-font)", "'jetbrains-mono', monospace");
+
+    // Pattern 4: Primary/secondary naming
+    result = result
+        .replace("var(--font-primary)", "'inter', sans-serif")
+        .replace("var(--font-secondary)", "'montserrat', sans-serif");
 
     result
 }
@@ -393,6 +413,39 @@ mod tests {
         assert!(fixed.contains("'inter', sans-serif"));
         assert!(fixed.contains("'montserrat', sans-serif"));
         assert!(fixed.contains("'jetbrains-mono', monospace"));
+    }
+
+    #[test]
+    fn test_fix_css_font_variables_extended_patterns() {
+        let html = r#"<style>
+            .mono { font-family: var(--mono); }
+            .sans { font-family: var(--sans); }
+            .serif { font-family: var(--serif); }
+            .body { font-family: var(--body); }
+            .heading { font-family: var(--heading); }
+            .body-font { font-family: var(--body-font); }
+            .heading-font { font-family: var(--heading-font); }
+            .primary { font-family: var(--font-primary); }
+            .secondary { font-family: var(--font-secondary); }
+        </style>"#;
+
+        let fixed = fix_css_font_variables(html);
+        assert!(!fixed.contains("var(--mono)"));
+        assert!(!fixed.contains("var(--sans)"));
+        assert!(!fixed.contains("var(--serif)"));
+        assert!(!fixed.contains("var(--body)"));
+        assert!(!fixed.contains("var(--heading)"));
+        assert!(!fixed.contains("var(--body-font)"));
+        assert!(!fixed.contains("var(--heading-font)"));
+        assert!(!fixed.contains("var(--font-primary)"));
+        assert!(!fixed.contains("var(--font-secondary)"));
+
+        // Verify replacements
+        assert!(fixed.contains("'jetbrains-mono', monospace"));
+        assert!(fixed.contains("'roboto', sans-serif"));
+        assert!(fixed.contains("'eb-garamond', serif"));
+        assert!(fixed.contains("'inter', sans-serif"));
+        assert!(fixed.contains("'montserrat', sans-serif"));
     }
 
     #[test]
