@@ -17,14 +17,14 @@ use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
-
-use crate::commands::audio::ffmpeg::find_ffmpeg;
+use tokio_util::sync::CancellationToken;
 
 use crate::core::config::ConfigManager;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 
 use super::agent::{generate_with_agent, AgentConfig};
+use super::ffmpeg_utils::{copy_video_file, merge_video_with_audio};
 use super::render::parse_render_progress;
 use super::section_audio::merge_section_audio;
 use super::section_types::{SectionProgress, SectionStyleConfig, SectionVideoResult};
@@ -52,12 +52,16 @@ fn emit_section_progress(app: &tauri::AppHandle, section_id: &str, percent: f32,
 /// - Writing HTML and meta.json files
 ///
 /// Returns the path to the composition directory.
+///
+/// `cancel_token` allows cancellation at key checkpoints (before LLM call, etc.)
+/// to avoid wasting API tokens on cancelled sections.
 pub async fn generate_section_html(
     app: tauri::AppHandle,
     db: tauri::State<'_, Mutex<Database>>,
     project_id: String,
     section_id: String,
     style_config: SectionStyleConfig,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<std::path::PathBuf, AppError> {
     let start_time = std::time::Instant::now();
     info!(
@@ -133,6 +137,14 @@ pub async fn generate_section_html(
         "[Section HTML] Audio merged: {}ms, path={}",
         audio_result.total_duration_ms, audio_result.file_path
     );
+
+    // Check cancellation before expensive LLM call
+    if let Some(ref token) = cancel_token {
+        if token.is_cancelled() {
+            info!("[Section HTML] Section {} cancelled before LLM call, aborting", section_id);
+            return Err(AppError::FileSystem("Section generation cancelled".to_string()));
+        }
+    }
 
     // --- Generate HTML composition via agent ---
     info!("[Section HTML] Starting LLM agent generation...");
@@ -298,137 +310,132 @@ pub async fn render_section_video(
 
     // Create render task with timeout (5 minutes max)
     info!("[Section Render] Starting render task with 5-minute timeout...");
-    let render_result = timeout(Duration::from_secs(300), async {
-        info!("[Section Render] === INSIDE TIMEOUT BLOCK ===");
-        info!("[Section Render] npx path: {}", node_env.npx);
-        info!("[Section Render] bin_dir: {}", node_env.bin_dir);
-        info!("[Section Render] composition_dir: {:?}", composition_dir);
-        info!("[Section Render] output: {}", silent_video_str);
 
-        let mut render_cmd = Command::new(&node_env.npx);
-        render_cmd
-            .args(["hyperframes", "render", "--output", &silent_video_str])
-            .current_dir(&composition_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if !node_env.bin_dir.is_empty() {
-            let path = super::render::prepend_to_path(&node_env.bin_dir);
-            render_cmd.env("PATH", &path);
-            info!("[Section Render] Added to PATH: {}", path);
+    // Spawn render process outside timeout to enable cleanup on timeout
+    let node_env_clone = super::render::find_node_env();
+    let composition_dir_clone = composition_dir.clone();
+    let silent_video_str_clone = silent_video_str.clone();
+
+    let mut render_cmd = Command::new(&node_env_clone.npx);
+    render_cmd
+        .args(["hyperframes", "render", "--output", &silent_video_str_clone])
+        .current_dir(&composition_dir_clone)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if !node_env_clone.bin_dir.is_empty() {
+        let path = super::render::prepend_to_path(&node_env_clone.bin_dir);
+        render_cmd.env("PATH", &path);
+        info!("[Section Render] Added to PATH: {}", path);
+    }
+
+    info!("[Section Render] Spawning npx hyperframes render process...");
+    let mut render_child = match render_cmd.spawn() {
+        Ok(child) => {
+            info!("[Section Render] Process spawned successfully, PID: {:?}", child.id());
+            child
         }
+        Err(e) => {
+            info!("[Section Render] Failed to spawn process: {}", e);
+            return Err(AppError::FileSystem(format!("Failed to start hyperframes render: {}", e)));
+        }
+    };
 
-        info!("[Section Render] Spawning npx hyperframes render process...");
-        let render_result = render_cmd.spawn();
+    // Read stderr for progress and error capture
+    let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_capture_clone = stderr_capture.clone();
 
-        let mut render_child = match render_result {
-            Ok(child) => {
-                info!("[Section Render] Process spawned successfully, PID: {:?}", child.id());
-                child
-            }
-            Err(e) => {
-                info!("[Section Render] Failed to spawn process: {}", e);
-                return Err(AppError::FileSystem(format!("Failed to start hyperframes render: {}", e)));
-            }
-        };
-
-        // Read stderr for progress and error capture
-        let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let stderr_capture_clone = stderr_capture.clone();
-
-        if let Some(stderr) = render_child.stderr.take() {
-            info!("[Section Render] Capturing stderr output...");
-            let app_clone = app.clone();
-            let section_id_clone = section_id.clone();
-            tokio::spawn(async move {
-                let reader = BufReader::new(stderr);
-                let mut lines = reader.lines();
-                let mut line_count = 0;
-                while let Ok(Some(line)) = lines.next_line().await {
-                    line_count += 1;
-                    if let Ok(mut captured) = stderr_capture_clone.lock() {
-                        captured.push_str(&line);
-                        captured.push('\n');
-                    }
-                    // Log every 10th line to avoid too much output
-                    if line_count % 10 == 0 {
-                        info!("[Section Render] stderr line {}: {}", line_count, line);
-                    }
-                    if let Some(pct) = parse_render_progress(&line) {
-                        info!("[Section Render] Render progress: {}%", pct);
-                        let mapped = 55.0 + pct * 33.0;
-                        emit_section_progress(
-                            &app_clone,
-                            &section_id_clone,
-                            mapped as f32,
-                            "rendering",
-                        );
-                    }
+    if let Some(stderr) = render_child.stderr.take() {
+        info!("[Section Render] Capturing stderr output...");
+        let app_clone = app.clone();
+        let section_id_clone = section_id.clone();
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            let mut line_count = 0;
+            while let Ok(Some(line)) = lines.next_line().await {
+                line_count += 1;
+                if let Ok(mut captured) = stderr_capture_clone.lock() {
+                    captured.push_str(&line);
+                    captured.push('\n');
                 }
-                info!("[Section Render] stderr capture complete, total lines: {}", line_count);
-            });
-        } else {
-            info!("[Section Render] No stderr stream available");
-        }
+                // Log every 10th line to avoid too much output
+                if line_count % 10 == 0 {
+                    info!("[Section Render] stderr line {}: {}", line_count, line);
+                }
+                if let Some(pct) = parse_render_progress(&line) {
+                    info!("[Section Render] Render progress: {}%", pct);
+                    let mapped = 55.0 + pct * 33.0;
+                    emit_section_progress(
+                        &app_clone,
+                        &section_id_clone,
+                        mapped as f32,
+                        "rendering",
+                    );
+                }
+            }
+            info!("[Section Render] stderr capture complete, total lines: {}", line_count);
+        });
+    } else {
+        info!("[Section Render] No stderr stream available");
+    }
 
-        info!("[Section Render] Waiting for render process to complete...");
-        let render_status = render_child.wait().await.map_err(|e| {
-            info!("[Section Render] Process wait error: {}", e);
-            AppError::FileSystem(format!("hyperframes render process error: {}", e))
-        })?;
+    // Wait for render process with timeout
+    let render_result = timeout(Duration::from_secs(300), render_child.wait()).await;
 
-        info!("[Section Render] Process exit status: {:?}", render_status);
-
-        if !render_status.success() {
-            let stderr_output = stderr_capture
-                .lock()
-                .map(|s| s.clone())
-                .unwrap_or_default();
-            info!("[Section Render] Render failed. stderr output:\n{}", stderr_output);
-            return Err(AppError::FileSystem(format!(
-                "hyperframes render failed with exit code: {:?}\nstderr: {}",
-                render_status.code(),
-                stderr_output.trim()
-            )));
-        }
-
-        info!("[Section Render] Checking if silent video was created...");
-        if !silent_video.exists() {
-            info!("[Section Render] Silent video not found at: {:?}", silent_video);
-            return Err(AppError::FileSystem(
-                "hyperframes render completed but output file not found".to_string(),
-            ));
-        }
-
-        let metadata = std::fs::metadata(&silent_video).map_err(|e| {
-            AppError::FileSystem(format!("Failed to get silent video metadata: {}", e))
-        })?;
-        info!(
-            "[Section Render] Silent video created: {:?}, size: {} bytes",
-            silent_video,
-            metadata.len()
-        );
-        Ok(())
-    })
-    .await;
-
-    // Handle timeout
+    // Handle timeout - KILL the child process to prevent zombie
     info!("[Section Render] Timeout block completed, checking result...");
     match render_result {
-        Ok(Ok(())) => {
+        Ok(Ok(status)) => {
             info!("[Section Render] Render task completed successfully");
+            if !status.success() {
+                let stderr_output = stderr_capture
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                info!("[Section Render] Render failed. stderr output:\n{}", stderr_output);
+                return Err(AppError::FileSystem(format!(
+                    "hyperframes render failed with exit code: {:?}\nstderr: {}",
+                    status.code(),
+                    stderr_output.trim()
+                )));
+            }
         }
         Ok(Err(e)) => {
             info!("[Section Render] Render task returned error: {}", e);
-            return Err(e);
+            return Err(AppError::FileSystem(format!("hyperframes render process error: {}", e)));
         }
         Err(_) => {
-            info!("[Section Render] Render task timed out after 5 minutes");
+            info!("[Section Render] Render task timed out after 5 minutes, killing process...");
+            // CRITICAL: Kill the child process to prevent zombie Chrome instances
+            if let Err(kill_err) = render_child.kill().await {
+                info!("[Section Render] Failed to kill timed-out process: {}", kill_err);
+            } else {
+                info!("[Section Render] Timed-out process killed successfully");
+            }
             return Err(AppError::FileSystem(
                 "Video rendering timed out (5 minutes). Please try again or reduce the video length."
                     .to_string(),
             ));
         }
     }
+
+    // Verify output file was created
+    info!("[Section Render] Checking if silent video was created...");
+    if !silent_video.exists() {
+        info!("[Section Render] Silent video not found at: {:?}", silent_video);
+        return Err(AppError::FileSystem(
+            "hyperframes render completed but output file not found".to_string(),
+        ));
+    }
+
+    let metadata = std::fs::metadata(&silent_video).map_err(|e| {
+        AppError::FileSystem(format!("Failed to get silent video metadata: {}", e))
+    })?;
+    info!(
+        "[Section Render] Silent video created: {:?}, size: {} bytes",
+        silent_video,
+        metadata.len()
+    );
 
     // --- Merge audio into video ---
     info!("[Section Render] Starting audio merge phase...");
@@ -438,59 +445,16 @@ pub async fn render_section_video(
 
     info!("[Section Render] Checking if audio file exists: {}", audio_output_path.exists());
     if audio_output_path.exists() {
-        let audio_path_str = audio_output_path.to_string_lossy().to_string();
-
-        info!("[Section Render] Running ffmpeg to merge audio and video...");
-        info!("[Section Render] Input video: {}", silent_video_str);
-        info!("[Section Render] Input audio: {}", audio_path_str);
-        info!("[Section Render] Output: {}", output_path_str);
-
-        let ffmpeg_bin = find_ffmpeg();
-        let ffmpeg_status = Command::new(&ffmpeg_bin)
-            .args([
-                "-y",
-                "-i",
-                &silent_video_str,
-                "-i",
-                &audio_path_str,
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-shortest",
-                &output_path_str,
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .map_err(|e| {
-                info!("[Section Render] ffmpeg execution failed: {}", e);
-                AppError::FileSystem(format!("Failed to run ffmpeg: {}", e))
-            })?;
-
-        info!("[Section Render] ffmpeg exit status: {:?}", ffmpeg_status);
-
-        if !ffmpeg_status.success() {
-            info!("[Section Render] ffmpeg merge failed, using silent video as fallback");
-            std::fs::rename(&silent_video, &output_video_path)
-                .or_else(|_| std::fs::copy(&silent_video, &output_video_path).map(|_| ()))
-                .map_err(|e| {
-                    info!("[Section Render] Failed to copy silent video: {}", e);
-                    AppError::FileSystem(format!("Failed to move output: {}", e))
-                })?;
-        } else {
-            info!("[Section Render] Audio merge successful, removing silent video");
-            let _ = std::fs::remove_file(&silent_video);
-        }
+        // Use shared merge function
+        merge_video_with_audio(
+            &silent_video_str,
+            &audio_output_path.to_string_lossy(),
+            &output_path_str,
+        )
+        .await?;
     } else {
         info!("[Section Render] No audio file, copying silent video to output");
-        std::fs::rename(&silent_video, &output_video_path)
-            .or_else(|_| std::fs::copy(&silent_video, &output_video_path).map(|_| ()))
-            .map_err(|e| {
-                info!("[Section Render] Failed to copy video: {}", e);
-                AppError::FileSystem(format!("Failed to move output: {}", e))
-            })?;
+        copy_video_file(&silent_video_str, &output_path_str)?;
     }
 
     // --- Done ---
@@ -572,6 +536,7 @@ pub async fn generate_section_video(
         project_id.clone(),
         section_id.clone(),
         style_config,
+        None, // No cancellation for single-section generation
     )
     .await?;
 

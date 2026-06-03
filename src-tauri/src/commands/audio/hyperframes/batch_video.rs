@@ -107,12 +107,37 @@ pub async fn generate_all_sections(
     info!("[Batch Video] Phase 1: Generating HTML compositions in parallel...");
 
     let mut html_tasks = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
 
     for (section_id, style_config) in &sections_to_process {
+        // Check cancellation BEFORE spawning task
+        {
+            let tokens = cancel_tokens
+                .0
+                .lock()
+                .map_err(|e| AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e)))?;
+            if let Some(token) = tokens.get(section_id) {
+                if token.is_cancelled() {
+                    info!("[Batch Video] Section {} cancelled before HTML generation, skipping", section_id);
+                    failed.push((section_id.clone(), "Cancelled".to_string()));
+                    continue;
+                }
+            }
+        }
+
         let app_clone = app.clone();
         let project_id_clone = project_id.clone();
         let section_id_clone = section_id.clone();
         let style_config_clone = style_config.clone();
+
+        // Clone the cancellation token for this section
+        let cancel_token_clone = {
+            let tokens = cancel_tokens
+                .0
+                .lock()
+                .map_err(|e| AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e)))?;
+            tokens.get(section_id).cloned()
+        };
 
         let task = tokio::spawn(async move {
             let db_state: tauri::State<'_, Mutex<Database>> = app_clone.state();
@@ -122,6 +147,7 @@ pub async fn generate_all_sections(
                 project_id_clone,
                 section_id_clone.clone(),
                 style_config_clone,
+                cancel_token_clone,
             )
             .await;
             (section_id_clone, result)
@@ -132,7 +158,6 @@ pub async fn generate_all_sections(
 
     // Wait for all HTML generation tasks
     let mut completed_html: Vec<String> = Vec::new();
-    let mut failed: Vec<(String, String)> = Vec::new();
 
     for task in html_tasks {
         match task.await {

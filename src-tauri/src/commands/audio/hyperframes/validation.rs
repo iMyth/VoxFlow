@@ -112,6 +112,7 @@ mod tests {
   <script>
     window.__timelines = window.__timelines || {};
     window.__timelines["test"] = gsap.timeline({ paused: true });
+    window.__hf = { duration: 6, seek: function(t) {} };
   </script>
 </body>
 </html>"#
@@ -267,6 +268,7 @@ mod tests {
                     window.__timelines = window.__timelines || {};
                     const tl = gsap.timeline({ paused: true });
                     window.__timelines["test"] = tl;
+                    window.__hf = { duration: 5, seek: function(t) {} };
                 </script>
             </div></body></html>"#;
         assert!(validate_composition(html).is_ok());

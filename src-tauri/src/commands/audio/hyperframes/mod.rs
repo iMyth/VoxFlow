@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod batch_video;
+pub mod ffmpeg_utils;
 pub mod render;
 pub mod section_audio;
 pub mod section_types;

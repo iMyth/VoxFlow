@@ -11,8 +11,9 @@ use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::core::error::AppError;
+
+use super::ffmpeg_utils::{copy_video_file, merge_video_with_audio};
 
 /// Node.js environment: npx path + the bin directory it lives in.
 ///
@@ -302,74 +303,20 @@ pub async fn render_hyperframes_video(
     if let Some(ref audio) = audio_path {
         let audio_file = Path::new(audio);
         if !audio_file.exists() {
-            // No audio file, just move the silent video to output
+            // No audio file, just copy the silent video to output
             info!("[Hyperframes Render] Audio file not found, using silent video");
-            std::fs::rename(&silent_video, final_output)
-                .or_else(|_| std::fs::copy(&silent_video, final_output).map(|_| ()))
-                .map_err(|e| AppError::FileSystem(format!("Failed to move output: {}", e)))?;
+            copy_video_file(&silent_video_str, &output_path)?;
         } else {
             emit_progress(78.0, "正在合并音频...");
 
-            // Find ffmpeg using the resolver that checks multiple paths
-            let ffmpeg_bin = find_ffmpeg();
-
-            // Check for ffmpeg
-            let ffmpeg_check = Command::new(&ffmpeg_bin)
-                .arg("-version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await;
-
-            if ffmpeg_check.is_err() || !ffmpeg_check.unwrap().success() {
-                // ffmpeg not available, return silent video
-                info!("[Hyperframes Render] ffmpeg not found, returning silent video");
-                std::fs::rename(&silent_video, final_output)
-                    .or_else(|_| std::fs::copy(&silent_video, final_output).map(|_| ()))
-                    .map_err(|e| AppError::FileSystem(format!("Failed to move output: {}", e)))?;
-
-                emit_progress(100.0, "完成（无音频，ffmpeg 未安装）");
-                return Ok(output_path);
-            }
-
-            // Run ffmpeg to merge
-            let ffmpeg_status = Command::new(&ffmpeg_bin)
-                .args([
-                    "-y",
-                    "-i",
-                    &silent_video_str,
-                    "-i",
-                    audio,
-                    "-c:v",
-                    "copy",
-                    "-c:a",
-                    "aac",
-                    "-shortest",
-                    &output_path,
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await
-                .map_err(|e| AppError::FileSystem(format!("Failed to run ffmpeg: {}", e)))?;
-
-            if !ffmpeg_status.success() {
-                return Err(AppError::FileSystem(
-                    "ffmpeg merge failed. The silent video is available at _render_output.mp4"
-                        .to_string(),
-                ));
-            }
-
-            // Clean up intermediate file
-            let _ = std::fs::remove_file(&silent_video);
+            // Use shared merge function
+            merge_video_with_audio(&silent_video_str, audio, &output_path).await?;
 
             info!("[Hyperframes Render] Audio merged: {}", output_path);
         }
     } else {
-        // No audio requested, just move silent video to output
-        std::fs::rename(&silent_video, final_output)
-            .or_else(|_| std::fs::copy(&silent_video, final_output).map(|_| ()))
-            .map_err(|e| AppError::FileSystem(format!("Failed to move output: {}", e)))?;
+        // No audio requested, just copy silent video to output
+        copy_video_file(&silent_video_str, &output_path)?;
     }
 
     emit_progress(100.0, "渲染完成");

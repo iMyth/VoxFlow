@@ -15,7 +15,7 @@ use log::info;
 use rig_core::client::CompletionClient;
 use rig_core::completion::Prompt;
 use rig_core::providers;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 
 use super::timeline::TimelineEntry;
@@ -117,11 +117,13 @@ pub async fn generate_with_agent(
     let agent = client
         .agent(&config.model)
         .preamble(&skills.system_prompt)
-        .temperature(0.9)
+        // Lower temperature for more deterministic output format compliance.
+        // 0.6 balances creativity (for visual design) with format stability.
+        .temperature(0.6)
         // Enable thinking mode for better code structure generation.
         // Adds 2-5 minutes but significantly improves compliance with
         // complex requirements like window.__hf interface implementation.
-        .additional_params(json!({ "enable_thinking": true }))
+        .additional_params(json!({ "enable_thinking": false }))
         .build();
 
     // Build the user prompt with timeline data
@@ -141,12 +143,17 @@ pub async fn generate_with_agent(
 总时长：{duration:.1} 秒，条目数：{count}
 {user_section}
 
-要求：
+技术要求：
 - composition-id="ai-generated"，尺寸 1920x1080
 - GSAP 动画，timeline 用 paused: true
 - 实现 window.__hf = {{ duration: {duration:.2}, seek: fn(t) {{ Object.values(window.__timelines).forEach(tl => tl.seek(t)) }} }}
 - 字体用 inter 或 roboto
-- 禁止：Math.random()、Date.now()、repeat:-1"#,
+- 禁止：Math.random()、Date.now()、repeat:-1
+
+【输出格式 - 严格遵守】
+直接输出完整的原始 HTML 文档，以 <!DOCTYPE html> 开头，以 </html> 结尾。
+不要输出任何解释文字、分析过程、或代码围栏（```）。
+只输出 HTML，不要前后有任何其他内容。"#,
         user_section = match user_instructions {
             Some(instructions) if !instructions.is_empty() =>
                 format!("\n用户额外要求（请务必遵循）：\n{}\n", instructions),
@@ -338,62 +345,112 @@ fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
 
 /// Extract the HTML content from the LLM response.
 ///
-/// The LLM is instructed to output raw HTML without code fences, but sometimes
-/// it wraps the output in ```html ... ``` blocks. This function handles both cases.
+/// The LLM is instructed to output raw HTML, but may still wrap it in
+/// explanations or code fences. This function handles multiple cases:
+/// 1. Raw HTML (starts with <!DOCTYPE or <html)
+/// 2. HTML wrapped in ```html ... ``` code fences
+/// 3. HTML embedded in explanatory text
+/// 4. HTML with leading/trailing whitespace or text
 fn extract_html(response: &str) -> Result<String, String> {
     let trimmed = response.trim();
 
-    // If it starts with <!DOCTYPE or <html, it's already raw HTML
-    if trimmed.starts_with("<!DOCTYPE")
-        || trimmed.starts_with("<html")
-        || trimmed.starts_with("<!doctype")
-    {
-        return Ok(trimmed.to_string());
+    // Fast path: already raw HTML
+    if let Some(html) = try_extract_raw_html(trimmed) {
+        return Ok(html);
     }
 
-    // Try to strip markdown code fences
-    if trimmed.starts_with("```") {
-        // Find the end of the opening fence line
-        if let Some(first_newline) = trimmed.find('\n') {
-            let after_fence = &trimmed[first_newline + 1..];
-            let content = after_fence
-                .strip_suffix("```")
-                .unwrap_or(after_fence)
-                .trim();
-            if content.starts_with("<!DOCTYPE")
-                || content.starts_with("<html")
-                || content.starts_with("<!doctype")
-            {
-                return Ok(content.to_string());
+    // Try to strip markdown code fences: ```html ... ``` or ``` ... ```
+    if let Some(html) = try_extract_from_code_fences(trimmed) {
+        return Ok(html);
+    }
+
+    // Last resort: search for HTML patterns anywhere in the text
+    if let Some(html) = try_extract_embedded_html(trimmed) {
+        return Ok(html);
+    }
+
+    // Generate a better error message with actual preview
+    let preview: String = trimmed.chars().take(300).collect();
+    Err(format!(
+        "LLM response does not contain valid HTML.\n\nResponse preview (first 300 chars):\n{}\n\n\
+         Hint: Ensure the model outputs raw HTML starting with <!DOCTYPE html> or <html>.",
+        preview
+    ))
+}
+
+/// Try to extract HTML that starts at the beginning of the text.
+fn try_extract_raw_html(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("<!doctype") || lower.starts_with("<html") {
+        Some(text.trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Try to extract HTML from markdown code fences.
+/// Handles: ```html ... ```, ``` ... ```, with optional language tag variations.
+fn try_extract_from_code_fences(text: &str) -> Option<String> {
+    // Find opening fence: ```html, ```HTML, or just ```
+    let fence_start = text.find("```")?;
+    let after_fence_start = &text[fence_start + 3..];
+
+    // Skip the language identifier (e.g., "html", "HTML", "htm")
+    let content_start = match after_fence_start.find('\n') {
+        Some(nl_pos) => fence_start + 3 + nl_pos + 1,
+        None => return None, // No newline after fence, malformed
+    };
+
+    let content = &text[content_start..];
+
+    // Find closing fence
+    let content_end = content.rfind("```").unwrap_or(content.len());
+    let extracted = content[..content_end].trim();
+
+    // Verify it looks like HTML
+    let lower = extracted.to_ascii_lowercase();
+    if lower.starts_with("<!doctype") || lower.starts_with("<html") {
+        Some(extracted.to_string())
+    } else {
+        None
+    }
+}
+
+/// Try to extract HTML embedded in explanatory text.
+/// Searches for <!DOCTYPE or <html anywhere and extracts until </html>.
+fn try_extract_embedded_html(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+
+    // Try different HTML start markers in priority order
+    let markers = ["<!doctype html>", "<!doctype", "<html"];
+
+    for marker in markers {
+        if let Some(start_pos) = lower.find(marker) {
+            let html_candidate = &text[start_pos..];
+
+            // Try to find </html> end marker
+            if let Some(end_rel) = html_candidate.to_ascii_lowercase().rfind("</html>") {
+                let extracted = html_candidate[..end_rel + 7].trim();
+                // If we have complete HTML (with closing tag), accept it regardless of length
+                return Some(extracted.to_string());
+            }
+
+            // No </html> found - only accept if it's substantial (might be truncated but usable)
+            if html_candidate.len() > 100 {
+                let extracted = html_candidate
+                    .trim_end_matches("```")
+                    .trim()
+                    .to_string();
+                if extracted.to_ascii_lowercase().starts_with("<!doctype")
+                    || extracted.to_ascii_lowercase().starts_with("<html")
+                {
+                    return Some(extracted);
+                }
             }
         }
     }
 
-    // Last resort: look for <!DOCTYPE or <html anywhere in the text
-    if let Some(start) = trimmed.find("<!DOCTYPE") {
-        let html_content = &trimmed[start..];
-        let end = html_content.rfind("</html>").map(|i| i + 7).unwrap_or(html_content.len());
-        return Ok(html_content[..end].trim_end_matches("```").trim().to_string());
-    }
-    if let Some(start) = trimmed.find("<!doctype") {
-        let html_content = &trimmed[start..];
-        let end = html_content.rfind("</html>").map(|i| i + 7).unwrap_or(html_content.len());
-        return Ok(html_content[..end].trim_end_matches("```").trim().to_string());
-    }
-    if let Some(start) = trimmed.find("<html") {
-        let html_content = &trimmed[start..];
-        let end = html_content.rfind("</html>").map(|i| i + 7).unwrap_or(html_content.len());
-        return Ok(html_content[..end].trim_end_matches("```").trim().to_string());
-    }
-
-    if let Some(start) = trimmed.find("<!DOCTYPE html>") {
-        return Ok(trimmed[start..].trim().to_string());
-    }
-
-    Err(format!(
-        "LLM response does not contain valid HTML. Response preview: {}",
-        &trimmed[..trimmed.len().min(200)]
-    ))
+    None
 }
 
 #[cfg(test)]
@@ -513,7 +570,9 @@ window.__hf = { duration: 10, seek: function() {} };
         let input = "This is just plain text with no HTML.";
         let result = extract_html(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("does not contain valid HTML"));
+        let err = result.unwrap_err();
+        assert!(err.contains("does not contain valid HTML"));
+        assert!(err.contains("Response preview"));
     }
 
     #[test]
@@ -526,6 +585,37 @@ window.__hf = { duration: 10, seek: function() {} };
     #[test]
     fn test_extract_html_whitespace_trimmed() {
         let input = "  \n\n  <!DOCTYPE html>\n<html><body>Trimmed</body></html>  \n  ";
+        let result = extract_html(input).unwrap();
+        assert!(result.starts_with("<!DOCTYPE html>"));
+    }
+
+    #[test]
+    fn test_extract_html_case_insensitive_doctype() {
+        // LLM might output lowercase doctype
+        let input = "<!doctype HTML>\n<html><body>Lower</body></html>";
+        let result = extract_html(input).unwrap();
+        assert!(result.to_ascii_lowercase().starts_with("<!doctype"));
+    }
+
+    #[test]
+    fn test_extract_html_with_explanatory_prefix() {
+        let input = "好的，我来为您生成这个作品。以下是 HTML 代码：\n\n<!DOCTYPE html>\n<html><head><meta charset=\"UTF-8\"></head><body>Content</body></html>";
+        let result = extract_html(input).unwrap();
+        assert!(result.starts_with("<!DOCTYPE html>"));
+        assert!(result.contains("</html>"));
+    }
+
+    #[test]
+    fn test_extract_html_code_fence_uppercase() {
+        let input = "```HTML\n<!DOCTYPE html>\n<html><body>Upper fence</body></html>\n```";
+        let result = extract_html(input).unwrap();
+        assert!(result.starts_with("<!DOCTYPE html>"));
+    }
+
+    #[test]
+    fn test_extract_html_truncated_no_closing_tag() {
+        // LLM output truncated, no </html>
+        let input = "<!DOCTYPE html>\n<html><head><title>Test</title></head><body><div>Long content that gets cut off...";
         let result = extract_html(input).unwrap();
         assert!(result.starts_with("<!DOCTYPE html>"));
     }

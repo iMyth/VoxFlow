@@ -12,6 +12,7 @@ use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 
+use super::ffmpeg_utils::build_sleep_mode_audio_filter;
 use super::section_types::{MergeProgress, SectionVideoFile};
 
 /// Probe a video file's codec and resolution using ffprobe.
@@ -122,7 +123,7 @@ pub async fn merge_videos(
                 "-c:v".to_string(),
                 "copy".to_string(),
                 "-af".to_string(),
-                "asetrate=22050*0.95,aresample=22050,bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7".to_string(),
+                build_sleep_mode_audio_filter().to_string(),
                 output_str.clone(),
             ];
 
@@ -289,7 +290,7 @@ pub async fn merge_videos(
             "-c:v".to_string(),
             "copy".to_string(),
             "-af".to_string(),
-            "asetrate=22050*0.95,aresample=22050,bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7".to_string(),
+            build_sleep_mode_audio_filter().to_string(),
             output_str.clone(),
         ];
 
@@ -337,8 +338,9 @@ pub async fn merge_videos(
         if sleep_mode {
             // Add concat and audio processing filters
             filter_complex.push_str(&format!(
-                "concat=n={}:v=1:a=1[vtmp][atmp];[atmp]asetrate=22050*0.95,aresample=22050,bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7[aout]",
-                n
+                "concat=n={}:v=1:a=1[vtmp][atmp];[atmp]{sleep_filter}[aout]",
+                n,
+                sleep_filter = build_sleep_mode_audio_filter()
             ));
             // Note: video is already in [vtmp], we'll map it directly
             filter_complex.push_str(&format!(";[vtmp]copy[vout]"));

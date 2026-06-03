@@ -13,6 +13,8 @@ use crate::core::db::ScriptLineWithMeta;
 use crate::core::error::AppError;
 use crate::core::models::AudioFragment;
 
+use super::ffmpeg_utils::build_sleep_mode_audio_filter;
+
 /// Result of merging audio for a section.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SectionAudioResult {
@@ -162,13 +164,12 @@ pub async fn merge_section_audio(
                 let label = format!("a{}", input_idx);
                 let filter_chain = if sleep_mode {
                     // Sleep mode: pitch reduction + bass warmth + high-frequency rolloff + quieter loudness
+                    // Uses shared filter chain from ffmpeg_utils
                     format!(
                         "[{i}:a]aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono,\
-                         asetrate=22050*0.95,aresample=22050,\
-                         bass=g=3:f=150,\
-                         lowpass=f=8000:p=1,\
-                         loudnorm=I=-20:TP=-2:LRA=7[{l}];",
+                         {sleep_filter}[{l}];",
                         i = input_idx,
+                        sleep_filter = build_sleep_mode_audio_filter(),
                         l = label
                     )
                 } else {
