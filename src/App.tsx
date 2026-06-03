@@ -12,6 +12,7 @@ import SettingsDialog from './components/settings/SettingsDialog';
 import { useCharacterStore } from './store/characterStore';
 import { useProjectStore } from './store/projectStore';
 import { useScriptStore } from './store/scriptStore';
+import { useSectionVideoStore, setCurrentProjectId } from './store/sectionVideoStore';
 import { useSettingsStore } from './store/settingsStore';
 import { useUpdateStore } from './store/updateStore';
 import './App.css';
@@ -83,6 +84,9 @@ function App() {
         globalVideoStyle: currentProject.project.global_video_style,
         isDirty: false,
       });
+      // Load section video configs from localStorage
+      setCurrentProjectId(projectId);
+      useSectionVideoStore.getState().loadProjectConfigs(projectId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
