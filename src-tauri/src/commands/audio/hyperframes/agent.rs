@@ -309,7 +309,8 @@ fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
     if !has_timelines {
         script.push_str("  // Initialize window.__timelines if missing\n");
         script.push_str("  window.__timelines = window.__timelines || {};\n");
-        script.push_str("  window.__timelines['ai-generated'] = gsap.timeline({ paused: true });\n");
+        script
+            .push_str("  window.__timelines['ai-generated'] = gsap.timeline({ paused: true });\n");
     }
 
     if !has_hf {
@@ -437,10 +438,7 @@ fn try_extract_embedded_html(text: &str) -> Option<String> {
 
             // No </html> found - only accept if it's substantial (might be truncated but usable)
             if html_candidate.len() > 100 {
-                let extracted = html_candidate
-                    .trim_end_matches("```")
-                    .trim()
-                    .to_string();
+                let extracted = html_candidate.trim_end_matches("```").trim().to_string();
                 if extracted.to_ascii_lowercase().starts_with("<!doctype")
                     || extracted.to_ascii_lowercase().starts_with("<html")
                 {

@@ -26,15 +26,6 @@ pub fn build_sleep_mode_audio_filter() -> &'static str {
     "asetrate=22050*0.95,aresample=22050,bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7"
 }
 
-/// Build the FFmpeg audio filter chain for normal mode.
-///
-/// Normal mode applies:
-/// - Resample to 22050 Hz mono
-/// - Loudness normalization to -16 LUFS
-pub fn build_normal_audio_filter() -> &'static str {
-    "aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono,loudnorm=I=-16:TP=-1.5:LRA=11"
-}
-
 /// Merge a silent video with an audio file using FFmpeg.
 ///
 /// - Video is copied without re-encoding (`-c:v copy`)
@@ -106,9 +97,8 @@ pub fn copy_video_file(source: &str, destination: &str) -> Result<(), AppError> 
     let src_path = std::path::Path::new(source);
     let dest_path = std::path::Path::new(destination);
 
-    std::fs::copy(src_path, dest_path).map_err(|e| {
-        AppError::FFmpeg(format!("Failed to copy video file: {}", e))
-    })?;
+    std::fs::copy(src_path, dest_path)
+        .map_err(|e| AppError::FFmpeg(format!("Failed to copy video file: {}", e)))?;
 
     // Try to remove source (may fail if cross-device, ignore)
     let _ = std::fs::remove_file(src_path);

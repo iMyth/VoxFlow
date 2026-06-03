@@ -41,7 +41,7 @@ pub fn build_ffmpeg_args(
                 ";[voice]equalizer=f=200:t=q:w=0.8:g=3,\
                  equalizer=f=3000:t=q:w=1.0:g=-2,\
                  lowpass=f=8000:p=1,\
-                 loudnorm=I=-20:TP=-2:LRA=7[out]"
+                 loudnorm=I=-20:TP=-2:LRA=7[out]",
             );
             args.push("-filter_complex".to_string());
             args.push(filter);
@@ -123,7 +123,7 @@ pub fn build_ffmpeg_args(
             ";[voice]equalizer=f=200:t=q:w=0.8:g=3,\
              equalizer=f=3000:t=q:w=1.0:g=-2,\
              lowpass=f=8000:p=1,\
-             loudnorm=I=-20:TP=-2:LRA=7[sleepvoice]"
+             loudnorm=I=-20:TP=-2:LRA=7[sleepvoice]",
         );
         "[sleepvoice]"
     } else {
@@ -185,5 +185,3 @@ pub fn find_ffmpeg() -> String {
     // 3. Last resort — let the OS try via whatever PATH it does have
     "ffmpeg".to_string()
 }
-
-

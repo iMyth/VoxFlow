@@ -90,9 +90,8 @@ pub async fn generate_section_html(
         AppError::FileSystem(format!("Failed to create composition directory: {}", e))
     })?;
     info!("[Section HTML] Creating assets directory...");
-    std::fs::create_dir_all(composition_dir.join("assets")).map_err(|e| {
-        AppError::FileSystem(format!("Failed to create assets directory: {}", e))
-    })?;
+    std::fs::create_dir_all(composition_dir.join("assets"))
+        .map_err(|e| AppError::FileSystem(format!("Failed to create assets directory: {}", e)))?;
     info!("[Section HTML] Directories created successfully");
 
     // --- Load data from DB ---
@@ -130,8 +129,14 @@ pub async fn generate_section_html(
     emit_section_progress(&app, &section_id, 15.0, "audio_merge");
 
     let audio_output_path = composition_dir.join("assets").join("audio.mp3");
-    let audio_result =
-        merge_section_audio(&section_id, &script_lines, &fragments, &audio_output_path, false).await?;
+    let audio_result = merge_section_audio(
+        &section_id,
+        &script_lines,
+        &fragments,
+        &audio_output_path,
+        false,
+    )
+    .await?;
 
     info!(
         "[Section HTML] Audio merged: {}ms, path={}",
@@ -141,8 +146,13 @@ pub async fn generate_section_html(
     // Check cancellation before expensive LLM call
     if let Some(ref token) = cancel_token {
         if token.is_cancelled() {
-            info!("[Section HTML] Section {} cancelled before LLM call, aborting", section_id);
-            return Err(AppError::FileSystem("Section generation cancelled".to_string()));
+            info!(
+                "[Section HTML] Section {} cancelled before LLM call, aborting",
+                section_id
+            );
+            return Err(AppError::FileSystem(
+                "Section generation cancelled".to_string(),
+            ));
         }
     }
 
@@ -155,7 +165,10 @@ pub async fn generate_section_html(
         let settings = db.load_settings()?;
         (settings.llm_endpoint, settings.llm_model)
     };
-    info!("[Section HTML] Using LLM endpoint: {}, model: {}", api_endpoint, model);
+    info!(
+        "[Section HTML] Using LLM endpoint: {}, model: {}",
+        api_endpoint, model
+    );
 
     let config_manager = ConfigManager::new(app.clone());
     let api_key = config_manager
@@ -272,15 +285,27 @@ pub async fn render_section_video(
     let audio_output_path = composition_dir.join("assets").join("audio.mp3");
     let output_video_path = export_dir.join("output.mp4");
 
-    info!("[Section Render] Composition directory: {:?}", composition_dir);
+    info!(
+        "[Section Render] Composition directory: {:?}",
+        composition_dir
+    );
     info!("[Section Render] Audio path: {:?}", audio_output_path);
-    info!("[Section Render] Output video path: {:?}", output_video_path);
+    info!(
+        "[Section Render] Output video path: {:?}",
+        output_video_path
+    );
 
     // Check if composition files exist
     let index_html_path = composition_dir.join("index.html");
     let meta_json_path = composition_dir.join("meta.json");
-    info!("[Section Render] Checking if index.html exists: {}", index_html_path.exists());
-    info!("[Section Render] Checking if meta.json exists: {}", meta_json_path.exists());
+    info!(
+        "[Section Render] Checking if index.html exists: {}",
+        index_html_path.exists()
+    );
+    info!(
+        "[Section Render] Checking if meta.json exists: {}",
+        meta_json_path.exists()
+    );
 
     if !index_html_path.exists() {
         return Err(AppError::FileSystem(
@@ -331,12 +356,18 @@ pub async fn render_section_video(
     info!("[Section Render] Spawning npx hyperframes render process...");
     let mut render_child = match render_cmd.spawn() {
         Ok(child) => {
-            info!("[Section Render] Process spawned successfully, PID: {:?}", child.id());
+            info!(
+                "[Section Render] Process spawned successfully, PID: {:?}",
+                child.id()
+            );
             child
         }
         Err(e) => {
             info!("[Section Render] Failed to spawn process: {}", e);
-            return Err(AppError::FileSystem(format!("Failed to start hyperframes render: {}", e)));
+            return Err(AppError::FileSystem(format!(
+                "Failed to start hyperframes render: {}",
+                e
+            )));
         }
     };
 
@@ -365,15 +396,13 @@ pub async fn render_section_video(
                 if let Some(pct) = parse_render_progress(&line) {
                     info!("[Section Render] Render progress: {}%", pct);
                     let mapped = 55.0 + pct * 33.0;
-                    emit_section_progress(
-                        &app_clone,
-                        &section_id_clone,
-                        mapped as f32,
-                        "rendering",
-                    );
+                    emit_section_progress(&app_clone, &section_id_clone, mapped, "rendering");
                 }
             }
-            info!("[Section Render] stderr capture complete, total lines: {}", line_count);
+            info!(
+                "[Section Render] stderr capture complete, total lines: {}",
+                line_count
+            );
         });
     } else {
         info!("[Section Render] No stderr stream available");
@@ -388,11 +417,11 @@ pub async fn render_section_video(
         Ok(Ok(status)) => {
             info!("[Section Render] Render task completed successfully");
             if !status.success() {
-                let stderr_output = stderr_capture
-                    .lock()
-                    .map(|s| s.clone())
-                    .unwrap_or_default();
-                info!("[Section Render] Render failed. stderr output:\n{}", stderr_output);
+                let stderr_output = stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
+                info!(
+                    "[Section Render] Render failed. stderr output:\n{}",
+                    stderr_output
+                );
                 return Err(AppError::FileSystem(format!(
                     "hyperframes render failed with exit code: {:?}\nstderr: {}",
                     status.code(),
@@ -402,13 +431,19 @@ pub async fn render_section_video(
         }
         Ok(Err(e)) => {
             info!("[Section Render] Render task returned error: {}", e);
-            return Err(AppError::FileSystem(format!("hyperframes render process error: {}", e)));
+            return Err(AppError::FileSystem(format!(
+                "hyperframes render process error: {}",
+                e
+            )));
         }
         Err(_) => {
             info!("[Section Render] Render task timed out after 5 minutes, killing process...");
             // CRITICAL: Kill the child process to prevent zombie Chrome instances
             if let Err(kill_err) = render_child.kill().await {
-                info!("[Section Render] Failed to kill timed-out process: {}", kill_err);
+                info!(
+                    "[Section Render] Failed to kill timed-out process: {}",
+                    kill_err
+                );
             } else {
                 info!("[Section Render] Timed-out process killed successfully");
             }
@@ -422,15 +457,17 @@ pub async fn render_section_video(
     // Verify output file was created
     info!("[Section Render] Checking if silent video was created...");
     if !silent_video.exists() {
-        info!("[Section Render] Silent video not found at: {:?}", silent_video);
+        info!(
+            "[Section Render] Silent video not found at: {:?}",
+            silent_video
+        );
         return Err(AppError::FileSystem(
             "hyperframes render completed but output file not found".to_string(),
         ));
     }
 
-    let metadata = std::fs::metadata(&silent_video).map_err(|e| {
-        AppError::FileSystem(format!("Failed to get silent video metadata: {}", e))
-    })?;
+    let metadata = std::fs::metadata(&silent_video)
+        .map_err(|e| AppError::FileSystem(format!("Failed to get silent video metadata: {}", e)))?;
     info!(
         "[Section Render] Silent video created: {:?}, size: {} bytes",
         silent_video,
@@ -443,7 +480,10 @@ pub async fn render_section_video(
 
     let output_path_str = output_video_path.to_string_lossy().to_string();
 
-    info!("[Section Render] Checking if audio file exists: {}", audio_output_path.exists());
+    info!(
+        "[Section Render] Checking if audio file exists: {}",
+        audio_output_path.exists()
+    );
     if audio_output_path.exists() {
         // Use shared merge function
         merge_video_with_audio(
@@ -469,24 +509,22 @@ pub async fn render_section_video(
     // Read duration from meta.json
     let duration_ms = if meta_json_path.exists() {
         match std::fs::read_to_string(&meta_json_path) {
-            Ok(content) => {
-                match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(meta) => {
-                        if let Some(duration_secs) = meta.get("duration").and_then(|d| d.as_f64()) {
-                            let ms = (duration_secs * 1000.0) as i64;
-                            info!("[Section Render] Duration from meta.json: {}ms", ms);
-                            ms
-                        } else {
-                            info!("[Section Render] No duration field in meta.json");
-                            0
-                        }
-                    }
-                    Err(e) => {
-                        info!("[Section Render] Failed to parse meta.json: {}", e);
+            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(meta) => {
+                    if let Some(duration_secs) = meta.get("duration").and_then(|d| d.as_f64()) {
+                        let ms = (duration_secs * 1000.0) as i64;
+                        info!("[Section Render] Duration from meta.json: {}ms", ms);
+                        ms
+                    } else {
+                        info!("[Section Render] No duration field in meta.json");
                         0
                     }
                 }
-            }
+                Err(e) => {
+                    info!("[Section Render] Failed to parse meta.json: {}", e);
+                    0
+                }
+            },
             Err(e) => {
                 info!("[Section Render] Failed to read meta.json: {}", e);
                 0

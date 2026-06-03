@@ -91,7 +91,11 @@ pub async fn merge_section_audio(
     #[derive(Debug)]
     enum Segment {
         /// An audio file input at the given ffmpeg input index
-        Audio { input_idx: usize, duration_ms: i64 },
+        Audio {
+            input_idx: usize,
+            #[allow(dead_code)]
+            duration_ms: i64,
+        },
         /// A silence segment of the given duration
         Silence { duration_ms: i32 },
     }
@@ -103,14 +107,18 @@ pub async fn merge_section_audio(
     for (i, line) in section_lines.iter().enumerate() {
         let is_last = i == line_count - 1;
 
-        match frag_map.get(line.id.as_str()).and_then(|f| {
-            f.duration_ms.map(|d| (f.file_path.clone(), d))
-        }) {
+        match frag_map
+            .get(line.id.as_str())
+            .and_then(|f| f.duration_ms.map(|d| (f.file_path.clone(), d)))
+        {
             Some((file_path, duration_ms)) => {
                 // This line has audio
                 let input_idx = input_files.len();
                 input_files.push(file_path);
-                segments.push(Segment::Audio { input_idx, duration_ms });
+                segments.push(Segment::Audio {
+                    input_idx,
+                    duration_ms,
+                });
                 total_duration_ms += duration_ms;
 
                 // Add gap silence after this fragment (except for the last line)
@@ -137,9 +145,7 @@ pub async fn merge_section_audio(
     // If only silence segments remain (shouldn't happen due to has_any_audio check above),
     // but handle gracefully
     if segments.is_empty() {
-        return Err(AppError::FFmpeg(
-            "No audio segments to merge".to_string(),
-        ));
+        return Err(AppError::FFmpeg("No audio segments to merge".to_string()));
     }
 
     // Build ffmpeg arguments
@@ -263,19 +269,16 @@ pub async fn merge_section_audio(
                     "FFmpeg not found. Please install FFmpeg to merge section audio.".to_string(),
                 ))
             } else {
-                Err(AppError::FFmpeg(format!(
-                    "Failed to execute ffmpeg: {}",
-                    e
-                )))
+                Err(AppError::FFmpeg(format!("Failed to execute ffmpeg: {}", e)))
             }
         }
     }
 }
 
-
 // ---- Pure duration calculation functions for testing ----
 
 /// Represents a line's audio contribution for duration calculation.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct LineAudioInfo {
     /// Whether this line has an audio fragment with a valid duration.
@@ -297,6 +300,7 @@ pub struct LineAudioInfo {
 /// - Users can control inter-section pauses by setting gap_after_ms on the last line of each section
 ///
 /// Returns total duration in milliseconds.
+#[cfg(test)]
 pub fn calculate_section_audio_duration(line_infos: &[LineAudioInfo]) -> i64 {
     let mut total: i64 = 0;
 
@@ -326,26 +330,25 @@ mod tests {
     /// Strategy to generate a list of LineAudioInfo entries where at least one has audio.
     fn arb_line_audio_infos() -> impl Strategy<Value = Vec<LineAudioInfo>> {
         // Generate 1..15 lines, each with random audio presence, duration, and gap
-        prop::collection::vec(
-            (prop::bool::ANY, 1i64..=30_000, 0i32..=5000),
-            1..15,
-        )
-        .prop_filter("at least one line must have audio", |v| {
-            v.iter().any(|(has_audio, _, _)| *has_audio)
-        })
-        .prop_map(|entries| {
-            let len = entries.len();
-            entries
-                .into_iter()
-                .enumerate()
-                .map(|(i, (has_audio, duration_ms, gap_after_ms))| LineAudioInfo {
-                    has_audio,
-                    duration_ms,
-                    gap_after_ms,
-                    is_last: i == len - 1,
-                })
-                .collect()
-        })
+        prop::collection::vec((prop::bool::ANY, 1i64..=30_000, 0i32..=5000), 1..15)
+            .prop_filter("at least one line must have audio", |v| {
+                v.iter().any(|(has_audio, _, _)| *has_audio)
+            })
+            .prop_map(|entries| {
+                let len = entries.len();
+                entries
+                    .into_iter()
+                    .enumerate()
+                    .map(
+                        |(i, (has_audio, duration_ms, gap_after_ms))| LineAudioInfo {
+                            has_audio,
+                            duration_ms,
+                            gap_after_ms,
+                            is_last: i == len - 1,
+                        },
+                    )
+                    .collect()
+            })
     }
 
     proptest! {

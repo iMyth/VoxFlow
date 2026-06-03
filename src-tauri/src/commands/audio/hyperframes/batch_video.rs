@@ -83,10 +83,9 @@ pub async fn generate_all_sections(
         // Register a cancellation token
         let cancel_token = CancellationToken::new();
         {
-            let mut tokens = cancel_tokens
-                .0
-                .lock()
-                .map_err(|e| AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e)))?;
+            let mut tokens = cancel_tokens.0.lock().map_err(|e| {
+                AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e))
+            })?;
             tokens.insert(section.id.clone(), cancel_token.clone());
         }
 
@@ -112,13 +111,15 @@ pub async fn generate_all_sections(
     for (section_id, style_config) in &sections_to_process {
         // Check cancellation BEFORE spawning task
         {
-            let tokens = cancel_tokens
-                .0
-                .lock()
-                .map_err(|e| AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e)))?;
+            let tokens = cancel_tokens.0.lock().map_err(|e| {
+                AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e))
+            })?;
             if let Some(token) = tokens.get(section_id) {
                 if token.is_cancelled() {
-                    info!("[Batch Video] Section {} cancelled before HTML generation, skipping", section_id);
+                    info!(
+                        "[Batch Video] Section {} cancelled before HTML generation, skipping",
+                        section_id
+                    );
                     failed.push((section_id.clone(), "Cancelled".to_string()));
                     continue;
                 }
@@ -132,10 +133,9 @@ pub async fn generate_all_sections(
 
         // Clone the cancellation token for this section
         let cancel_token_clone = {
-            let tokens = cancel_tokens
-                .0
-                .lock()
-                .map_err(|e| AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e)))?;
+            let tokens = cancel_tokens.0.lock().map_err(|e| {
+                AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e))
+            })?;
             tokens.get(section_id).cloned()
         };
 
@@ -168,7 +168,10 @@ pub async fn generate_all_sections(
                 }
                 Err(e) => {
                     let error_msg = e.to_string();
-                    info!("[Batch Video] HTML generation failed for section {}: {}", section_id, error_msg);
+                    info!(
+                        "[Batch Video] HTML generation failed for section {}: {}",
+                        section_id, error_msg
+                    );
 
                     // Emit failure event so frontend updates status
                     let _ = app.emit(
@@ -214,13 +217,15 @@ pub async fn generate_all_sections(
     for section_id in &completed_html {
         // Check if cancelled
         {
-            let tokens = cancel_tokens
-                .0
-                .lock()
-                .map_err(|e| AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e)))?;
+            let tokens = cancel_tokens.0.lock().map_err(|e| {
+                AppError::FileSystem(format!("Failed to lock cancel tokens: {}", e))
+            })?;
             if let Some(token) = tokens.get(section_id) {
                 if token.is_cancelled() {
-                    info!("[Batch Video] Section {} cancelled, skipping render", section_id);
+                    info!(
+                        "[Batch Video] Section {} cancelled, skipping render",
+                        section_id
+                    );
                     failed.push((section_id.clone(), "Cancelled".to_string()));
                     continue;
                 }
@@ -238,12 +243,8 @@ pub async fn generate_all_sections(
         );
 
         // Render this section
-        let render_result = render_section_video(
-            app.clone(),
-            project_id.clone(),
-            section_id.clone(),
-        )
-        .await;
+        let render_result =
+            render_section_video(app.clone(), project_id.clone(), section_id.clone()).await;
 
         // Remove cancellation token
         if let Ok(mut tokens) = cancel_tokens.0.lock() {
@@ -269,7 +270,10 @@ pub async fn generate_all_sections(
             }
             Err(e) => {
                 let error_msg = e.to_string();
-                info!("[Batch Video] Render failed for section {}: {}", section_id, error_msg);
+                info!(
+                    "[Batch Video] Render failed for section {}: {}",
+                    section_id, error_msg
+                );
 
                 // Emit failure event so frontend updates status
                 let _ = app.emit(
@@ -308,10 +312,7 @@ pub async fn cancel_section_generation(
     cancel_tokens: tauri::State<'_, SectionCancelTokens>,
     section_id: String,
 ) -> Result<(), AppError> {
-    info!(
-        "[Cancel] Cancelling section generation: {}",
-        section_id
-    );
+    info!("[Cancel] Cancelling section generation: {}", section_id);
 
     let tokens = cancel_tokens
         .0
@@ -320,7 +321,10 @@ pub async fn cancel_section_generation(
 
     if let Some(token) = tokens.get(&section_id) {
         token.cancel();
-        info!("[Cancel] Cancellation token triggered for section: {}", section_id);
+        info!(
+            "[Cancel] Cancellation token triggered for section: {}",
+            section_id
+        );
     } else {
         info!(
             "[Cancel] No active generation found for section: {}",

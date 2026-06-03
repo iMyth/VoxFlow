@@ -10,9 +10,9 @@ pub mod render;
 pub mod section_audio;
 pub mod section_types;
 pub mod section_video;
-pub mod video_merger;
 pub mod timeline;
 pub mod validation;
+pub mod video_merger;
 
 use std::sync::Mutex;
 

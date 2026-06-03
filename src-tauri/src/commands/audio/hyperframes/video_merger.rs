@@ -22,10 +22,14 @@ fn probe_video(file_path: &str) -> Result<(String, String), AppError> {
 
     let output = std::process::Command::new(&ffprobe_path)
         .args([
-            "-v", "quiet",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name,width,height",
-            "-of", "csv=p=0",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,width,height",
+            "-of",
+            "csv=p=0",
             file_path,
         ])
         .output()
@@ -76,7 +80,7 @@ fn probe_video(file_path: &str) -> Result<(String, String), AppError> {
 pub async fn merge_videos(
     section_videos: &[SectionVideoFile],
     output_path: &Path,
-    transition_duration_ms: u32,
+    _transition_duration_ms: u32,
     sleep_mode: bool,
     on_progress: impl Fn(f32, &str),
 ) -> Result<String, AppError> {
@@ -139,7 +143,9 @@ pub async fn merge_videos(
 
             if !result.unwrap().status.success() {
                 let _ = std::fs::remove_file(output_path);
-                return Err(AppError::FFmpeg("Failed to process single section with sleep mode".to_string()));
+                return Err(AppError::FFmpeg(
+                    "Failed to process single section with sleep mode".to_string(),
+                ));
             }
         }
 
@@ -164,9 +170,6 @@ pub async fn merge_videos(
 
     on_progress(20.0, "concatenating");
 
-    // Clamp transition duration to valid range
-    let transition_ms = transition_duration_ms.clamp(100, 2000);
-
     let ffmpeg_bin = find_ffmpeg();
     let output_str = output_path.to_string_lossy().to_string();
 
@@ -183,9 +186,8 @@ pub async fn merge_videos(
         for sv in section_videos {
             content.push_str(&format!("file '{}'\n", sv.file_path));
         }
-        std::fs::write(&concat_path, &content).map_err(|e| {
-            AppError::FFmpeg(format!("Failed to write concat list: {}", e))
-        })?;
+        std::fs::write(&concat_path, &content)
+            .map_err(|e| AppError::FFmpeg(format!("Failed to write concat list: {}", e)))?;
 
         on_progress(40.0, "concatenating");
 
@@ -193,10 +195,14 @@ pub async fn merge_videos(
             std::process::Command::new(&ffmpeg_bin)
                 .args([
                     "-y",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", &concat_path_str,
-                    "-c", "copy",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    &concat_path_str,
+                    "-c",
+                    "copy",
                     &output_str,
                 ])
                 .stderr(std::process::Stdio::piped())
@@ -246,9 +252,8 @@ pub async fn merge_videos(
         for sv in section_videos {
             content.push_str(&format!("file '{}'\n", sv.file_path));
         }
-        std::fs::write(&concat_path, &content).map_err(|e| {
-            AppError::FFmpeg(format!("Failed to write concat list: {}", e))
-        })?;
+        std::fs::write(&concat_path, &content)
+            .map_err(|e| AppError::FFmpeg(format!("Failed to write concat list: {}", e)))?;
 
         on_progress(30.0, "concatenating");
 
@@ -257,10 +262,14 @@ pub async fn merge_videos(
             std::process::Command::new(&ffmpeg_bin_clone)
                 .args([
                     "-y",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", &concat_path_str,
-                    "-c", "copy",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    &concat_path_str,
+                    "-c",
+                    "copy",
                     &temp_path_str,
                 ])
                 .stderr(std::process::Stdio::piped())
@@ -308,7 +317,9 @@ pub async fn merge_videos(
 
         if !result.unwrap().status.success() {
             let _ = std::fs::remove_file(output_path);
-            return Err(AppError::FFmpeg("Failed to apply sleep mode processing".to_string()));
+            return Err(AppError::FFmpeg(
+                "Failed to apply sleep mode processing".to_string(),
+            ));
         }
 
         on_progress(100.0, "finalizing");
@@ -343,12 +354,9 @@ pub async fn merge_videos(
                 sleep_filter = build_sleep_mode_audio_filter()
             ));
             // Note: video is already in [vtmp], we'll map it directly
-            filter_complex.push_str(&format!(";[vtmp]copy[vout]"));
+            filter_complex.push_str(";[vtmp]copy[vout]");
         } else {
-            filter_complex.push_str(&format!(
-                "concat=n={}:v=1:a=1[vout][aout]",
-                n
-            ));
+            filter_complex.push_str(&format!("concat=n={}:v=1:a=1[vout][aout]", n));
         }
 
         args.push("-filter_complex".to_string());
@@ -490,7 +498,14 @@ pub async fn merge_section_videos(
         );
     };
 
-    let result = merge_videos(&section_videos, out_path, transition_ms, sleep_mode_enabled, on_progress).await?;
+    let result = merge_videos(
+        &section_videos,
+        out_path,
+        transition_ms,
+        sleep_mode_enabled,
+        on_progress,
+    )
+    .await?;
 
     info!("[Video Merger] Merge complete: {}", result);
     Ok(result)
@@ -503,16 +518,21 @@ fn get_video_duration_ms(file_path: &str) -> Result<i64, AppError> {
 
     let output = std::process::Command::new(&ffprobe_path)
         .args([
-            "-v", "quiet",
-            "-show_entries", "format=duration",
-            "-of", "csv=p=0",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
             file_path,
         ])
         .output()
         .map_err(|e| AppError::FFmpeg(format!("Failed to run ffprobe: {}", e)))?;
 
     if !output.status.success() {
-        return Err(AppError::FFmpeg("ffprobe duration query failed".to_string()));
+        return Err(AppError::FFmpeg(
+            "ffprobe duration query failed".to_string(),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -524,7 +544,6 @@ fn get_video_duration_ms(file_path: &str) -> Result<i64, AppError> {
     Ok((duration_secs * 1000.0) as i64)
 }
 
-
 // ---- Pure duration calculation functions for testing ----
 
 /// Calculate the final merged video duration given section durations and transition duration.
@@ -534,6 +553,7 @@ fn get_video_duration_ms(file_path: &str) -> Result<i64, AppError> {
 ///
 /// The transition duration is clamped per-pair to min(adjacent durations), and the
 /// overall result is clamped to be non-negative.
+#[cfg(test)]
 pub fn calculate_merged_duration(section_durations_ms: &[i64], transition_duration_ms: u32) -> i64 {
     if section_durations_ms.is_empty() {
         return 0;
@@ -558,6 +578,7 @@ pub fn calculate_merged_duration(section_durations_ms: &[i64], transition_durati
 
 /// Calculate the effective transition duration between two adjacent sections,
 /// clamping to the minimum of their durations.
+#[cfg(test)]
 pub fn clamp_transition(duration_a_ms: i64, duration_b_ms: i64, transition_ms: u32) -> u32 {
     let min_dur = duration_a_ms.min(duration_b_ms).max(0) as u32;
     transition_ms.min(min_dur)

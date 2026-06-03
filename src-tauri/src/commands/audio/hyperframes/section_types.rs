@@ -1,7 +1,6 @@
 //! Types for paragraph-level (per-ScriptSection) video generation.
 
 use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
 
 /// Configuration for how a section's video should be generated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,11 +57,4 @@ pub struct SectionVideoFile {
     pub section_order: i32,
     pub file_path: String,
     pub duration_ms: i64,
-}
-
-/// Context passed through the generation pipeline for cancellation support.
-#[derive(Debug, Clone)]
-pub struct GenerationContext {
-    pub cancel_token: CancellationToken,
-    pub section_id: String,
 }

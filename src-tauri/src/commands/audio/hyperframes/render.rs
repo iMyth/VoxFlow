@@ -102,7 +102,10 @@ pub fn find_node_env() -> NodeEnv {
                     .parent()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
-                return NodeEnv { npx: npx_path, bin_dir };
+                return NodeEnv {
+                    npx: npx_path,
+                    bin_dir,
+                };
             }
         }
     }
@@ -130,7 +133,11 @@ fn find_latest_bin_dir(parent_dir: &std::path::Path, bin: &str) -> Option<String
                 candidate
             } else {
                 let alt = path.join("bin");
-                if alt.join(bin).exists() { alt } else { continue }
+                if alt.join(bin).exists() {
+                    alt
+                } else {
+                    continue;
+                }
             };
             let dominated = best
                 .as_ref()
@@ -206,7 +213,10 @@ pub async fn render_hyperframes_video(
     );
 
     let mut npx_check = Command::new(&node_env.npx);
-    npx_check.arg("--version").stdout(Stdio::null()).stderr(Stdio::null());
+    npx_check
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     if !node_env.bin_dir.is_empty() {
         // Prepend node bin dir to PATH so npx can find node
         let path = prepend_to_path(&node_env.bin_dir);
@@ -278,10 +288,7 @@ pub async fn render_hyperframes_video(
         .map_err(|e| AppError::FileSystem(format!("hyperframes render process error: {}", e)))?;
 
     if !render_status.success() {
-        let stderr_output = stderr_capture
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
+        let stderr_output = stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
         return Err(AppError::FileSystem(format!(
             "hyperframes render failed with exit code: {:?}\nstderr: {}",
             render_status.code(),
@@ -298,7 +305,6 @@ pub async fn render_hyperframes_video(
     info!("[Hyperframes Render] Render complete: {:?}", silent_video);
 
     // --- Step 3: Merge audio (if provided) ---
-    let final_output = Path::new(&output_path);
 
     if let Some(ref audio) = audio_path {
         let audio_file = Path::new(audio);

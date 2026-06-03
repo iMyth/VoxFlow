@@ -60,9 +60,12 @@ pub fn validate_composition(html: &str) -> Result<(), Vec<String>> {
     }
 
     // Rule 6: GSAP timelines must be registered to window.__timelines or window.__hf
-    let has_timelines_registration = html.contains("window.__timelines") || html.contains("window.__hf");
+    let has_timelines_registration =
+        html.contains("window.__timelines") || html.contains("window.__hf");
     if !has_timelines_registration {
-        errors.push("Missing timeline registration (need window.__timelines or window.__hf)".to_string());
+        errors.push(
+            "Missing timeline registration (need window.__timelines or window.__hf)".to_string(),
+        );
     }
 
     // Rule 6b: For hyperframes 0.6.x, prefer window.__hf with seek function

@@ -344,10 +344,7 @@ mod tests {
             make_section_line("l1", 1, "First line", 500, Some("s1")),
             make_section_line("l2", 2, "Second line", 0, Some("s1")),
         ];
-        let frags = vec![
-            make_fragment("l1", 2000),
-            make_fragment("l2", 1500),
-        ];
+        let frags = vec![make_fragment("l1", 2000), make_fragment("l2", 1500)];
 
         let result = compute_section_timeline("s1", &lines, &frags);
         assert!(!result.is_empty());
@@ -356,9 +353,13 @@ mod tests {
 
     #[test]
     fn test_section_timeline_empty_section_returns_empty() {
-        let lines = vec![
-            make_section_line("l1", 1, "Other section", 500, Some("sOther")),
-        ];
+        let lines = vec![make_section_line(
+            "l1",
+            1,
+            "Other section",
+            500,
+            Some("sOther"),
+        )];
         let frags = vec![make_fragment("l1", 2000)];
 
         let result = compute_section_timeline("sEmpty", &lines, &frags);
@@ -423,7 +424,7 @@ mod tests {
     #[test]
     fn test_section_timeline_multiple_lines_accumulate_correctly() {
         let lines = vec![
-            make_section_line("l1", 1, "First", 500, Some("s1")),   // gap = 0.5s
+            make_section_line("l1", 1, "First", 500, Some("s1")), // gap = 0.5s
             make_section_line("l2", 2, "Second", 1000, Some("s1")), // gap = 1.0s
             make_section_line("l3", 3, "Third", 0, Some("s1")),
         ];
