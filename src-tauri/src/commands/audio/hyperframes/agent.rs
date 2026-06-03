@@ -132,39 +132,20 @@ pub async fn generate_with_agent(
     let timeline_json = build_timeline_prompt(entries, total_duration);
 
     let user_prompt = format!(
-        r#"请为以下有声书时间轴创作一个完整的 Hyperframes 视觉作品。
+        r#"为以下有声书时间轴生成 Hyperframes HTML 作品。
 
-直接生成完整的 HTML composition（从 <!DOCTYPE html> 到 </html>），不要用代码块包裹。
-{user_section}
 时间轴数据：
 {timeline}
 
-总时长：{duration:.1} 秒
-条目数：{count}
+总时长：{duration:.1} 秒，条目数：{count}
+{user_section}
 
-关键约束（必须遵守）：
-1. composition-id 使用 "ai-generated"
-2. 尺寸 1920x1080，FPS 30
-3. 所有动画使用 GSAP，挂在 paused timeline 上
-4. 不要用 Math.random()、Date.now()、repeat: -1
-5. **必须实现 window.__hf 接口**（hyperframes 0.6.x 要求）：
-   ```javascript
-   window.__hf = {{
-     duration: {duration:.2},
-     seek: function(time) {{
-       if (window.__timelines) {{
-         Object.values(window.__timelines).forEach(tl => tl.seek(time));
-       }}
-     }}
-   }};
-   ```
-6. 注册 timeline: `window.__timelines["ai-generated"] = gsap.timeline({{ paused: true }});`
-7. 确保 window.__hf 在页面加载时同步创建（不要在 async/await 或 setTimeout 中）
-8. **字体必须使用 hyperframes 支持的字体**（不要使用 CSS 变量）：
-   - 正文：inter, roboto, open-sans, montserrat, lato, nunito, poppins, oswald, outfit
-   - 标题：playfair-display, eb-garamond, league-gothic
-   - 等宽：jetbrains-mono, source-code-pro, space-mono, ibm-plex-mono
-   - 示例：`font-family: 'inter', sans-serif;` （不要用 `var(--font-main)`）"#,
+要求：
+- composition-id="ai-generated"，尺寸 1920x1080
+- GSAP 动画，timeline 用 paused: true
+- 实现 window.__hf = {{ duration: {duration:.2}, seek: fn(t) {{ Object.values(window.__timelines).forEach(tl => tl.seek(t)) }} }}
+- 字体用 inter 或 roboto
+- 禁止：Math.random()、Date.now()、repeat:-1"#,
         user_section = match user_instructions {
             Some(instructions) if !instructions.is_empty() =>
                 format!("\n用户额外要求（请务必遵循）：\n{}\n", instructions),
@@ -203,6 +184,9 @@ pub async fn generate_with_agent(
 
     // Extract HTML from the agent's final response
     let html = extract_html(&response)?;
+
+    // Post-process: fix CSS font variables
+    let html = fix_css_font_variables(&html);
 
     // Final validation
     match validate_composition(&html) {
@@ -254,6 +238,24 @@ fn build_timeline_prompt(entries: &[TimelineEntry], total_duration: f64) -> Stri
     };
 
     serde_json::to_string_pretty(&data).unwrap_or_default()
+}
+
+/// Fix CSS font variables by replacing var(--font-*) with actual font names.
+/// This is necessary because hyperframes cannot map CSS variables to fonts.
+fn fix_css_font_variables(html: &str) -> String {
+    let mut result = html.to_string();
+
+    // Replace common font variable patterns with hyperframes-supported fonts
+    result = result
+        .replace("var(--font-body)", "'inter', sans-serif")
+        .replace("var(--font-heading)", "'montserrat', sans-serif")
+        .replace("var(--font-mono)", "'jetbrains-mono', monospace")
+        .replace("var(--font-main)", "'inter', sans-serif")
+        .replace("var(--font-display)", "'montserrat', sans-serif")
+        .replace("var(--font-serif)", "'eb-garamond', serif")
+        .replace("var(--font-sans)", "'roboto', sans-serif");
+
+    result
 }
 
 /// Extract the HTML content from the LLM response.
@@ -319,6 +321,21 @@ fn extract_html(response: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fix_css_font_variables() {
+        let html = r#"<style>
+            body { font-family: var(--font-body); }
+            h1 { font-family: var(--font-heading); }
+            code { font-family: var(--font-mono); }
+        </style>"#;
+
+        let fixed = fix_css_font_variables(html);
+        assert!(!fixed.contains("var(--font-"));
+        assert!(fixed.contains("'inter', sans-serif"));
+        assert!(fixed.contains("'montserrat', sans-serif"));
+        assert!(fixed.contains("'jetbrains-mono', monospace"));
+    }
 
     #[test]
     fn test_extract_html_raw_doctype() {
