@@ -7,7 +7,7 @@
 //! - FFmpeg integration
 
 mod export;
-mod ffmpeg;
+pub mod ffmpeg;
 pub mod hyperframes;
 mod import;
 mod player;

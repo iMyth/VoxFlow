@@ -11,6 +11,7 @@ use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::core::error::AppError;
 
 /// Node.js environment: npx path + the bin directory it lives in.
@@ -309,8 +310,11 @@ pub async fn render_hyperframes_video(
         } else {
             emit_progress(78.0, "正在合并音频...");
 
+            // Find ffmpeg using the resolver that checks multiple paths
+            let ffmpeg_bin = find_ffmpeg();
+
             // Check for ffmpeg
-            let ffmpeg_check = Command::new("ffmpeg")
+            let ffmpeg_check = Command::new(&ffmpeg_bin)
                 .arg("-version")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -329,7 +333,7 @@ pub async fn render_hyperframes_video(
             }
 
             // Run ffmpeg to merge
-            let ffmpeg_status = Command::new("ffmpeg")
+            let ffmpeg_status = Command::new(&ffmpeg_bin)
                 .args([
                     "-y",
                     "-i",

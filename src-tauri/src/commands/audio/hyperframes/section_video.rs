@@ -18,6 +18,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::commands::audio::ffmpeg::find_ffmpeg;
+
 use crate::core::config::ConfigManager;
 use crate::core::db::Database;
 use crate::core::error::AppError;
@@ -443,7 +445,8 @@ pub async fn render_section_video(
         info!("[Section Render] Input audio: {}", audio_path_str);
         info!("[Section Render] Output: {}", output_path_str);
 
-        let ffmpeg_status = Command::new("ffmpeg")
+        let ffmpeg_bin = find_ffmpeg();
+        let ffmpeg_status = Command::new(&ffmpeg_bin)
             .args([
                 "-y",
                 "-i",

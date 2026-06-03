@@ -1,3 +1,4 @@
+use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::core::models::VoiceConfig;
 use log::warn;
 
@@ -233,7 +234,8 @@ pub(crate) async fn merge_audio_with_silence(
     let output = output.to_path_buf();
     let concat_list_for_cleanup = concat_list.clone();
     let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("ffmpeg")
+        let ffmpeg_bin = find_ffmpeg();
+        std::process::Command::new(&ffmpeg_bin)
             .args([
                 "-y",
                 "-f",
@@ -279,7 +281,8 @@ pub(crate) async fn generate_silence(
     let duration_sec = duration_ms as f64 / 1000.0;
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let result = std::process::Command::new("ffmpeg")
+        let ffmpeg_bin = find_ffmpeg();
+        let result = std::process::Command::new(&ffmpeg_bin)
             .args([
                 "-y",
                 "-f",
@@ -317,7 +320,8 @@ pub(crate) async fn reencode_with_ffmpeg(audio_path: &std::path::Path, label: &s
     let tmp = audio_path.with_extension("tmp.mp3");
     let label = label.to_string();
     let _ = tokio::task::spawn_blocking(move || {
-        let r = std::process::Command::new("ffmpeg")
+        let ffmpeg_bin = find_ffmpeg();
+        let r = std::process::Command::new(&ffmpeg_bin)
             .args([
                 "-y",
                 "-i",
@@ -349,7 +353,10 @@ pub async fn get_audio_duration(path: &std::path::Path) -> Option<i64> {
     let path = path.to_path_buf();
     let path_for_ffprobe = path.clone();
     let ffprobe_result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("ffprobe")
+        // ffprobe is typically in the same directory as ffmpeg
+        let ffmpeg_bin = find_ffmpeg();
+        let ffprobe_bin = ffmpeg_bin.replace("ffmpeg", "ffprobe");
+        std::process::Command::new(&ffprobe_bin)
             .args([
                 "-v",
                 "error",
