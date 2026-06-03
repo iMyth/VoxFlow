@@ -128,8 +128,9 @@ pub async fn merge_videos(
     let ffmpeg_bin = find_ffmpeg();
     let output_str = output_path.to_string_lossy().to_string();
 
-    if is_uniform && transition_ms == 0 {
-        // Use concat demuxer (no re-encode, no transitions)
+    if is_uniform {
+        // Use concat demuxer (no re-encode, preserves gaps between sections)
+        // This is preferred for preserving intentional silence gaps between paragraphs
         let concat_path = output_path
             .parent()
             .unwrap_or(Path::new("."))
@@ -185,7 +186,9 @@ pub async fn merge_videos(
             }
         }
     } else {
-        // Use xfade filter for cross-fade transitions (requires re-encoding)
+        // Formats are not uniform, need to re-encode
+        // Use concat filter (not demuxer) to handle different formats
+        // This preserves gaps between sections without xfade/acrossfade mixing
         let mut args: Vec<String> = vec!["-y".to_string()];
 
         // Add all input files
@@ -194,63 +197,18 @@ pub async fn merge_videos(
             args.push(sv.file_path.clone());
         }
 
-        // Build xfade filter chain
+        // Build concat filter chain
+        // Format: [0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[vout][aout]
         let n = section_videos.len();
         let mut filter_complex = String::new();
-        let mut video_label = "[0:v]".to_string();
-        let mut audio_label = "[0:a]".to_string();
-        let mut offset: f64 = 0.0;
 
-        for i in 1..n {
-            // Clamp transition to min of adjacent durations
-            let prev_dur_ms = section_videos[i - 1].duration_ms;
-            let curr_dur_ms = section_videos[i].duration_ms;
-            let min_dur_ms = prev_dur_ms.min(curr_dur_ms);
-            let effective_transition_ms =
-                (transition_ms as i64).min(min_dur_ms).max(0) as u32;
-            let transition_sec = effective_transition_ms as f64 / 1000.0;
-
-            // Calculate offset: cumulative duration minus cumulative transitions
-            if i == 1 {
-                offset = section_videos[0].duration_ms as f64 / 1000.0 - transition_sec;
-            } else {
-                offset += section_videos[i - 1].duration_ms as f64 / 1000.0 - transition_sec;
-            }
-
-            let out_v = format!("[v{}]", i);
-            let out_a = format!("[a{}]", i);
-
-            // Video xfade
-            filter_complex.push_str(&format!(
-                "{}[{}:v]xfade=transition=fade:duration={:.3}:offset={:.3}{};",
-                video_label,
-                i,
-                transition_sec,
-                offset,
-                out_v
-            ));
-
-            // Audio crossfade
-            filter_complex.push_str(&format!(
-                "{}[{}:a]acrossfade=d={:.3}:c1=tri:c2=tri{};",
-                audio_label,
-                i,
-                transition_sec,
-                out_a
-            ));
-
-            video_label = out_v;
-            audio_label = out_a;
-
-            // Emit progress
-            let progress = 20.0 + (i as f32 / (n - 1) as f32) * 60.0;
-            on_progress(progress, "concatenating");
+        // Add all inputs to concat filter
+        for i in 0..n {
+            filter_complex.push_str(&format!("[{}:v][{}:a]", i, i));
         }
-
-        // Map final outputs
         filter_complex.push_str(&format!(
-            "{}setpts=PTS-STARTPTS[vout];{}asetpts=PTS-STARTPTS[aout]",
-            video_label, audio_label
+            "concat=n={}:v=1:a=1[vout][aout]",
+            n
         ));
 
         args.push("-filter_complex".to_string());
