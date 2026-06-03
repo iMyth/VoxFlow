@@ -715,12 +715,14 @@ export interface MergeProgress {
 export async function mergeSectionVideos(
   projectId: string,
   outputPath: string,
-  transitionDurationMs?: number
+  transitionDurationMs?: number,
+  sleepMode?: boolean
 ): Promise<string> {
   return ipcCall<string>('merge_section_videos', {
     projectId,
     outputPath,
     transitionDurationMs: transitionDurationMs ?? null,
+    sleepMode: sleepMode ?? false,
   });
 }
 

@@ -14,6 +14,7 @@ import { Button } from '../ui/button';
 import { Label } from '../ui/label';
 import { Progress } from '../ui/progress';
 import { Slider } from '../ui/slider';
+import { Switch } from '../ui/switch';
 
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
@@ -27,6 +28,7 @@ export default function ExportPanel() {
   const [mergePercent, setMergePercent] = useState(0);
   const [mergeStage, setMergeStage] = useState('');
   const [mergeError, setMergeError] = useState<string | null>(null);
+  const [sleepMode, setSleepMode] = useState(false);
 
   const { transitionDurationMs } = useSectionVideoStore();
   const { videoReady } = useSectionVideoStore();
@@ -86,13 +88,13 @@ export default function ExportPanel() {
     setMergeError(null);
 
     try {
-      await mergeSectionVideos(currentProject.project.id, outputPath, transitionDurationMs);
+      await mergeSectionVideos(currentProject.project.id, outputPath, transitionDurationMs, sleepMode);
       setMergeInProgress(false);
     } catch (e) {
       setMergeInProgress(false);
       setMergeError(extractErrorMessage(e));
     }
-  }, [currentProject, transitionDurationMs, t]);
+  }, [currentProject, transitionDurationMs, sleepMode, t]);
 
   const handleTransitionChange = useCallback((value: number[]) => {
     useSectionVideoStore.setState({ transitionDurationMs: value[0] });
@@ -160,6 +162,15 @@ export default function ExportPanel() {
                 <span>100ms</span>
                 <span>2000ms</span>
               </div>
+            </div>
+
+            {/* Sleep mode toggle */}
+            <div className="flex items-center justify-between rounded-lg border border-border/50 bg-muted/30 p-3">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium">{t('export.sleepMode')}</Label>
+                <p className="text-xs text-muted-foreground">{t('export.sleepModeDesc')}</p>
+              </div>
+              <Switch checked={sleepMode} onCheckedChange={setSleepMode} />
             </div>
 
             {/* Merge button */}
