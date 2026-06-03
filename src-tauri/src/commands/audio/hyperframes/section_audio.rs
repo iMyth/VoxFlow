@@ -26,7 +26,7 @@ pub struct SectionAudioResult {
 ///
 /// Filters lines by `section_id`, orders by `line_order`, and builds an ffmpeg
 /// filter graph that concatenates audio files with silence gaps:
-/// - `gap_after_ms` silence is inserted after each fragment INCLUDING the last line.
+/// - `gap_after_ms` silence is inserted after each fragment EXCEPT the last line.
 /// - Lines without an AudioFragment get silence of their `gap_after_ms` duration inserted.
 /// - Returns error if ALL lines in the section lack audio.
 /// - Output: MP3 format, libmp3lame codec, 22050 Hz sample rate, 192 kbps bitrate.
@@ -36,6 +36,8 @@ pub struct SectionAudioResult {
 /// - Bass warmth boost (+3dB at 150Hz)
 /// - High-frequency rolloff (8kHz lowpass)
 /// - Quieter target loudness (-20 LUFS instead of -16 LUFS)
+///
+/// Users can control inter-section pauses by setting gap_after_ms on the last line of each section.
 pub async fn merge_section_audio(
     section_id: &str,
     lines: &[ScriptLineWithMeta],
@@ -97,7 +99,7 @@ pub async fn merge_section_audio(
     let mut total_duration_ms: i64 = 0;
 
     for (i, line) in section_lines.iter().enumerate() {
-        let _is_last = i == line_count - 1;
+        let is_last = i == line_count - 1;
 
         match frag_map.get(line.id.as_str()).and_then(|f| {
             f.duration_ms.map(|d| (f.file_path.clone(), d))
@@ -109,9 +111,9 @@ pub async fn merge_section_audio(
                 segments.push(Segment::Audio { input_idx, duration_ms });
                 total_duration_ms += duration_ms;
 
-                // Add gap silence after this fragment INCLUDING the last line
-                // (so that sections have natural pauses between them)
-                if line.gap_after_ms > 0 {
+                // Add gap silence after this fragment (except for the last line)
+                // Users can control inter-section pauses by setting gap_after_ms on the last line
+                if !is_last && line.gap_after_ms > 0 {
                     segments.push(Segment::Silence {
                         duration_ms: line.gap_after_ms,
                     });
@@ -289,8 +291,9 @@ pub struct LineAudioInfo {
 ///
 /// Rules:
 /// - Lines with audio contribute their duration_ms
-/// - Gap silence (gap_after_ms) is inserted after each audio fragment INCLUDING the last line
+/// - Gap silence (gap_after_ms) is inserted after each audio fragment EXCEPT the last line
 /// - Lines without audio contribute their gap_after_ms as silence
+/// - Users can control inter-section pauses by setting gap_after_ms on the last line of each section
 ///
 /// Returns total duration in milliseconds.
 pub fn calculate_section_audio_duration(line_infos: &[LineAudioInfo]) -> i64 {
@@ -299,8 +302,8 @@ pub fn calculate_section_audio_duration(line_infos: &[LineAudioInfo]) -> i64 {
     for info in line_infos {
         if info.has_audio {
             total += info.duration_ms;
-            // Add gap after audio fragment, INCLUDING the last line
-            if info.gap_after_ms > 0 {
+            // Add gap after audio fragment, except for the last line
+            if !info.is_last && info.gap_after_ms > 0 {
                 total += info.gap_after_ms as i64;
             }
         } else {
@@ -346,7 +349,7 @@ mod tests {
 
     proptest! {
         /// **Validates: Requirements 7.1, 7.2**
-        /// Property: output duration = sum of fragment durations + sum of gaps (INCLUDING last)
+        /// Property: output duration = sum of fragment durations + sum of gaps (excluding last)
         /// for lines with audio, plus gap_after_ms for lines without audio.
         #[test]
         fn prop_output_duration_formula(infos in arb_line_audio_infos()) {
@@ -357,8 +360,7 @@ mod tests {
             for info in &infos {
                 if info.has_audio {
                     expected += info.duration_ms;
-                    // Gap is added INCLUDING the last line
-                    if info.gap_after_ms > 0 {
+                    if !info.is_last && info.gap_after_ms > 0 {
                         expected += info.gap_after_ms as i64;
                     }
                 } else {
