@@ -31,7 +31,11 @@ pub struct TimelineEntry {
 /// to the same cursor accumulation logic used by `compute_timeline`, starting at 0.0s.
 ///
 /// Lines without a corresponding AudioFragment (or with `duration_ms == None`) are
-/// skipped without accumulating their `gap_after_ms`.
+/// skipped, but their `gap_after_ms` is still accumulated as silence (matching the
+/// behavior of `merge_section_audio` which inserts silence for non-audio lines).
+///
+/// The last line that has audio does NOT have its `gap_after_ms` accumulated,
+/// matching `merge_section_audio` which skips the trailing gap for the final segment.
 pub fn compute_section_timeline(
     section_id: &str,
     lines: &[ScriptLineWithMeta],
@@ -48,24 +52,40 @@ pub fn compute_section_timeline(
     let frag_map: HashMap<&str, &AudioFragment> =
         fragments.iter().map(|f| (f.line_id.as_str(), f)).collect();
 
+    // Find the last line that has audio with a valid duration.
+    // Its gap_after_ms will NOT be accumulated (matching merge_section_audio).
+    let last_audio_line_id = section_lines
+        .iter()
+        .rev()
+        .find(|line| {
+            frag_map
+                .get(line.id.as_str())
+                .and_then(|f| f.duration_ms)
+                .is_some()
+        })
+        .map(|line| line.id.as_str());
+
     let mut timeline = Vec::new();
     let mut cursor: f64 = 0.0;
 
-    for line in section_lines {
-        // Skip lines without audio
-        let frag = match frag_map.get(line.id.as_str()) {
-            Some(f) => f,
-            None => continue,
-        };
+    for line in &section_lines {
+        // Check if this line has audio with valid duration
+        let has_audio = frag_map
+            .get(line.id.as_str())
+            .and_then(|f| f.duration_ms)
+            .is_some();
 
-        // Skip fragments without duration info
-        let duration_ms = match frag.duration_ms {
-            Some(ms) => ms,
-            None => continue,
-        };
+        if !has_audio {
+            // Line without usable audio: accumulate gap as silence (matches merge_section_audio)
+            if line.gap_after_ms > 0 {
+                cursor += line.gap_after_ms as f64 / 1000.0;
+            }
+            continue;
+        }
 
+        let frag = frag_map.get(line.id.as_str()).unwrap();
+        let duration_ms = frag.duration_ms.unwrap();
         let duration_secs = duration_ms as f64 / 1000.0;
-        let gap_secs = line.gap_after_ms as f64 / 1000.0;
 
         timeline.push(TimelineEntry {
             line_id: line.id.clone(),
@@ -76,7 +96,13 @@ pub fn compute_section_timeline(
             duration: duration_secs,
         });
 
-        cursor += duration_secs + gap_secs;
+        cursor += duration_secs;
+
+        // Add gap_after_ms for this line, UNLESS it's the last line with audio
+        // (matches merge_section_audio which skips the trailing gap for the final segment)
+        if Some(line.id.as_str()) != last_audio_line_id && line.gap_after_ms > 0 {
+            cursor += line.gap_after_ms as f64 / 1000.0;
+        }
     }
 
     timeline
@@ -85,10 +111,13 @@ pub fn compute_section_timeline(
 /// Compute the timeline from pre-loaded script lines and audio fragments.
 ///
 /// Lines are expected to be pre-sorted by line_order (as returned by `load_script_lines`).
-/// Lines without a corresponding AudioFragment are skipped.
 ///
 /// The algorithm accumulates time using a cursor:
 ///   cursor = 0; for each line with audio: start = cursor; cursor += duration + gap
+///
+/// Lines without audio have their `gap_after_ms` accumulated as silence to stay
+/// consistent with `merge_section_audio`. The last line with audio does NOT have
+/// its gap accumulated (matching `merge_section_audio` which skips the trailing gap).
 pub fn compute_timeline(
     lines: &[ScriptLineWithMeta],
     fragments: &[AudioFragment],
@@ -97,24 +126,40 @@ pub fn compute_timeline(
     let frag_map: HashMap<&str, &AudioFragment> =
         fragments.iter().map(|f| (f.line_id.as_str(), f)).collect();
 
+    // Find the last line that has audio with a valid duration.
+    // Its gap_after_ms will NOT be accumulated (matching merge_section_audio).
+    let last_audio_line_id = lines
+        .iter()
+        .rev()
+        .find(|line| {
+            frag_map
+                .get(line.id.as_str())
+                .and_then(|f| f.duration_ms)
+                .is_some()
+        })
+        .map(|line| line.id.as_str());
+
     let mut timeline = Vec::new();
     let mut cursor: f64 = 0.0;
 
     for line in lines {
-        // Skip lines without audio
-        let frag = match frag_map.get(line.id.as_str()) {
-            Some(f) => f,
-            None => continue,
-        };
+        // Check if this line has audio with valid duration
+        let has_audio = frag_map
+            .get(line.id.as_str())
+            .and_then(|f| f.duration_ms)
+            .is_some();
 
-        // Skip fragments without duration info
-        let duration_ms = match frag.duration_ms {
-            Some(ms) => ms,
-            None => continue,
-        };
+        if !has_audio {
+            // Line without usable audio: accumulate gap as silence (matches merge_section_audio)
+            if line.gap_after_ms > 0 {
+                cursor += line.gap_after_ms as f64 / 1000.0;
+            }
+            continue;
+        }
 
+        let frag = frag_map.get(line.id.as_str()).unwrap();
+        let duration_ms = frag.duration_ms.unwrap();
         let duration_secs = duration_ms as f64 / 1000.0;
-        let gap_secs = line.gap_after_ms as f64 / 1000.0;
 
         timeline.push(TimelineEntry {
             line_id: line.id.clone(),
@@ -125,7 +170,13 @@ pub fn compute_timeline(
             duration: duration_secs,
         });
 
-        cursor += duration_secs + gap_secs;
+        cursor += duration_secs;
+
+        // Add gap_after_ms for this line, UNLESS it's the last line with audio
+        // (matches merge_section_audio which skips the trailing gap for the final segment)
+        if Some(line.id.as_str()) != last_audio_line_id && line.gap_after_ms > 0 {
+            cursor += line.gap_after_ms as f64 / 1000.0;
+        }
     }
 
     timeline
@@ -226,6 +277,7 @@ mod tests {
 
     #[test]
     fn test_skip_lines_without_audio() {
+        // l1 has audio (gap=500), l2 has no audio (gap=200 → accumulated as silence), l3 has audio
         let lines = vec![
             make_line("l1", 1, "Has audio", 500),
             make_line("l2", 2, "No audio", 200),
@@ -245,9 +297,9 @@ mod tests {
         assert!((result[0].start_time - 0.0).abs() < f64::EPSILON);
         assert!((result[0].duration - 2.0).abs() < f64::EPSILON);
 
-        // l3: start = 0 + 2.0 + 0.5 = 2.5 (gap from l1), duration=1.0
+        // l3: start = 0 + 2.0 (l1 dur) + 0.5 (l1 gap) + 0.2 (l2 gap silence) = 2.7
         assert_eq!(result[1].line_id, "l3");
-        assert!((result[1].start_time - 2.5).abs() < f64::EPSILON);
+        assert!((result[1].start_time - 2.7).abs() < f64::EPSILON);
         assert!((result[1].duration - 1.0).abs() < f64::EPSILON);
     }
 
@@ -367,11 +419,11 @@ mod tests {
     }
 
     #[test]
-    fn test_section_timeline_lines_without_audio_skipped_no_gap() {
-        // l1 has audio, l2 has no audio (should be skipped without gap), l3 has audio
+    fn test_section_timeline_lines_without_audio_accumulate_gap() {
+        // l1 has audio (gap=500), l2 has no audio (gap=9999 → accumulated as silence), l3 has audio
         let lines = vec![
             make_section_line("l1", 1, "Has audio", 500, Some("s1")),
-            make_section_line("l2", 2, "No audio", 9999, Some("s1")), // large gap should NOT accumulate
+            make_section_line("l2", 2, "No audio", 9999, Some("s1")),
             make_section_line("l3", 3, "Has audio too", 0, Some("s1")),
         ];
         let frags = vec![
@@ -385,14 +437,14 @@ mod tests {
         assert_eq!(result[0].line_id, "l1");
         assert_eq!(result[1].line_id, "l3");
 
-        // l3 start = l1.duration + l1.gap = 2.0 + 0.5 = 2.5
-        // l2's gap_after_ms (9999) is NOT accumulated
-        assert!((result[1].start_time - 2.5).abs() < f64::EPSILON);
+        // l3 start = l1.duration + l1.gap + l2.gap = 2.0 + 0.5 + 9.999 = 12.499
+        // (matches merge_section_audio which inserts silence for non-audio lines)
+        assert!((result[1].start_time - 12.499).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_section_timeline_lines_with_null_duration_skipped_no_gap() {
-        // l2 has a fragment but duration_ms is None
+    fn test_section_timeline_lines_with_null_duration_accumulate_gap() {
+        // l2 has a fragment but duration_ms is None — treated as no audio, gap IS accumulated
         let lines = vec![
             make_section_line("l1", 1, "Has audio", 500, Some("s1")),
             make_section_line("l2", 2, "Null duration", 8000, Some("s1")),
@@ -416,9 +468,9 @@ mod tests {
         assert_eq!(result[0].line_id, "l1");
         assert_eq!(result[1].line_id, "l3");
 
-        // l3 start = l1.duration + l1.gap = 2.0 + 0.5 = 2.5
-        // l2's gap (8000ms) is NOT accumulated
-        assert!((result[1].start_time - 2.5).abs() < f64::EPSILON);
+        // l3 start = l1.duration + l1.gap + l2.gap = 2.0 + 0.5 + 8.0 = 10.5
+        // (matches merge_section_audio which treats null-duration fragments as silence)
+        assert!((result[1].start_time - 10.5).abs() < f64::EPSILON);
     }
 
     #[test]
