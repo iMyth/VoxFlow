@@ -159,7 +159,12 @@ pub async fn generate_with_agent(
    }};
    ```
 6. 注册 timeline: `window.__timelines["ai-generated"] = gsap.timeline({{ paused: true }});`
-7. 确保 window.__hf 在页面加载时同步创建（不要在 async/await 或 setTimeout 中）"#,
+7. 确保 window.__hf 在页面加载时同步创建（不要在 async/await 或 setTimeout 中）
+8. **字体必须使用 hyperframes 支持的字体**（不要使用 CSS 变量）：
+   - 正文：inter, roboto, open-sans, montserrat, lato, nunito, poppins, oswald, outfit
+   - 标题：playfair-display, eb-garamond, league-gothic
+   - 等宽：jetbrains-mono, source-code-pro, space-mono, ibm-plex-mono
+   - 示例：`font-family: 'inter', sans-serif;` （不要用 `var(--font-main)`）"#,
         user_section = match user_instructions {
             Some(instructions) if !instructions.is_empty() =>
                 format!("\n用户额外要求（请务必遵循）：\n{}\n", instructions),
