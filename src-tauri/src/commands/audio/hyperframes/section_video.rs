@@ -57,9 +57,10 @@ pub async fn generate_section_html(
     section_id: String,
     style_config: SectionStyleConfig,
 ) -> Result<std::path::PathBuf, AppError> {
+    let start_time = std::time::Instant::now();
     info!(
-        "[Section HTML] Starting generation: project={}, section={}",
-        project_id, section_id
+        "[Section HTML] ===== STARTING HTML GENERATION ===== section={}",
+        section_id
     );
 
     // --- Determine output directory ---
@@ -75,26 +76,42 @@ pub async fn generate_section_html(
         .join(&section_id);
     let composition_dir = export_dir.join("composition");
 
+    info!("[Section HTML] Output directory: {:?}", composition_dir);
+
     // Create directories
+    info!("[Section HTML] Creating composition directory...");
     std::fs::create_dir_all(&composition_dir).map_err(|e| {
         AppError::FileSystem(format!("Failed to create composition directory: {}", e))
     })?;
+    info!("[Section HTML] Creating assets directory...");
     std::fs::create_dir_all(composition_dir.join("assets")).map_err(|e| {
         AppError::FileSystem(format!("Failed to create assets directory: {}", e))
     })?;
+    info!("[Section HTML] Directories created successfully");
 
     // --- Load data from DB ---
+    info!("[Section HTML] Loading data from database...");
     let (script_lines, fragments) = {
         let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
         let lines = db.load_script_lines(&project_id)?;
         let frags = db.list_audio_fragments(&project_id)?;
         (lines, frags)
     };
+    info!(
+        "[Section HTML] Loaded {} script lines and {} audio fragments",
+        script_lines.len(),
+        fragments.len()
+    );
 
     // --- Compute section timeline ---
+    info!("[Section HTML] Computing section timeline...");
     emit_section_progress(&app, &section_id, 5.0, "timeline_computation");
 
     let timeline_entries = compute_section_timeline(&section_id, &script_lines, &fragments);
+    info!(
+        "[Section HTML] Timeline computed: {} entries",
+        timeline_entries.len()
+    );
 
     if timeline_entries.is_empty() {
         return Err(AppError::FileSystem(
@@ -102,18 +119,13 @@ pub async fn generate_section_html(
         ));
     }
 
-    info!(
-        "[Section HTML] Timeline computed: {} entries for section {}",
-        timeline_entries.len(),
-        section_id
-    );
-
     // --- Merge section audio ---
+    info!("[Section HTML] Merging section audio...");
     emit_section_progress(&app, &section_id, 15.0, "audio_merge");
 
     let audio_output_path = composition_dir.join("assets").join("audio.mp3");
     let audio_result =
-        merge_section_audio(&section_id, &script_lines, &fragments, &audio_output_path).await?;
+        merge_section_audio(&section_id, &script_lines, &fragments, &audio_output_path, false).await?;
 
     info!(
         "[Section HTML] Audio merged: {}ms, path={}",
@@ -121,6 +133,7 @@ pub async fn generate_section_html(
     );
 
     // --- Generate HTML composition via agent ---
+    info!("[Section HTML] Starting LLM agent generation...");
     emit_section_progress(&app, &section_id, 20.0, "html_generation");
 
     let (api_endpoint, model) = {
@@ -128,12 +141,14 @@ pub async fn generate_section_html(
         let settings = db.load_settings()?;
         (settings.llm_endpoint, settings.llm_model)
     };
+    info!("[Section HTML] Using LLM endpoint: {}, model: {}", api_endpoint, model);
 
     let config_manager = ConfigManager::new(app.clone());
     let api_key = config_manager
         .load_api_key("llm")
         .map_err(|e| AppError::Config(format!("Failed to load API key: {}", e)))?
         .ok_or_else(|| AppError::Config("LLM API key not configured".to_string()))?;
+    info!("[Section HTML] API key loaded successfully");
 
     let agent_config = AgentConfig {
         api_endpoint,
@@ -144,8 +159,14 @@ pub async fn generate_section_html(
     let app_clone = app.clone();
     let section_id_clone = section_id.clone();
     let progress_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let llm_start = std::time::Instant::now();
     let on_progress: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |stage: &str| {
         let count = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let elapsed = llm_start.elapsed().as_secs();
+        info!(
+            "[Section HTML] LLM progress callback: stage='{}', count={}, elapsed={}s",
+            stage, count, elapsed
+        );
         let internal_percent = (1.0 - (-0.15 * count as f64).exp()) * 100.0;
         let mapped_percent = 20.0 + (internal_percent / 100.0) * 30.0;
         emit_section_progress(
@@ -156,6 +177,7 @@ pub async fn generate_section_html(
         );
     });
 
+    info!("[Section HTML] Calling generate_with_agent...");
     let html = generate_with_agent(
         &timeline_entries,
         &agent_config,
@@ -165,9 +187,16 @@ pub async fn generate_section_html(
     .await
     .map_err(AppError::LlmService)?;
 
+    info!(
+        "[Section HTML] LLM generation completed in {:.2}s, HTML size: {} bytes",
+        llm_start.elapsed().as_secs_f32(),
+        html.len()
+    );
+
     emit_section_progress(&app, &section_id, 50.0, "html_generation");
 
     // --- Write HTML composition files ---
+    info!("[Section HTML] Writing index.html...");
     std::fs::write(composition_dir.join("index.html"), &html)
         .map_err(|e| AppError::FileSystem(format!("Failed to write index.html: {}", e)))?;
 
@@ -184,12 +213,14 @@ pub async fn generate_section_html(
         "duration": total_duration
     });
     let meta_str = serde_json::to_string_pretty(&meta_json).unwrap_or_default();
+    info!("[Section HTML] Writing meta.json...");
     std::fs::write(composition_dir.join("meta.json"), meta_str)
         .map_err(|e| AppError::FileSystem(format!("Failed to write meta.json: {}", e)))?;
 
     info!(
-        "[Section HTML] HTML generation complete: section={}, dir={:?}",
-        section_id, composition_dir
+        "[Section HTML] ===== HTML GENERATION COMPLETE ===== section={}, elapsed={:.2}s",
+        section_id,
+        start_time.elapsed().as_secs_f32()
     );
 
     Ok(composition_dir)
@@ -207,9 +238,10 @@ pub async fn render_section_video(
     project_id: String,
     section_id: String,
 ) -> Result<SectionVideoResult, AppError> {
+    let start_time = std::time::Instant::now();
     info!(
-        "[Section Render] Starting render: project={}, section={}",
-        project_id, section_id
+        "[Section Render] ===== STARTING VIDEO RENDERING ===== section={}",
+        section_id
     );
 
     let app_data_dir = app
@@ -226,6 +258,22 @@ pub async fn render_section_video(
     let audio_output_path = composition_dir.join("assets").join("audio.mp3");
     let output_video_path = export_dir.join("output.mp4");
 
+    info!("[Section Render] Composition directory: {:?}", composition_dir);
+    info!("[Section Render] Audio path: {:?}", audio_output_path);
+    info!("[Section Render] Output video path: {:?}", output_video_path);
+
+    // Check if composition files exist
+    let index_html_path = composition_dir.join("index.html");
+    let meta_json_path = composition_dir.join("meta.json");
+    info!("[Section Render] Checking if index.html exists: {}", index_html_path.exists());
+    info!("[Section Render] Checking if meta.json exists: {}", meta_json_path.exists());
+
+    if !index_html_path.exists() {
+        return Err(AppError::FileSystem(
+            "index.html not found in composition directory".to_string(),
+        ));
+    }
+
     // --- Render HTML → MP4 ---
     emit_section_progress(&app, &section_id, 55.0, "rendering");
 
@@ -238,8 +286,23 @@ pub async fn render_section_video(
         node_env.npx, node_env.bin_dir
     );
 
+    // Check if output file already exists
+    if silent_video.exists() {
+        info!("[Section Render] Silent video already exists, removing...");
+        std::fs::remove_file(&silent_video).map_err(|e| {
+            AppError::FileSystem(format!("Failed to remove existing silent video: {}", e))
+        })?;
+    }
+
     // Create render task with timeout (5 minutes max)
+    info!("[Section Render] Starting render task with 5-minute timeout...");
     let render_result = timeout(Duration::from_secs(300), async {
+        info!("[Section Render] === INSIDE TIMEOUT BLOCK ===");
+        info!("[Section Render] npx path: {}", node_env.npx);
+        info!("[Section Render] bin_dir: {}", node_env.bin_dir);
+        info!("[Section Render] composition_dir: {:?}", composition_dir);
+        info!("[Section Render] output: {}", silent_video_str);
+
         let mut render_cmd = Command::new(&node_env.npx);
         render_cmd
             .args(["hyperframes", "render", "--output", &silent_video_str])
@@ -249,29 +312,47 @@ pub async fn render_section_video(
         if !node_env.bin_dir.is_empty() {
             let path = super::render::prepend_to_path(&node_env.bin_dir);
             render_cmd.env("PATH", &path);
+            info!("[Section Render] Added to PATH: {}", path);
         }
+
+        info!("[Section Render] Spawning npx hyperframes render process...");
         let render_result = render_cmd.spawn();
 
-        let mut render_child = render_result.map_err(|e| {
-            AppError::FileSystem(format!("Failed to start hyperframes render: {}", e))
-        })?;
+        let mut render_child = match render_result {
+            Ok(child) => {
+                info!("[Section Render] Process spawned successfully, PID: {:?}", child.id());
+                child
+            }
+            Err(e) => {
+                info!("[Section Render] Failed to spawn process: {}", e);
+                return Err(AppError::FileSystem(format!("Failed to start hyperframes render: {}", e)));
+            }
+        };
 
         // Read stderr for progress and error capture
         let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let stderr_capture_clone = stderr_capture.clone();
 
         if let Some(stderr) = render_child.stderr.take() {
+            info!("[Section Render] Capturing stderr output...");
             let app_clone = app.clone();
             let section_id_clone = section_id.clone();
             tokio::spawn(async move {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
+                let mut line_count = 0;
                 while let Ok(Some(line)) = lines.next_line().await {
+                    line_count += 1;
                     if let Ok(mut captured) = stderr_capture_clone.lock() {
                         captured.push_str(&line);
                         captured.push('\n');
                     }
+                    // Log every 10th line to avoid too much output
+                    if line_count % 10 == 0 {
+                        info!("[Section Render] stderr line {}: {}", line_count, line);
+                    }
                     if let Some(pct) = parse_render_progress(&line) {
+                        info!("[Section Render] Render progress: {}%", pct);
                         let mapped = 55.0 + pct * 33.0;
                         emit_section_progress(
                             &app_clone,
@@ -281,18 +362,26 @@ pub async fn render_section_video(
                         );
                     }
                 }
+                info!("[Section Render] stderr capture complete, total lines: {}", line_count);
             });
+        } else {
+            info!("[Section Render] No stderr stream available");
         }
 
+        info!("[Section Render] Waiting for render process to complete...");
         let render_status = render_child.wait().await.map_err(|e| {
+            info!("[Section Render] Process wait error: {}", e);
             AppError::FileSystem(format!("hyperframes render process error: {}", e))
         })?;
+
+        info!("[Section Render] Process exit status: {:?}", render_status);
 
         if !render_status.success() {
             let stderr_output = stderr_capture
                 .lock()
                 .map(|s| s.clone())
                 .unwrap_or_default();
+            info!("[Section Render] Render failed. stderr output:\n{}", stderr_output);
             return Err(AppError::FileSystem(format!(
                 "hyperframes render failed with exit code: {:?}\nstderr: {}",
                 render_status.code(),
@@ -300,22 +389,38 @@ pub async fn render_section_video(
             )));
         }
 
+        info!("[Section Render] Checking if silent video was created...");
         if !silent_video.exists() {
+            info!("[Section Render] Silent video not found at: {:?}", silent_video);
             return Err(AppError::FileSystem(
                 "hyperframes render completed but output file not found".to_string(),
             ));
         }
 
-        info!("[Section Render] Render complete: {:?}", silent_video);
+        let metadata = std::fs::metadata(&silent_video).map_err(|e| {
+            AppError::FileSystem(format!("Failed to get silent video metadata: {}", e))
+        })?;
+        info!(
+            "[Section Render] Silent video created: {:?}, size: {} bytes",
+            silent_video,
+            metadata.len()
+        );
         Ok(())
     })
     .await;
 
     // Handle timeout
+    info!("[Section Render] Timeout block completed, checking result...");
     match render_result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(e),
+        Ok(Ok(())) => {
+            info!("[Section Render] Render task completed successfully");
+        }
+        Ok(Err(e)) => {
+            info!("[Section Render] Render task returned error: {}", e);
+            return Err(e);
+        }
         Err(_) => {
+            info!("[Section Render] Render task timed out after 5 minutes");
             return Err(AppError::FileSystem(
                 "Video rendering timed out (5 minutes). Please try again or reduce the video length."
                     .to_string(),
@@ -324,12 +429,19 @@ pub async fn render_section_video(
     }
 
     // --- Merge audio into video ---
+    info!("[Section Render] Starting audio merge phase...");
     emit_section_progress(&app, &section_id, 90.0, "rendering");
 
     let output_path_str = output_video_path.to_string_lossy().to_string();
 
+    info!("[Section Render] Checking if audio file exists: {}", audio_output_path.exists());
     if audio_output_path.exists() {
         let audio_path_str = audio_output_path.to_string_lossy().to_string();
+
+        info!("[Section Render] Running ffmpeg to merge audio and video...");
+        info!("[Section Render] Input video: {}", silent_video_str);
+        info!("[Section Render] Input audio: {}", audio_path_str);
+        info!("[Section Render] Output: {}", output_path_str);
 
         let ffmpeg_status = Command::new("ffmpeg")
             .args([
@@ -349,31 +461,74 @@ pub async fn render_section_video(
             .stderr(Stdio::null())
             .status()
             .await
-            .map_err(|e| AppError::FileSystem(format!("Failed to run ffmpeg: {}", e)))?;
+            .map_err(|e| {
+                info!("[Section Render] ffmpeg execution failed: {}", e);
+                AppError::FileSystem(format!("Failed to run ffmpeg: {}", e))
+            })?;
+
+        info!("[Section Render] ffmpeg exit status: {:?}", ffmpeg_status);
 
         if !ffmpeg_status.success() {
-            info!("[Section Render] ffmpeg merge failed, using silent video");
+            info!("[Section Render] ffmpeg merge failed, using silent video as fallback");
             std::fs::rename(&silent_video, &output_video_path)
                 .or_else(|_| std::fs::copy(&silent_video, &output_video_path).map(|_| ()))
-                .map_err(|e| AppError::FileSystem(format!("Failed to move output: {}", e)))?;
+                .map_err(|e| {
+                    info!("[Section Render] Failed to copy silent video: {}", e);
+                    AppError::FileSystem(format!("Failed to move output: {}", e))
+                })?;
         } else {
+            info!("[Section Render] Audio merge successful, removing silent video");
             let _ = std::fs::remove_file(&silent_video);
         }
     } else {
+        info!("[Section Render] No audio file, copying silent video to output");
         std::fs::rename(&silent_video, &output_video_path)
             .or_else(|_| std::fs::copy(&silent_video, &output_video_path).map(|_| ()))
-            .map_err(|e| AppError::FileSystem(format!("Failed to move output: {}", e)))?;
+            .map_err(|e| {
+                info!("[Section Render] Failed to copy video: {}", e);
+                AppError::FileSystem(format!("Failed to move output: {}", e))
+            })?;
     }
 
     // --- Done ---
-    emit_section_progress(&app, &section_id, 100.0, "done");
-
+    info!("[Section Render] Checking final output file...");
     let file_size_bytes = std::fs::metadata(&output_video_path)
-        .map(|m| m.len())
+        .map(|m| {
+            info!("[Section Render] Final video size: {} bytes", m.len());
+            m.len()
+        })
         .unwrap_or(0);
 
-    // Get duration from meta.json or audio file
-    let duration_ms = 0i64; // Will be calculated from meta.json if needed
+    // Read duration from meta.json
+    let duration_ms = if meta_json_path.exists() {
+        match std::fs::read_to_string(&meta_json_path) {
+            Ok(content) => {
+                match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(meta) => {
+                        if let Some(duration_secs) = meta.get("duration").and_then(|d| d.as_f64()) {
+                            let ms = (duration_secs * 1000.0) as i64;
+                            info!("[Section Render] Duration from meta.json: {}ms", ms);
+                            ms
+                        } else {
+                            info!("[Section Render] No duration field in meta.json");
+                            0
+                        }
+                    }
+                    Err(e) => {
+                        info!("[Section Render] Failed to parse meta.json: {}", e);
+                        0
+                    }
+                }
+            }
+            Err(e) => {
+                info!("[Section Render] Failed to read meta.json: {}", e);
+                0
+            }
+        }
+    } else {
+        info!("[Section Render] meta.json not found");
+        0
+    };
 
     let result = SectionVideoResult {
         section_id: section_id.clone(),
@@ -383,8 +538,9 @@ pub async fn render_section_video(
     };
 
     info!(
-        "[Section Render] Generation complete: section={}, duration={}ms, size={}bytes",
-        section_id, result.duration_ms, result.file_size_bytes
+        "[Section Render] ===== VIDEO RENDERING COMPLETE ===== section={}, duration={}ms, size={}bytes, elapsed={:.2}s",
+        section_id, result.duration_ms, result.file_size_bytes,
+        start_time.elapsed().as_secs_f32()
     );
 
     Ok(result)

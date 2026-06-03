@@ -14,5 +14,11 @@
     <!-- Inherit entitlements to child processes (npx, node, ffmpeg) -->
     <key>com.apple.security.inherit</key>
     <true/>
+    <!-- Allow execution of child processes (Chrome for hyperframes rendering) -->
+    <key>com.apple.security.cs.disable-executable-page-protection</key>
+    <true/>
+    <!-- Allow app to control other apps (needed for launching Chrome) -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>

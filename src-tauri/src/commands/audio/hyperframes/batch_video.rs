@@ -206,13 +206,35 @@ pub async fn generate_all_sections(
         }
 
         match render_result {
-            Ok(_) => {
+            Ok(video_result) => {
                 info!("[Batch Video] Video rendered for section {}", section_id);
+
+                // Emit completion event so frontend updates status
+                let _ = app.emit(
+                    "section-video-complete",
+                    serde_json::json!({
+                        "section_id": section_id,
+                        "video_path": video_result.video_path,
+                        "duration_ms": video_result.duration_ms,
+                        "file_size_bytes": video_result.file_size_bytes,
+                    }),
+                );
+
                 completed_videos.push(section_id.clone());
             }
             Err(e) => {
                 let error_msg = e.to_string();
                 info!("[Batch Video] Render failed for section {}: {}", section_id, error_msg);
+
+                // Emit failure event so frontend updates status
+                let _ = app.emit(
+                    "section-video-failed",
+                    serde_json::json!({
+                        "section_id": section_id,
+                        "error": error_msg,
+                    }),
+                );
+
                 failed.push((section_id.clone(), error_msg));
             }
         }
