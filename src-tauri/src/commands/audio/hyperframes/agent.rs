@@ -118,9 +118,10 @@ pub async fn generate_with_agent(
         .agent(&config.model)
         .preamble(&skills.system_prompt)
         .temperature(0.9)
-        // Disable thinking mode for Qwen3 models — it adds 2-5 minutes per turn
-        // and is unnecessary for code generation tasks.
-        .additional_params(json!({ "enable_thinking": false }))
+        // Enable thinking mode for better code structure generation.
+        // Adds 2-5 minutes but significantly improves compliance with
+        // complex requirements like window.__hf interface implementation.
+        .additional_params(json!({ "enable_thinking": true }))
         .build();
 
     // Build the user prompt with timeline data
@@ -185,8 +186,9 @@ pub async fn generate_with_agent(
     // Extract HTML from the agent's final response
     let html = extract_html(&response)?;
 
-    // Post-process: fix CSS font variables
+    // Post-process: fix common issues as a safety net
     let html = fix_css_font_variables(&html);
+    let html = ensure_hyperframes_interfaces(&html, total_duration);
 
     // Final validation
     match validate_composition(&html) {
@@ -254,6 +256,62 @@ fn fix_css_font_variables(html: &str) -> String {
         .replace("var(--font-display)", "'montserrat', sans-serif")
         .replace("var(--font-serif)", "'eb-garamond', serif")
         .replace("var(--font-sans)", "'roboto', sans-serif");
+
+    result
+}
+
+/// Ensure required Hyperframes interfaces exist (window.__hf and window.__timelines).
+/// This is a safety net to fix LLM omissions and ensure hyperframes render compatibility.
+fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
+    let mut result = html.to_string();
+
+    // Check if window.__hf exists
+    let has_hf = html.contains("window.__hf");
+
+    // Check if window.__timelines exists
+    let has_timelines = html.contains("window.__timelines");
+
+    // If both exist, no need to inject
+    if has_hf && has_timelines {
+        return result;
+    }
+
+    // Build injection script
+    let mut script = String::from("<script>\n");
+
+    if !has_timelines {
+        script.push_str("  // Initialize window.__timelines if missing\n");
+        script.push_str("  window.__timelines = window.__timelines || {};\n");
+        script.push_str("  window.__timelines['ai-generated'] = gsap.timeline({ paused: true });\n");
+    }
+
+    if !has_hf {
+        script.push_str("  // Initialize window.__hf if missing\n");
+        script.push_str("  window.__hf = {\n");
+        script.push_str(&format!("    duration: {:.2},\n", duration));
+        script.push_str("    seek: function(time) {\n");
+        script.push_str("      if (window.__timelines) {\n");
+        script.push_str("        Object.values(window.__timelines).forEach(function(tl) {\n");
+        script.push_str("          tl.seek(time);\n");
+        script.push_str("        });\n");
+        script.push_str("      }\n");
+        script.push_str("    }\n");
+        script.push_str("  };\n");
+    }
+
+    script.push_str("</script>");
+
+    // Inject before </body> if it exists, otherwise append
+    if let Some(pos) = result.rfind("</body>") {
+        result.insert_str(pos, &script);
+    } else {
+        result.push_str(&script);
+    }
+
+    info!(
+        "[Agent] Post-processed: injected missing interfaces (has_hf={}, has_timelines={})",
+        has_hf, has_timelines
+    );
 
     result
 }
@@ -335,6 +393,43 @@ mod tests {
         assert!(fixed.contains("'inter', sans-serif"));
         assert!(fixed.contains("'montserrat', sans-serif"));
         assert!(fixed.contains("'jetbrains-mono', monospace"));
+    }
+
+    #[test]
+    fn test_ensure_hyperframes_interfaces_missing_both() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<div class="clip">Content</div>
+</body>
+</html>"#;
+
+        let fixed = ensure_hyperframes_interfaces(html, 10.5);
+        assert!(fixed.contains("window.__timelines"));
+        assert!(fixed.contains("window.__hf"));
+        assert!(fixed.contains("duration: 10.50"));
+        assert!(fixed.contains("seek: function"));
+    }
+
+    #[test]
+    fn test_ensure_hyperframes_interfaces_already_present() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<div class="clip">Content</div>
+<script>
+window.__timelines = window.__timelines || {};
+window.__hf = { duration: 10, seek: function() {} };
+</script>
+</body>
+</html>"#;
+
+        let fixed = ensure_hyperframes_interfaces(html, 10.5);
+        // Should not inject if both already exist
+        let hf_count = fixed.matches("window.__hf").count();
+        assert_eq!(hf_count, 1, "Should not duplicate window.__hf");
     }
 
     #[test]
