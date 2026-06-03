@@ -1,8 +1,7 @@
 //! Batch video generation and cancellation commands.
 //!
 //! Provides:
-//! - `generate_all_sections`: Processes multiple sections sequentially in section_order,
-//!   skipping unconfigured sections, continuing on failure.
+//! - `generate_all_sections`: Processes multiple sections concurrently in parallel.
 //! - `cancel_section_generation`: Cancels an active section generation using a shared
 //!   CancellationToken map.
 
@@ -29,12 +28,10 @@ impl Default for SectionCancelTokens {
     }
 }
 
-/// Generate videos for all configured sections sequentially in section_order.
+/// Generate videos for all configured sections in parallel.
 ///
 /// - Accepts a list of (section_id, SectionStyleConfig) pairs
-/// - Processes sections in section_order (determined by DB ordering)
-/// - Skips sections without config in the provided list
-/// - Continues on failure (doesn't stop the batch)
+/// - Processes all sections concurrently using tokio::spawn
 /// - Returns BatchGenerationResult with completed/failed lists
 /// - Emits progress events for each section
 #[tauri::command]
@@ -46,7 +43,7 @@ pub async fn generate_all_sections(
     section_configs: Vec<(String, SectionStyleConfig)>,
 ) -> Result<BatchGenerationResult, AppError> {
     info!(
-        "[Batch Video] Starting batch generation: project={}, configs={}",
+        "[Batch Video] Starting parallel batch generation: project={}, configs={}",
         project_id,
         section_configs.len()
     );
@@ -60,9 +57,6 @@ pub async fn generate_all_sections(
         db_guard.list_sections(&project_id)?
     };
 
-    let mut completed: Vec<String> = Vec::new();
-    let mut failed: Vec<(String, String)> = Vec::new();
-
     let total_configured = sections
         .iter()
         .filter(|s| config_map.contains_key(&s.id))
@@ -73,6 +67,9 @@ pub async fn generate_all_sections(
         total_configured,
         sections.len()
     );
+
+    // Spawn all section generation tasks in parallel
+    let mut tasks = Vec::new();
 
     for section in &sections {
         // Skip sections without config
@@ -116,46 +113,64 @@ pub async fn generate_all_sections(
             if let Ok(mut tokens) = cancel_tokens.0.lock() {
                 tokens.remove(&section.id);
             }
-            failed.push((
-                section.id.clone(),
-                "Cancelled before start".to_string(),
-            ));
             continue;
         }
 
-        // Call the existing generate_section_video command logic.
-        // We get the db State from the app handle to pass to the function.
-        let db_state: tauri::State<'_, Mutex<Database>> = app.state();
-        let result = generate_section_video(
-            app.clone(),
-            db_state,
-            project_id.clone(),
-            section.id.clone(),
-            style_config,
-        )
-        .await;
+        // Spawn async task for this section
+        let app_clone = app.clone();
+        let project_id_clone = project_id.clone();
+        let section_id_clone = section.id.clone();
 
-        // Remove the cancellation token after completion
-        if let Ok(mut tokens) = cancel_tokens.0.lock() {
-            tokens.remove(&section.id);
-        }
+        let task = tokio::spawn(async move {
+            let db_state: tauri::State<'_, Mutex<Database>> = app_clone.state();
+            let result = generate_section_video(
+                app_clone.clone(),
+                db_state,
+                project_id_clone,
+                section_id_clone.clone(),
+                style_config,
+            ).await;
 
-        match result {
-            Ok(_video_result) => {
-                info!(
-                    "[Batch Video] Section {} completed successfully",
-                    section.id
-                );
-                completed.push(section.id.clone());
+            (section_id_clone, result)
+        });
+
+        tasks.push(task);
+    }
+
+    // Wait for all tasks to complete
+    let mut completed: Vec<String> = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
+
+    for task in tasks {
+        match task.await {
+            Ok((section_id, result)) => {
+                // Remove the cancellation token after completion
+                if let Ok(mut tokens) = cancel_tokens.0.lock() {
+                    tokens.remove(&section_id);
+                }
+
+                match result {
+                    Ok(_video_result) => {
+                        info!(
+                            "[Batch Video] Section {} completed successfully",
+                            section_id
+                        );
+                        completed.push(section_id);
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        info!(
+                            "[Batch Video] Section {} failed: {}",
+                            section_id, error_msg
+                        );
+                        failed.push((section_id, error_msg));
+                    }
+                }
             }
             Err(e) => {
-                let error_msg = e.to_string();
-                info!(
-                    "[Batch Video] Section {} failed: {}",
-                    section.id, error_msg
-                );
-                failed.push((section.id.clone(), error_msg));
-                // Continue to next section — don't stop the batch
+                let error_msg = format!("Task join error: {}", e);
+                info!("[Batch Video] Task failed: {}", error_msg);
+                failed.push(("unknown".to_string(), error_msg));
             }
         }
     }

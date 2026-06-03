@@ -10,11 +10,13 @@
 
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use log::info;
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use crate::core::config::ConfigManager;
 use crate::core::db::Database;
@@ -205,75 +207,94 @@ pub async fn generate_section_video(
         node_env.npx, node_env.bin_dir
     );
 
-    let mut render_cmd = Command::new(&node_env.npx);
-    render_cmd
-        .args(["hyperframes", "render", "--output", &silent_video_str])
-        .current_dir(&composition_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if !node_env.bin_dir.is_empty() {
-        let path = super::render::prepend_to_path(&node_env.bin_dir);
-        render_cmd.env("PATH", &path);
-    }
-    let render_result = render_cmd.spawn();
+    // Create render task with timeout (5 minutes max)
+    let render_result = timeout(Duration::from_secs(300), async {
+        let mut render_cmd = Command::new(&node_env.npx);
+        render_cmd
+            .args(["hyperframes", "render", "--output", &silent_video_str])
+            .current_dir(&composition_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if !node_env.bin_dir.is_empty() {
+            let path = super::render::prepend_to_path(&node_env.bin_dir);
+            render_cmd.env("PATH", &path);
+        }
+        let render_result = render_cmd.spawn();
 
-    let mut render_child = render_result.map_err(|e| {
-        AppError::FileSystem(format!("Failed to start hyperframes render: {}", e))
-    })?;
+        let mut render_child = render_result.map_err(|e| {
+            AppError::FileSystem(format!("Failed to start hyperframes render: {}", e))
+        })?;
 
-    // Read stderr for progress and error capture
-    let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let stderr_capture_clone = stderr_capture.clone();
+        // Read stderr for progress and error capture
+        let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let stderr_capture_clone = stderr_capture.clone();
 
-    if let Some(stderr) = render_child.stderr.take() {
-        let app_clone = app.clone();
-        let section_id_clone = section_id.clone();
-        tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                // Capture all stderr for error reporting
-                if let Ok(mut captured) = stderr_capture_clone.lock() {
-                    captured.push_str(&line);
-                    captured.push('\n');
+        if let Some(stderr) = render_child.stderr.take() {
+            let app_clone = app.clone();
+            let section_id_clone = section_id.clone();
+            tokio::spawn(async move {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    // Capture all stderr for error reporting
+                    if let Ok(mut captured) = stderr_capture_clone.lock() {
+                        captured.push_str(&line);
+                        captured.push('\n');
+                    }
+                    if let Some(pct) = parse_render_progress(&line) {
+                        // Map render progress to 55%-88% range
+                        let mapped = 55.0 + pct * 33.0;
+                        emit_section_progress(
+                            &app_clone,
+                            &section_id_clone,
+                            mapped as f32,
+                            "rendering",
+                        );
+                    }
                 }
-                if let Some(pct) = parse_render_progress(&line) {
-                    // Map render progress to 55%-88% range
-                    let mapped = 55.0 + pct * 33.0;
-                    emit_section_progress(
-                        &app_clone,
-                        &section_id_clone,
-                        mapped as f32,
-                        "rendering",
-                    );
-                }
-            }
-        });
+            });
+        }
+
+        let render_status = render_child.wait().await.map_err(|e| {
+            AppError::FileSystem(format!("hyperframes render process error: {}", e))
+        })?;
+
+        if !render_status.success() {
+            let stderr_output = stderr_capture
+                .lock()
+                .map(|s| s.clone())
+                .unwrap_or_default();
+            return Err(AppError::FileSystem(format!(
+                "hyperframes render failed with exit code: {:?}\nstderr: {}",
+                render_status.code(),
+                stderr_output.trim()
+            )));
+        }
+
+        if !silent_video.exists() {
+            return Err(AppError::FileSystem(
+                "hyperframes render completed but output file not found".to_string(),
+            ));
+        }
+
+        info!("[Section Video] Render complete: {:?}", silent_video);
+        Ok(())
+    }).await;
+
+    // Handle timeout
+    match render_result {
+        Ok(Ok(())) => {
+            // Render completed successfully
+        }
+        Ok(Err(e)) => {
+            return Err(e);
+        }
+        Err(_) => {
+            return Err(AppError::FileSystem(
+                "Video rendering timed out (5 minutes). Please try again or reduce the video length.".to_string(),
+            ));
+        }
     }
-
-    let render_status = render_child.wait().await.map_err(|e| {
-        AppError::FileSystem(format!("hyperframes render process error: {}", e))
-    })?;
-
-    if !render_status.success() {
-        let stderr_output = stderr_capture
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
-        return Err(AppError::FileSystem(format!(
-            "hyperframes render failed with exit code: {:?}\nstderr: {}",
-            render_status.code(),
-            stderr_output.trim()
-        )));
-    }
-
-    if !silent_video.exists() {
-        return Err(AppError::FileSystem(
-            "hyperframes render completed but output file not found".to_string(),
-        ));
-    }
-
-    info!("[Section Video] Render complete: {:?}", silent_video);
 
     // --- Stage 6: Merge audio into video (90%) ---
     emit_section_progress(&app, &section_id, 90.0, "rendering");
