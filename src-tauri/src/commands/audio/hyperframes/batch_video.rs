@@ -144,12 +144,32 @@ pub async fn generate_all_sections(
                 Err(e) => {
                     let error_msg = e.to_string();
                     info!("[Batch Video] HTML generation failed for section {}: {}", section_id, error_msg);
+
+                    // Emit failure event so frontend updates status
+                    let _ = app.emit(
+                        "section-video-failed",
+                        serde_json::json!({
+                            "section_id": section_id,
+                            "error": error_msg,
+                        }),
+                    );
+
                     failed.push((section_id, error_msg));
                 }
             },
             Err(e) => {
                 let error_msg = format!("Task join error: {}", e);
                 info!("[Batch Video] Task failed: {}", error_msg);
+
+                // Emit failure event for unknown section
+                let _ = app.emit(
+                    "section-video-failed",
+                    serde_json::json!({
+                        "section_id": "unknown",
+                        "error": error_msg,
+                    }),
+                );
+
                 failed.push(("unknown".to_string(), error_msg));
             }
         }
