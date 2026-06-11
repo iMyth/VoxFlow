@@ -47,18 +47,40 @@ fn get_embedded_file(rel_path: &str) -> Option<&'static str> {
 
 impl SkillsContext {
     /// Create a new SkillsContext by composing the system prompt from embedded files.
+    ///
+    /// Loads ALL critical reference documents marked "Always read" in SKILL.md.
+    /// Total prompt size ~75K chars — well within modern LLM context limits and
+    /// essential for high-quality video composition generation.
     pub fn new() -> Result<Self, String> {
         let skill_md = get_embedded_file("SKILL.md")
             .ok_or_else(|| "SKILL.md not found in embedded skills".to_string())?;
         let house_style = get_embedded_file("house-style.md").unwrap_or_default();
         let motion_principles =
             get_embedded_file("references/motion-principles.md").unwrap_or_default();
+        // These references are marked "Always read" in SKILL.md — without them
+        // the LLM produces generic, low-quality compositions.
+        let video_composition =
+            get_embedded_file("references/video-composition.md").unwrap_or_default();
+        let beat_direction =
+            get_embedded_file("references/beat-direction.md").unwrap_or_default();
+        let typography = get_embedded_file("references/typography.md").unwrap_or_default();
+        let techniques = get_embedded_file("references/techniques.md").unwrap_or_default();
 
-        // Keep system prompt lean (~45K chars) — beat-direction and techniques
-        // are available on-demand via read_reference tool to save tokens.
         let system_prompt = format!(
-            "{}\n\n---\n\n# House Style (always loaded)\n\n{}\n\n---\n\n# Motion Principles (always loaded)\n\n{}",
-            skill_md, house_style, motion_principles
+            "{skill}\n\n---\n\n\
+             # House Style (always loaded)\n\n{house}\n\n---\n\n\
+             # Motion Principles (always loaded)\n\n{motion}\n\n---\n\n\
+             # Video Composition Rules (always loaded)\n\n{video}\n\n---\n\n\
+             # Beat Direction (always loaded)\n\n{beat}\n\n---\n\n\
+             # Typography (always loaded)\n\n{typo}\n\n---\n\n\
+             # Visual Techniques (always loaded)\n\n{tech}",
+            skill = skill_md,
+            house = house_style,
+            motion = motion_principles,
+            video = video_composition,
+            beat = beat_direction,
+            typo = typography,
+            tech = techniques,
         );
 
         Ok(Self { system_prompt })
@@ -82,11 +104,16 @@ pub struct AgentConfig {
 /// 3. Sends the timeline data as a user prompt
 /// 4. Lets the agent iterate (generate → validate → fix) via multi-turn
 /// 5. Extracts the final HTML from the agent's response
+///
+/// `actual_duration_secs` overrides the timeline-computed duration when provided.
+/// This should be the ffprobe-measured duration of the merged audio file, ensuring
+/// the HTML composition's total duration exactly matches the audio.
 pub async fn generate_with_agent(
     entries: &[TimelineEntry],
     config: &AgentConfig,
     on_progress: Option<Box<dyn Fn(&str) + Send + Sync>>,
     user_instructions: Option<&str>,
+    actual_duration_secs: Option<f64>,
 ) -> Result<String, String> {
     let report = |msg: &str| {
         if let Some(ref cb) = on_progress {
@@ -117,20 +144,33 @@ pub async fn generate_with_agent(
     let agent = client
         .agent(&config.model)
         .preamble(&skills.system_prompt)
-        // Lower temperature for more deterministic output format compliance.
-        // 0.6 balances creativity (for visual design) with format stability.
-        .temperature(0.6)
-        // Enable thinking mode for better code structure generation.
-        // Adds 2-5 minutes but significantly improves compliance with
-        // complex requirements like window.__hf interface implementation.
+        // Temperature 0.4: prioritize format compliance and structural correctness.
+        // Visual creativity comes from the rich reference docs in the system prompt,
+        // not from high randomness which causes broken GSAP/HTML output.
+        .temperature(0.4)
+        // Thinking mode disabled to avoid LLM timeout on longer sections.
+        // The enriched system prompt (all references loaded) compensates.
         .additional_params(json!({ "enable_thinking": false }))
         .build();
 
     // Build the user prompt with timeline data
-    let total_duration: f64 = entries
+    // Use actual audio duration if provided (from ffprobe), otherwise fall back to
+    // timeline-computed max. The actual duration accounts for loudnorm/resampling drift.
+    let timeline_computed_duration: f64 = entries
         .iter()
         .map(|e| e.start_time + e.duration)
         .fold(0.0_f64, f64::max);
+    let total_duration = actual_duration_secs.unwrap_or(timeline_computed_duration);
+
+    if let Some(actual) = actual_duration_secs {
+        let drift = actual - timeline_computed_duration;
+        if drift.abs() > 0.05 {
+            info!(
+                "[Agent] Using actual audio duration: {:.3}s (timeline computed: {:.3}s, drift: {:.3}s)",
+                actual, timeline_computed_duration, drift
+            );
+        }
+    }
 
     let timeline_json = build_timeline_prompt(entries, total_duration);
 
@@ -142,6 +182,22 @@ pub async fn generate_with_agent(
 
 总时长：{duration:.2} 秒，条目数：{count}
 {user_section}
+
+【视觉设计 - 必须遵守】
+你是一个专业的视频动画设计师。请按照 house-style.md 和 video-composition.md 的规则设计：
+1. 先选择一个适合有声书内容的调色板（参考 house-style 中的 Palettes 分类），声明 bg/fg/accent
+2. 根据内容情绪选择合适的字体（参考 typography.md，注意避开 Banned 字体列表）
+3. 每个场景必须有 2-5 个背景装饰元素（radial glows、ghost text、accent lines 等），给予慢速呼吸动画
+4. 使用 beat-direction.md 中的节奏模板规划场景编排
+5. 每个场景的入场动画必须使用不同的方向和缓动，参考 motion-principles.md 的 Guardrails
+6. 多场景之间必须有过渡效果（crossfade、wipe 等），禁止跳切
+7. 每个场景至少使用 techniques.md 中的 2-3 种视觉技巧
+
+【场景规划】
+- 根据文本条目数量合理分组为多个场景（每 2-4 条目为一个场景）
+- 每个场景应有独特的视觉主题和布局，但保持调色板一致
+- 字幕/文字在每个 clip 的持续时间内显示，使用入场动画展现
+- 最后一个场景可以有淡出效果，其余场景只有入场动画（过渡处理退场）
 
 【时间轴同步 - 最关键要求】
 时间轴 JSON 中每个条目的 start 和 duration 对应音频的精确时间。
@@ -159,8 +215,13 @@ pub async fn generate_with_agent(
 - composition-id="ai-generated"，尺寸 1920x1080
 - GSAP 动画，timeline 用 paused: true
 - 实现 window.__hf = {{ duration: {duration:.2}, seek: fn(t) {{ Object.values(window.__timelines).forEach(tl => tl.seek(t)) }} }}
-- 字体用 inter 或 roboto
+- 字体不要用 Inter、Roboto 等 Banned 列表中的字体，选择更有特色的字体
 - 禁止：Math.random()、Date.now()、repeat:-1
+- 标题字号 60px+，正文字号 20px+
+- 使用 font-variant-numeric: tabular-nums 处理数字
+- gsap.from() 做入场，gsap.to() 只用于最后场景的退出
+- 每个入场 tween 偏移 0.1-0.3s（不要从 t=0 开始）
+- 同一场景内至少使用 3 种不同的 ease
 
 【输出格式 - 严格遵守】
 直接输出完整的原始 HTML 文档，以 <!DOCTYPE html> 开头，以 </html> 结尾。
@@ -209,6 +270,7 @@ pub async fn generate_with_agent(
     let html = fix_css_font_variables(&html);
     let html = ensure_hyperframes_interfaces(&html, total_duration);
     let html = ensure_root_duration(&html, total_duration);
+    let html = ensure_clip_timing(&html, entries);
 
     // Final validation
     match validate_composition(&html) {
@@ -264,38 +326,40 @@ fn build_timeline_prompt(entries: &[TimelineEntry], total_duration: f64) -> Stri
 
 /// Fix CSS font variables by replacing var(--font-*) with actual font names.
 /// This is necessary because hyperframes cannot map CSS variables to fonts.
+/// Uses non-banned fonts from the typography reference for better visual quality.
 fn fix_css_font_variables(html: &str) -> String {
     let mut result = html.to_string();
 
-    // Replace common font variable patterns with hyperframes-supported fonts
+    // Replace common font variable patterns with hyperframes-supported fonts.
+    // Avoid banned fonts (Inter, Roboto, etc.) — use distinctive alternatives.
     // Pattern 1: Standard --font-* naming
     result = result
-        .replace("var(--font-body)", "'inter', sans-serif")
-        .replace("var(--font-heading)", "'montserrat', sans-serif")
+        .replace("var(--font-body)", "'dm-sans', sans-serif")
+        .replace("var(--font-heading)", "'space-grotesk', sans-serif")
         .replace("var(--font-mono)", "'jetbrains-mono', monospace")
-        .replace("var(--font-main)", "'inter', sans-serif")
-        .replace("var(--font-display)", "'montserrat', sans-serif")
-        .replace("var(--font-serif)", "'eb-garamond', serif")
-        .replace("var(--font-sans)", "'roboto', sans-serif");
+        .replace("var(--font-main)", "'dm-sans', sans-serif")
+        .replace("var(--font-display)", "'space-grotesk', sans-serif")
+        .replace("var(--font-serif)", "'libre-baskerville', serif")
+        .replace("var(--font-sans)", "'dm-sans', sans-serif");
 
     // Pattern 2: Short naming (--mono, --sans, --serif)
     result = result
         .replace("var(--mono)", "'jetbrains-mono', monospace")
-        .replace("var(--sans)", "'roboto', sans-serif")
-        .replace("var(--serif)", "'eb-garamond', serif")
-        .replace("var(--body)", "'inter', sans-serif")
-        .replace("var(--heading)", "'montserrat', sans-serif");
+        .replace("var(--sans)", "'dm-sans', sans-serif")
+        .replace("var(--serif)", "'libre-baskerville', serif")
+        .replace("var(--body)", "'dm-sans', sans-serif")
+        .replace("var(--heading)", "'space-grotesk', sans-serif");
 
     // Pattern 3: Suffix naming (--body-font, --heading-font)
     result = result
-        .replace("var(--body-font)", "'inter', sans-serif")
-        .replace("var(--heading-font)", "'montserrat', sans-serif")
+        .replace("var(--body-font)", "'dm-sans', sans-serif")
+        .replace("var(--heading-font)", "'space-grotesk', sans-serif")
         .replace("var(--mono-font)", "'jetbrains-mono', monospace");
 
     // Pattern 4: Primary/secondary naming
     result = result
-        .replace("var(--font-primary)", "'inter', sans-serif")
-        .replace("var(--font-secondary)", "'montserrat', sans-serif");
+        .replace("var(--font-primary)", "'dm-sans', sans-serif")
+        .replace("var(--font-secondary)", "'space-grotesk', sans-serif");
 
     result
 }
@@ -430,6 +494,201 @@ fn ensure_root_duration(html: &str, duration: f64) -> String {
     result
 }
 
+/// Ensure clip elements have correct data-start and data-duration matching the timeline.
+///
+/// LLMs often generate clips with slightly wrong timing values. This function
+/// parses the HTML for clip elements and corrects their timing attributes to match
+/// the authoritative timeline entries.
+///
+/// Matching strategy:
+/// - If a clip already has a data-start value, match it to the closest timeline entry
+///   (by start time proximity). This avoids breaking the LLM's intended structure
+///   when clips are not in document order.
+/// - Only clips with class="clip" and existing data-start are corrected.
+/// - Unmatched clips (decorative, scene containers) are left unchanged.
+///
+/// This is the final safety net for audio-video synchronization: even if the LLM
+/// outputs slightly incorrect timing, the post-processed HTML will have frame-accurate timing.
+fn ensure_clip_timing(html: &str, entries: &[TimelineEntry]) -> String {
+    if entries.is_empty() {
+        return html.to_string();
+    }
+
+    let mut result = html.to_string();
+    let mut corrections = 0;
+
+    // Find all clip elements with class="clip" (the hyperframes standard).
+    let mut clip_positions: Vec<(usize, usize)> = Vec::new(); // (tag_start, tag_end)
+    let lower = result.to_ascii_lowercase();
+    let mut search_from = 0;
+
+    while let Some(class_pos) = lower[search_from..].find("class=\"clip") {
+        let abs_pos = search_from + class_pos;
+        // Find the opening < of this tag
+        if let Some(tag_start) = result[..abs_pos].rfind('<') {
+            // Find the end of the tag (> or />)
+            if let Some(tag_end_rel) = result[tag_start..].find('>') {
+                let tag_end = tag_start + tag_end_rel;
+                clip_positions.push((tag_start, tag_end));
+            }
+        }
+        search_from = abs_pos + 1;
+    }
+
+    // Extract current data-start values from clips for proximity matching.
+    // Build (clip_index, parsed_start_time) pairs for clips that have data-start.
+    let mut clips_with_start: Vec<(usize, f64)> = Vec::new();
+    for (i, &(tag_start, tag_end)) in clip_positions.iter().enumerate() {
+        let tag_content = &result[tag_start..=tag_end];
+        if let Some(start_val) = extract_attr_value(tag_content, "data-start") {
+            if let Ok(t) = start_val.parse::<f64>() {
+                clips_with_start.push((i, t));
+            }
+        }
+    }
+
+    // Match clips to timeline entries by proximity of their data-start values.
+    // Each entry is matched to the clip whose existing data-start is closest.
+    // Track which entries have been matched to avoid double-assignment.
+    let mut entry_matched: Vec<bool> = vec![false; entries.len()];
+    // (clip_index, entry_index) pairs for correction
+    let mut match_pairs: Vec<(usize, usize)> = Vec::new();
+
+    for &(clip_idx, clip_start) in &clips_with_start {
+        let mut best_entry_idx: Option<usize> = None;
+        let mut best_distance = f64::MAX;
+
+        for (entry_idx, entry) in entries.iter().enumerate() {
+            if entry_matched[entry_idx] {
+                continue;
+            }
+            let distance = (clip_start - entry.start_time).abs();
+            if distance < best_distance {
+                best_distance = distance;
+                best_entry_idx = Some(entry_idx);
+            }
+        }
+
+        if let Some(entry_idx) = best_entry_idx {
+            // Only match if the clip's start time is reasonably close (within 5 seconds).
+            // If it's too far off, the clip might be a decorative/scene element, not a text clip.
+            if best_distance < 5.0 {
+                entry_matched[entry_idx] = true;
+                match_pairs.push((clip_idx, entry_idx));
+            }
+        }
+    }
+
+    // If proximity matching found fewer matches than expected, fall back to order-based
+    // matching for unmatched entries. This handles cases where LLM didn't set data-start
+    // correctly at all.
+    if match_pairs.len() < entries.len() && clip_positions.len() >= entries.len() {
+        let matched_clips: std::collections::HashSet<usize> =
+            match_pairs.iter().map(|(c, _)| *c).collect();
+        let unmatched_clips: Vec<usize> = (0..clip_positions.len())
+            .filter(|i| !matched_clips.contains(i))
+            .collect();
+        let unmatched_entries: Vec<usize> = (0..entries.len())
+            .filter(|i| !entry_matched[*i])
+            .collect();
+
+        // Match remaining clips to remaining entries by order
+        let fallback_count = unmatched_entries.len().min(unmatched_clips.len());
+        for i in 0..fallback_count {
+            match_pairs.push((unmatched_clips[i], unmatched_entries[i]));
+        }
+    }
+
+    // Sort by clip_index descending so we can replace without invalidating positions
+    match_pairs.sort_by(|a, b| b.0.cmp(&a.0));
+
+    // Apply corrections
+    for (clip_idx, entry_idx) in &match_pairs {
+        let (tag_start, tag_end) = clip_positions[*clip_idx];
+        let entry = &entries[*entry_idx];
+        let tag_content = &result[tag_start..=tag_end];
+
+        let mut new_tag = tag_content.to_string();
+
+        // Replace or add data-start
+        new_tag =
+            replace_or_add_attr(&new_tag, "data-start", &format!("{:.3}", entry.start_time));
+        // Replace or add data-duration
+        new_tag =
+            replace_or_add_attr(&new_tag, "data-duration", &format!("{:.3}", entry.duration));
+
+        if new_tag != tag_content {
+            corrections += 1;
+            result.replace_range(tag_start..=tag_end, &new_tag);
+        }
+    }
+
+    if corrections > 0 {
+        info!(
+            "[Agent] Post-processed: corrected timing on {}/{} clip elements (proximity-matched)",
+            corrections, clip_positions.len()
+        );
+    }
+
+    result
+}
+
+/// Extract the value of an attribute from an HTML tag string.
+fn extract_attr_value<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str> {
+    let search = format!("{}=", attr_name);
+    let attr_pos = tag.find(&search)?;
+    let after_eq = attr_pos + search.len();
+    let rest = &tag[after_eq..];
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let value_start = after_eq + 1;
+    let value_end_rel = tag[value_start..].find(quote)?;
+    Some(&tag[value_start..value_start + value_end_rel])
+}
+
+/// Replace an attribute's value in an HTML tag string, or add it if missing.
+fn replace_or_add_attr(tag: &str, attr_name: &str, new_value: &str) -> String {
+    let search = format!("{}=", attr_name);
+    if let Some(attr_pos) = tag.find(&search) {
+        // Attribute exists — find and replace its value
+        let after_eq = attr_pos + search.len();
+        let rest = &tag[after_eq..];
+        let quote_char = rest.chars().next();
+        if let Some(quote) = quote_char {
+            if quote == '"' || quote == '\'' {
+                let value_start = after_eq + 1;
+                if let Some(value_end_rel) = tag[value_start..].find(quote) {
+                    let value_end = value_start + value_end_rel;
+                    return format!(
+                        "{}{}=\"{}\"{}",
+                        &tag[..attr_pos],
+                        attr_name,
+                        new_value,
+                        &tag[value_end + 1..]
+                    );
+                }
+            }
+        }
+        // Couldn't parse quotes, return unchanged
+        tag.to_string()
+    } else {
+        // Attribute doesn't exist — add before the closing >
+        if let Some(close_pos) = tag.rfind('>') {
+            format!(
+                "{} {}=\"{}\"{}",
+                &tag[..close_pos],
+                attr_name,
+                new_value,
+                &tag[close_pos..]
+            )
+        } else {
+            tag.to_string()
+        }
+    }
+}
+
 /// Extract the HTML content from the LLM response.
 ///
 /// The LLM is instructed to output raw HTML, but may still wrap it in
@@ -551,8 +810,8 @@ mod tests {
 
         let fixed = fix_css_font_variables(html);
         assert!(!fixed.contains("var(--font-"));
-        assert!(fixed.contains("'inter', sans-serif"));
-        assert!(fixed.contains("'montserrat', sans-serif"));
+        assert!(fixed.contains("'dm-sans', sans-serif"));
+        assert!(fixed.contains("'space-grotesk', sans-serif"));
         assert!(fixed.contains("'jetbrains-mono', monospace"));
     }
 
@@ -581,12 +840,11 @@ mod tests {
         assert!(!fixed.contains("var(--font-primary)"));
         assert!(!fixed.contains("var(--font-secondary)"));
 
-        // Verify replacements
+        // Verify replacements use non-banned fonts
         assert!(fixed.contains("'jetbrains-mono', monospace"));
-        assert!(fixed.contains("'roboto', sans-serif"));
-        assert!(fixed.contains("'eb-garamond', serif"));
-        assert!(fixed.contains("'inter', sans-serif"));
-        assert!(fixed.contains("'montserrat', sans-serif"));
+        assert!(fixed.contains("'dm-sans', sans-serif"));
+        assert!(fixed.contains("'libre-baskerville', serif"));
+        assert!(fixed.contains("'space-grotesk', sans-serif"));
     }
 
     #[test]

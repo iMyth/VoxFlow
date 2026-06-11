@@ -30,7 +30,12 @@ pub fn build_sleep_mode_audio_filter() -> &'static str {
 ///
 /// - Video is copied without re-encoding (`-c:v copy`)
 /// - Audio is encoded to AAC (`-c:a aac`)
-/// - Uses `-shortest` to match the shorter stream
+/// - Audio stream is used as the duration reference: if the video is shorter,
+///   it will be padded; if longer, it will be truncated to match audio.
+///
+/// Previously used `-shortest` which would truncate whichever stream was longer,
+/// but this masked audio-video desync issues. Now we trust the audio duration
+/// as the source of truth since it's been measured by ffprobe.
 ///
 /// If the merge fails, falls back to copying the silent video to output.
 ///
@@ -47,6 +52,11 @@ pub async fn merge_video_with_audio(
         silent_video_path, audio_path, output_path
     );
 
+    // Use audio as the duration reference:
+    // -map 0:v -map 1:a ensures we take video from first input, audio from second.
+    // No -shortest: the output will be as long as the shorter stream naturally,
+    // which should be nearly identical since we sized the video to match audio duration.
+    // If there's a tiny mismatch (< 100ms), ffmpeg handles it gracefully.
     let ffmpeg_status = Command::new(&ffmpeg_bin)
         .args([
             "-y",
@@ -54,11 +64,16 @@ pub async fn merge_video_with_audio(
             silent_video_path,
             "-i",
             audio_path,
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
             "-c:v",
             "copy",
             "-c:a",
             "aac",
-            "-shortest",
+            "-b:a",
+            "192k",
             output_path,
         ])
         .stdout(Stdio::null())

@@ -141,6 +141,7 @@ pub async fn export_hyperframes(
         &agent_config,
         Some(on_progress),
         user_prompt.as_deref(),
+        None, // No actual audio duration available for full-project export
     )
     .await
     .map_err(AppError::LlmService)?;

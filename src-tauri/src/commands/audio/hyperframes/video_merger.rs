@@ -141,11 +141,23 @@ pub async fn merge_videos(
             .await
             .map_err(|e| AppError::FFmpeg(format!("spawn_blocking failed: {}", e)))?;
 
-            if !result.unwrap().status.success() {
-                let _ = std::fs::remove_file(output_path);
-                return Err(AppError::FFmpeg(
-                    "Failed to process single section with sleep mode".to_string(),
-                ));
+            match result {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    let _ = std::fs::remove_file(output_path);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(AppError::FFmpeg(format!(
+                        "Failed to process single section with sleep mode: {}",
+                        stderr.chars().take(300).collect::<String>()
+                    )));
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(output_path);
+                    return Err(AppError::FFmpeg(format!(
+                        "Failed to execute ffmpeg for sleep mode: {}",
+                        e
+                    )));
+                }
             }
         }
 
@@ -174,8 +186,10 @@ pub async fn merge_videos(
     let output_str = output_path.to_string_lossy().to_string();
 
     if is_uniform && !sleep_mode {
-        // Use concat demuxer (no re-encode, preserves gaps between sections)
-        // This is preferred for preserving intentional silence gaps between paragraphs
+        // Re-encode audio during concat to avoid sample rate / AAC priming issues.
+        // The concat demuxer with `-c copy` on low sample rate AAC (22050Hz) causes
+        // ffmpeg to misinterpret time_base, inflating audio duration vs video duration.
+        // Re-encoding audio to AAC 44100Hz fixes the mismatch while keeping video as copy.
         let concat_path = output_path
             .parent()
             .unwrap_or(Path::new("."))
@@ -201,8 +215,14 @@ pub async fn merge_videos(
                     "0",
                     "-i",
                     &concat_path_str,
-                    "-c",
+                    "-c:v",
                     "copy",
+                    "-c:a",
+                    "aac",
+                    "-ar",
+                    "44100",
+                    "-b:a",
+                    "192k",
                     &output_str,
                 ])
                 .stderr(std::process::Stdio::piped())
@@ -234,14 +254,15 @@ pub async fn merge_videos(
             }
         }
     } else if is_uniform && sleep_mode {
-        // Format uniform but sleep mode enabled: concat first, then apply audio processing
+        // Format uniform + sleep mode: concat with audio re-encode, then apply sleep processing.
+        // Must re-encode audio during concat to avoid 22050Hz AAC time_base issues.
         let temp_path = output_path
             .parent()
             .unwrap_or(Path::new("."))
             .join("_temp_concat.mp4");
         let temp_path_str = temp_path.to_string_lossy().to_string();
 
-        // Step 1: Concat all sections
+        // Step 1: Concat all sections (video copy, audio re-encode to fix sample rate)
         let concat_path = temp_path
             .parent()
             .unwrap_or(Path::new("."))
@@ -268,8 +289,14 @@ pub async fn merge_videos(
                     "0",
                     "-i",
                     &concat_path_str,
-                    "-c",
+                    "-c:v",
                     "copy",
+                    "-c:a",
+                    "aac",
+                    "-ar",
+                    "44100",
+                    "-b:a",
+                    "192k",
                     &temp_path_str,
                 ])
                 .stderr(std::process::Stdio::piped())
@@ -281,9 +308,23 @@ pub async fn merge_videos(
 
         let _ = std::fs::remove_file(&concat_path);
 
-        if !concat_result.unwrap().status.success() {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(AppError::FFmpeg("Failed to concat sections".to_string()));
+        match concat_result {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let _ = std::fs::remove_file(&temp_path);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(AppError::FFmpeg(format!(
+                    "Failed to concat sections: {}",
+                    stderr.chars().take(300).collect::<String>()
+                )));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(AppError::FFmpeg(format!(
+                    "Failed to execute ffmpeg concat: {}",
+                    e
+                )));
+            }
         }
 
         on_progress(60.0, "processing_audio");
@@ -315,11 +356,23 @@ pub async fn merge_videos(
 
         let _ = std::fs::remove_file(&temp_path);
 
-        if !result.unwrap().status.success() {
-            let _ = std::fs::remove_file(output_path);
-            return Err(AppError::FFmpeg(
-                "Failed to apply sleep mode processing".to_string(),
-            ));
+        match result {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let _ = std::fs::remove_file(output_path);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(AppError::FFmpeg(format!(
+                    "Failed to apply sleep mode processing: {}",
+                    stderr.chars().take(300).collect::<String>()
+                )));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(output_path);
+                return Err(AppError::FFmpeg(format!(
+                    "Failed to execute ffmpeg sleep mode: {}",
+                    e
+                )));
+            }
         }
 
         on_progress(100.0, "finalizing");

@@ -139,9 +139,14 @@ pub async fn generate_section_html(
     .await?;
 
     info!(
-        "[Section HTML] Audio merged: {}ms, path={}",
+        "[Section HTML] Audio merged: {}ms (actual), path={}",
         audio_result.total_duration_ms, audio_result.file_path
     );
+
+    // Use the ACTUAL audio duration (from ffprobe) for HTML generation.
+    // This ensures the video duration exactly matches the audio duration,
+    // preventing audio-video desync caused by loudnorm/resampling drift.
+    let actual_audio_duration_secs = audio_result.total_duration_ms as f64 / 1000.0;
 
     // Check cancellation before expensive LLM call
     if let Some(ref token) = cancel_token {
@@ -210,6 +215,7 @@ pub async fn generate_section_html(
         &agent_config,
         Some(on_progress),
         style_config.user_prompt.as_deref(),
+        Some(actual_audio_duration_secs),
     )
     .await
     .map_err(AppError::LlmService)?;
@@ -227,10 +233,9 @@ pub async fn generate_section_html(
     std::fs::write(composition_dir.join("index.html"), &html)
         .map_err(|e| AppError::FileSystem(format!("Failed to write index.html: {}", e)))?;
 
-    let total_duration = timeline_entries
-        .iter()
-        .map(|e| e.start_time + e.duration)
-        .fold(0.0_f64, f64::max);
+    // Use actual audio duration for meta.json — this is what hyperframes render uses
+    // to determine total frame count. Must match the audio file's true length.
+    let total_duration = actual_audio_duration_secs;
     let meta_json = serde_json::json!({
         "id": &section_id,
         "title": format!("Section {}", section_id),

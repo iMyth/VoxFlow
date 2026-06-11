@@ -166,27 +166,16 @@ pub async fn merge_section_audio(
     for segment in &segments {
         match segment {
             Segment::Audio { input_idx, .. } => {
-                // Resample audio input to 22050 Hz mono and apply audio processing
+                // Resample audio input to 22050 Hz mono WITHOUT per-fragment loudnorm.
+                // Per-fragment loudnorm causes each fragment's actual duration to drift
+                // from its stored duration_ms, leading to cumulative audio-video desync.
+                // Instead, we normalize the entire concatenated output once at the end.
                 let label = format!("a{}", input_idx);
-                let filter_chain = if sleep_mode {
-                    // Sleep mode: pitch reduction + bass warmth + high-frequency rolloff + quieter loudness
-                    // Uses shared filter chain from ffmpeg_utils
-                    format!(
-                        "[{i}:a]aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono,\
-                         {sleep_filter}[{l}];",
-                        i = input_idx,
-                        sleep_filter = build_sleep_mode_audio_filter(),
-                        l = label
-                    )
-                } else {
-                    // Normal mode: just resample and normalize to -16 LUFS
-                    format!(
-                        "[{i}:a]aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono,\
-                         loudnorm=I=-16:TP=-1.5:LRA=11[{l}];",
-                        i = input_idx,
-                        l = label
-                    )
-                };
+                let filter_chain = format!(
+                    "[{i}:a]aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono[{l}];",
+                    i = input_idx,
+                    l = label
+                );
                 filter.push_str(&filter_chain);
                 segment_labels.push(format!("[{}]", label));
             }
@@ -194,7 +183,7 @@ pub async fn merge_section_audio(
                 let duration_sec = *duration_ms as f64 / 1000.0;
                 let label = format!("sil{}", silence_idx);
                 filter.push_str(&format!(
-                    "anullsrc=r=22050:cl=mono[s{s}];[s{s}]atrim=0:{dur:.3}[{label}];",
+                    "anullsrc=r=22050:cl=mono[s{s}];[s{s}]atrim=0:{dur:.6}[{label}];",
                     s = silence_idx,
                     dur = duration_sec,
                     label = label
@@ -205,12 +194,26 @@ pub async fn merge_section_audio(
         }
     }
 
-    // Concat all segments
+    // Concat all segments, then apply loudnorm ONCE on the entire output.
+    // This preserves per-fragment timing accuracy while still normalizing loudness.
     let n = segment_labels.len();
     for label in &segment_labels {
         filter.push_str(label);
     }
-    filter.push_str(&format!("concat=n={}:v=0:a=1[out]", n));
+    if sleep_mode {
+        // Sleep mode: concat → sleep audio processing (pitch + bass + lowpass + loudnorm)
+        filter.push_str(&format!(
+            "concat=n={}:v=0:a=1[raw];[raw]{}[out]",
+            n,
+            build_sleep_mode_audio_filter()
+        ));
+    } else {
+        // Normal mode: concat → single loudnorm pass
+        filter.push_str(&format!(
+            "concat=n={}:v=0:a=1[raw];[raw]loudnorm=I=-16:TP=-1.5:LRA=11[out]",
+            n
+        ));
+    }
 
     args.push("-filter_complex".to_string());
     args.push(filter);
@@ -234,6 +237,8 @@ pub async fn merge_section_audio(
     );
 
     // Run ffmpeg
+    let output_path_clone = output_path.to_path_buf();
+    let section_id_owned = section_id.to_string();
     let result = tokio::task::spawn_blocking(move || {
         std::process::Command::new(&ffmpeg_bin)
             .args(&args)
@@ -246,20 +251,37 @@ pub async fn merge_section_audio(
 
     match result {
         Ok(output) if output.status.success() => {
+            // Use ffprobe to get the ACTUAL output duration instead of the calculated one.
+            // This is critical for audio-video sync: loudnorm and resampling can shift
+            // the actual duration by tens of milliseconds per fragment, which accumulates.
+            let actual_duration_ms =
+                probe_audio_duration_ms(&output_path_clone).unwrap_or(total_duration_ms);
+
+            if (actual_duration_ms - total_duration_ms).abs() > 50 {
+                info!(
+                    "[Section Audio] Duration drift detected for section '{}': \
+                     calculated={}ms, actual={}ms, drift={}ms",
+                    section_id_owned,
+                    total_duration_ms,
+                    actual_duration_ms,
+                    actual_duration_ms - total_duration_ms
+                );
+            }
+
             info!(
-                "[Section Audio] Merge complete for section '{}': total_duration={}ms",
-                section_id, total_duration_ms
+                "[Section Audio] Merge complete for section '{}': actual_duration={}ms (calculated={}ms)",
+                section_id_owned, actual_duration_ms, total_duration_ms
             );
             Ok(SectionAudioResult {
-                file_path: output_path.to_string_lossy().to_string(),
-                total_duration_ms,
+                file_path: output_path_clone.to_string_lossy().to_string(),
+                total_duration_ms: actual_duration_ms,
             })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(AppError::FFmpeg(format!(
                 "ffmpeg section audio merge failed for section '{}': {}",
-                section_id,
+                section_id_owned,
                 stderr.chars().take(500).collect::<String>()
             )))
         }
@@ -273,6 +295,43 @@ pub async fn merge_section_audio(
             }
         }
     }
+}
+
+/// Probe the actual duration of an audio file using ffprobe.
+///
+/// Returns the duration in milliseconds. This is essential for accurate
+/// audio-video synchronization because ffmpeg filters (loudnorm, resampling)
+/// can alter the output duration compared to the sum of input durations.
+fn probe_audio_duration_ms(file_path: &Path) -> Result<i64, AppError> {
+    let ffmpeg_path = find_ffmpeg();
+    let ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe");
+
+    let output = std::process::Command::new(&ffprobe_path)
+        .args([
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            &file_path.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|e| AppError::FFmpeg(format!("Failed to run ffprobe: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(AppError::FFmpeg(
+            "ffprobe duration query failed".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let duration_secs: f64 = stdout
+        .trim()
+        .parse()
+        .map_err(|_| AppError::FFmpeg("Failed to parse audio duration from ffprobe".to_string()))?;
+
+    Ok((duration_secs * 1000.0).round() as i64)
 }
 
 // ---- Pure duration calculation functions for testing ----
