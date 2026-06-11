@@ -35,12 +35,9 @@ pub fn build_sleep_mode_audio_filter() -> &'static str {
 ///
 /// - Video is copied without re-encoding (`-c:v copy`)
 /// - Audio is encoded to AAC (`-c:a aac`)
-/// - Audio stream is used as the duration reference: if the video is shorter,
-///   it will be padded; if longer, it will be truncated to match audio.
-///
-/// Previously used `-shortest` which would truncate whichever stream was longer,
-/// but this masked audio-video desync issues. Now we trust the audio duration
-/// as the source of truth since it's been measured by ffprobe.
+/// - Uses `-shortest` to truncate output to the shorter stream (audio).
+///   This prevents oversized videos (from LLM rendering bugs) from polluting
+///   the final multi-section merge with trailing blank frames.
 ///
 /// If the merge fails, falls back to copying the silent video to output.
 ///
@@ -59,9 +56,10 @@ pub async fn merge_video_with_audio(
 
     // Use audio as the duration reference:
     // -map 0:v -map 1:a ensures we take video from first input, audio from second.
-    // No -shortest: the output will be as long as the shorter stream naturally,
-    // which should be nearly identical since we sized the video to match audio duration.
-    // If there's a tiny mismatch (< 100ms), ffmpeg handles it gracefully.
+    // -shortest: truncate to the shorter stream. This is critical because if the
+    // video renderer produced a longer-than-expected video (due to incorrect duration
+    // in the HTML), we don't want trailing blank frames polluting the output and
+    // breaking the final multi-section merge.
     let ffmpeg_status = Command::new(&ffmpeg_bin)
         .args([
             "-y",
@@ -79,6 +77,7 @@ pub async fn merge_video_with_audio(
             "aac",
             "-b:a",
             "192k",
+            "-shortest",
             output_path,
         ])
         .stdout(Stdio::null())

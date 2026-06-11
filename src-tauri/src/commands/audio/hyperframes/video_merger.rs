@@ -530,6 +530,38 @@ pub async fn merge_section_videos(
     // Sort by section_order
     section_videos.sort_by_key(|sv| sv.section_order);
 
+    // Validate each section video has an audio stream.
+    // If a section's audio merge failed silently, the video might be video-only.
+    // Filter out any video-only sections to prevent ffmpeg concat from crashing.
+    let ffmpeg_path_for_probe = find_ffmpeg();
+    let ffprobe_path = ffmpeg_path_for_probe.replace("ffmpeg", "ffprobe");
+    section_videos.retain(|sv| {
+        let has_audio = std::process::Command::new(&ffprobe_path)
+            .args([
+                "-v", "quiet",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "csv=p=0",
+                &sv.file_path,
+            ])
+            .output()
+            .map(|o| o.status.success() && !o.stdout.is_empty())
+            .unwrap_or(false);
+        if !has_audio {
+            info!(
+                "[Video Merger] WARNING: Section '{}' has no audio stream, skipping from merge",
+                sv.section_id
+            );
+        }
+        has_audio
+    });
+
+    if section_videos.is_empty() {
+        return Err(AppError::FFmpeg(
+            "No valid section videos with audio found.".to_string(),
+        ));
+    }
+
     let transition_ms = transition_duration_ms.unwrap_or(500);
     let out_path = Path::new(&output_path);
 
