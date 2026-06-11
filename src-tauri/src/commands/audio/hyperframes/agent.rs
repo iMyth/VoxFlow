@@ -289,6 +289,8 @@ pub async fn generate_with_agent(
     let html = ensure_hyperframes_interfaces(&html, total_duration);
     let html = ensure_root_duration(&html, total_duration);
     let html = ensure_clip_timing(&html, entries);
+    // Final guard: no clip may extend beyond the audio duration.
+    let html = clamp_overflow_clips(&html, total_duration);
 
     // Final validation
     match validate_composition(&html) {
@@ -465,118 +467,167 @@ fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
     result
 }
 
-/// Ensure the root composition element has the correct `data-duration` attribute.
-/// This is critical because hyperframes uses this value to determine how many frames to render.
-/// If the duration is wrong, the video will be too long (black frames) or too short (cut off).
+/// Find the byte range (tag_start..=tag_end) of the opening tag that carries
+/// `data-composition-id` as a REAL HTML attribute — not a CSS selector occurrence
+/// like `[data-composition-id="x"]` inside a `<style>` block.
 ///
-/// Checks BOTH:
-/// - The element with `data-composition-id` (standard hyperframes structure)
-/// - The `<html>` element (some LLM outputs put data-duration there)
-/// - Any `data-duration` that is wildly incorrect (>2x expected) gets force-corrected
-fn ensure_root_duration(html: &str, duration: f64) -> String {
-    let mut result = html.to_string();
+/// Returns None if no genuine element attribute is found.
+fn find_composition_tag_range(html: &str) -> Option<(usize, usize)> {
+    let needle = "data-composition-id";
+    let mut search_from = 0;
 
-    // Strategy: find ALL data-duration attributes and correct any that are wrong.
-    // The authoritative duration comes from the actual audio file (ffprobe-measured).
-    let mut corrections = 0;
-    let mut comp_is_on_html_tag = false;
-    
-    // Find and fix data-duration on the composition element
-    if let Some(comp_start) = result.find("data-composition-id") {
-        if let Some(tag_start) = result[..comp_start].rfind('<') {
-            // Check if the composition element is on the <html> tag itself
-            let tag_name_end = result[tag_start + 1..].find(|c: char| c.is_whitespace() || c == '>').unwrap_or(0) + tag_start + 1;
-            let tag_name = &result[tag_start + 1..tag_name_end];
-            comp_is_on_html_tag = tag_name.eq_ignore_ascii_case("html");
-            
-            if let Some(tag_end_rel) = result[tag_start..].find('>') {
-                let tag_end = tag_start + tag_end_rel;
-                let tag_content = result[tag_start..=tag_end].to_string();
-                
-                if let Some(attr_pos) = tag_content.find("data-duration=") {
-                    let after_eq = attr_pos + "data-duration=".len();
-                    if let Some(quote) = tag_content[after_eq..].chars().next() {
-                        if quote == '"' || quote == '\'' {
-                            let value_start = after_eq + 1;
-                            if let Some(value_end) = tag_content[value_start..].find(quote) {
-                                let current_val = &tag_content[value_start..value_start + value_end];
-                                if let Ok(current_dur) = current_val.parse::<f64>() {
-                                    if (current_dur - duration).abs() > 0.5 {
-                                        let new_attr = format!("data-duration=\"{:.2}\"", duration);
-                                        let attr_end = value_start + value_end + 1;
-                                        let new_tag = format!(
-                                            "{}{}{}",
-                                            &tag_content[..attr_pos],
-                                            new_attr,
-                                            &tag_content[attr_end..]
-                                        );
-                                        result.replace_range(tag_start..=tag_end, &new_tag);
-                                        corrections += 1;
-                                        info!(
-                                            "[Agent] Fixed composition data-duration: {} -> {:.2}",
-                                            current_val, duration
-                                        );
-                                    }
-                                }
-                            }
-                        }
+    while let Some(rel) = html[search_from..].find(needle) {
+        let pos = search_from + rel;
+        search_from = pos + needle.len();
+
+        // The char immediately before must be ASCII whitespace for an HTML attribute.
+        // CSS selectors use `[data-composition-id` (preceded by `[`), so this rejects them.
+        let prev_char = html[..pos].chars().next_back();
+        if !matches!(prev_char, Some(c) if c.is_whitespace()) {
+            continue;
+        }
+
+        // Walk back to the enclosing `<` and confirm it opens a real element
+        // (next char after `<` is an ASCII letter — a tag name).
+        let Some(tag_start) = html[..pos].rfind('<') else {
+            continue;
+        };
+        let after_lt = html[tag_start + 1..].chars().next();
+        if !matches!(after_lt, Some(c) if c.is_ascii_alphabetic()) {
+            continue;
+        }
+
+        // Ensure the attribute is within THIS tag (no `>` between `<` and the attribute)
+        if html[tag_start..pos].contains('>') {
+            continue;
+        }
+
+        // Find the closing `>` of this tag
+        let Some(end_rel) = html[tag_start..].find('>') else {
+            continue;
+        };
+        let tag_end = tag_start + end_rel;
+        return Some((tag_start, tag_end));
+    }
+
+    None
+}
+
+/// Set (or replace) `data-duration` to `duration` within the tag at `tag_start..=tag_end`.
+/// Returns the modified full HTML and whether a change was made.
+/// Only replaces when the existing value differs from `duration` by more than 0.1s.
+fn set_data_duration_in_tag(
+    html: &str,
+    tag_start: usize,
+    tag_end: usize,
+    duration: f64,
+) -> (String, bool) {
+    let tag_content = &html[tag_start..=tag_end];
+
+    if let Some(attr_pos) = tag_content.find("data-duration=") {
+        let after_eq = attr_pos + "data-duration=".len();
+        if let Some(quote) = tag_content[after_eq..].chars().next() {
+            if quote == '"' || quote == '\'' {
+                let value_start = after_eq + 1;
+                if let Some(value_end_rel) = tag_content[value_start..].find(quote) {
+                    let current_val = &tag_content[value_start..value_start + value_end_rel];
+                    // Always replace unless already correct within tight tolerance.
+                    let needs_fix = current_val
+                        .parse::<f64>()
+                        .map(|v| (v - duration).abs() > 0.1)
+                        .unwrap_or(true);
+                    if !needs_fix {
+                        return (html.to_string(), false);
                     }
-                } else {
-                    // No data-duration on composition element, add it
-                    let insert_pos = tag_end; // before the >
-                    let addition = format!(" data-duration=\"{:.2}\"", duration);
-                    result.insert_str(insert_pos, &addition);
-                    corrections += 1;
-                    info!("[Agent] Added data-duration=\"{:.2}\" to composition element", duration);
+                    let new_attr = format!("data-duration=\"{:.3}\"", duration);
+                    let attr_end = value_start + value_end_rel + 1; // past closing quote
+                    let new_tag = format!(
+                        "{}{}{}",
+                        &tag_content[..attr_pos],
+                        new_attr,
+                        &tag_content[attr_end..]
+                    );
+                    let mut result = html.to_string();
+                    result.replace_range(tag_start..=tag_end, &new_tag);
+                    return (result, true);
                 }
             }
         }
+        // Malformed attribute — leave unchanged
+        (html.to_string(), false)
+    } else {
+        // No data-duration: insert it just before the closing `>`
+        let addition = format!(" data-duration=\"{:.3}\"", duration);
+        let mut result = html.to_string();
+        result.insert_str(tag_end, &addition);
+        (result, true)
     }
-    
-    // Also check/fix data-duration on the <html> element if it's separate from the composition
+}
+
+/// Ensure the root composition element has the correct `data-duration` attribute.
+/// This is critical because hyperframes uses this value to determine how many frames
+/// to render. If the duration is wrong, the video will be too long (trailing blank
+/// frames) or too short (cut off).
+///
+/// Root cause handling:
+/// - Finds `data-composition-id` only as a real HTML attribute (ignores CSS selectors
+///   in `<style>` blocks, which previously caused the wrong tag to be matched).
+/// - Forces `data-duration` on the composition element to the ffprobe-measured audio duration.
+/// - Also fixes `data-duration` on a separate `<html>` element if present.
+fn ensure_root_duration(html: &str, duration: f64) -> String {
+    let mut result = html.to_string();
+    let mut corrections = 0;
+    let mut comp_is_on_html_tag = false;
+
+    // Fix data-duration on the composition element (real attribute, not CSS).
+    if let Some((tag_start, tag_end)) = find_composition_tag_range(&result) {
+        // Determine if the composition attribute lives on the <html> tag itself.
+        let tag_name_end = result[tag_start + 1..]
+            .find(|c: char| c.is_whitespace() || c == '>')
+            .map(|i| i + tag_start + 1)
+            .unwrap_or(tag_start + 1);
+        let tag_name = result[tag_start + 1..tag_name_end].to_string();
+        comp_is_on_html_tag = tag_name.eq_ignore_ascii_case("html");
+
+        let (new_html, changed) = set_data_duration_in_tag(&result, tag_start, tag_end, duration);
+        if changed {
+            result = new_html;
+            corrections += 1;
+            info!(
+                "[Agent] Set composition data-duration to {:.3} on <{}>",
+                duration, tag_name
+            );
+        }
+    } else {
+        info!("[Agent] No composition element with data-composition-id found");
+    }
+
+    // Also fix data-duration on a separate <html> element if present.
     if !comp_is_on_html_tag {
         if let Some(html_start) = result.find("<html") {
             if let Some(html_end_rel) = result[html_start..].find('>') {
                 let html_end = html_start + html_end_rel;
-                let html_tag = result[html_start..=html_end].to_string();
-                
-                if let Some(attr_pos) = html_tag.find("data-duration=") {
-                    let after_eq = attr_pos + "data-duration=".len();
-                    if let Some(quote) = html_tag[after_eq..].chars().next() {
-                        if quote == '"' || quote == '\'' {
-                            let value_start = after_eq + 1;
-                            if let Some(value_end) = html_tag[value_start..].find(quote) {
-                                let current_val = &html_tag[value_start..value_start + value_end];
-                                if let Ok(current_dur) = current_val.parse::<f64>() {
-                                    if (current_dur - duration).abs() > 0.5 {
-                                        let new_attr = format!("data-duration=\"{:.2}\"", duration);
-                                        let attr_end = value_start + value_end + 1;
-                                        let new_tag = format!(
-                                            "{}{}{}",
-                                            &html_tag[..attr_pos],
-                                            new_attr,
-                                            &html_tag[attr_end..]
-                                        );
-                                        result.replace_range(html_start..=html_end, &new_tag);
-                                        corrections += 1;
-                                        info!(
-                                            "[Agent] Fixed <html> data-duration: {} -> {:.2}",
-                                            current_val, duration
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                // Only touch <html> if it already declares data-duration (don't add one there).
+                if result[html_start..=html_end].contains("data-duration=") {
+                    let (new_html, changed) =
+                        set_data_duration_in_tag(&result, html_start, html_end, duration);
+                    if changed {
+                        result = new_html;
+                        corrections += 1;
+                        info!("[Agent] Fixed <html> data-duration to {:.3}", duration);
                     }
                 }
             }
         }
     }
-    
+
     if corrections == 0 {
-        info!("[Agent] data-duration already correct ({:.2}), no changes needed", duration);
+        info!(
+            "[Agent] data-duration already correct ({:.3}), no changes needed",
+            duration
+        );
     }
-    
+
     result
 }
 
@@ -713,6 +764,70 @@ fn ensure_clip_timing(html: &str, entries: &[TimelineEntry]) -> String {
         info!(
             "[Agent] Post-processed: corrected timing on {}/{} clip elements (proximity-matched)",
             corrections, clip_positions.len()
+        );
+    }
+
+    result
+}
+
+/// Clamp any clip whose `data-start + data-duration` extends beyond `total_duration`.
+///
+/// This is a final guard against the "video longer than audio" problem: even after
+/// fixing the root composition duration, a stray decorative/scene clip with an
+/// oversized `data-duration` could extend the rendered timeline past the audio.
+/// We clamp every clip so the maximum extent never exceeds the audio duration.
+fn clamp_overflow_clips(html: &str, total_duration: f64) -> String {
+    if total_duration <= 0.0 {
+        return html.to_string();
+    }
+
+    let mut result = html.to_string();
+    let lower = result.to_ascii_lowercase();
+
+    // Collect all clip tag ranges
+    let mut clip_positions: Vec<(usize, usize)> = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = lower[search_from..].find("class=\"clip") {
+        let abs_pos = search_from + rel;
+        if let Some(tag_start) = result[..abs_pos].rfind('<') {
+            if let Some(end_rel) = result[tag_start..].find('>') {
+                clip_positions.push((tag_start, tag_start + end_rel));
+            }
+        }
+        search_from = abs_pos + 1;
+    }
+
+    // Process from last to first to keep byte positions valid after edits.
+    let mut clamped = 0;
+    for &(tag_start, tag_end) in clip_positions.iter().rev() {
+        let tag_content = result[tag_start..=tag_end].to_string();
+
+        let start = extract_attr_value(&tag_content, "data-start")
+            .and_then(|v| v.parse::<f64>().ok());
+        let dur = extract_attr_value(&tag_content, "data-duration")
+            .and_then(|v| v.parse::<f64>().ok());
+
+        if let (Some(start), Some(dur)) = (start, dur) {
+            // Allow a small epsilon for float rounding.
+            if start + dur > total_duration + 0.05 {
+                let clamped_dur = (total_duration - start).max(0.0);
+                let new_tag = replace_or_add_attr(
+                    &tag_content,
+                    "data-duration",
+                    &format!("{:.3}", clamped_dur),
+                );
+                if new_tag != tag_content {
+                    result.replace_range(tag_start..=tag_end, &new_tag);
+                    clamped += 1;
+                }
+            }
+        }
+    }
+
+    if clamped > 0 {
+        info!(
+            "[Agent] Clamped {} clip(s) that extended beyond total duration {:.3}s",
+            clamped, total_duration
         );
     }
 
@@ -1063,7 +1178,7 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.50\""), "Got: {}", result);
+        assert!(result.contains("data-duration=\"8.500\""), "Got: {}", result);
     }
 
     #[test]
@@ -1072,7 +1187,7 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.50\""), "Got: {}", result);
+        assert!(result.contains("data-duration=\"8.500\""), "Got: {}", result);
         // Should not contain the old wrong value on the composition element
         assert!(!result.contains("data-duration=\"100\""), "Should have replaced 100, got: {}", result);
     }
@@ -1083,7 +1198,7 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        // Should still have the correct value (within 0.5 tolerance, so 8.5 is fine)
+        // Should still have the correct value (within 0.1 tolerance, so 8.5 is fine)
         assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
     }
 
@@ -1101,6 +1216,39 @@ window.__hf = { duration: 10, seek: function() {} };
             <body>Content</body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.50\""), "Got: {}", result);
+        assert!(result.contains("data-duration=\"8.500\""), "Got: {}", result);
+    }
+
+    #[test]
+    fn test_ensure_root_duration_ignores_css_selector() {
+        // data-composition-id appears first in CSS, then as a real attribute.
+        // The fix must target the real element, not the CSS selector.
+        let html = r#"<!DOCTYPE html><html>
+<head><style>[data-composition-id="ai-generated"] { background: black; }</style></head>
+<body>
+<div data-composition-id="ai-generated" data-width="1920" data-height="1080" data-duration="480">
+<div class="clip" data-start="0" data-duration="3">Hi</div>
+</div>
+</body></html>"#;
+        let result = ensure_root_duration(html, 116.273);
+        // The real element's data-duration should be corrected
+        assert!(result.contains("data-duration=\"116.273\""), "Got: {}", result);
+        // The wrong 480 value must be gone
+        assert!(!result.contains("data-duration=\"480\""), "Should have replaced 480, got: {}", result);
+        // The CSS selector must remain untouched
+        assert!(result.contains("[data-composition-id=\"ai-generated\"]"), "CSS selector should be intact");
+    }
+
+    #[test]
+    fn test_clamp_overflow_clips() {
+        let html = r#"<html><body>
+<div class="clip" data-start="0" data-duration="50">A</div>
+<div class="clip" data-start="50" data-duration="200">B overflows</div>
+</body></html>"#;
+        // total duration = 100s; clip B (start 50 + dur 200 = 250) must clamp to dur=50
+        let result = clamp_overflow_clips(html, 100.0);
+        assert!(result.contains("data-duration=\"50.000\""), "Got: {}", result);
+        // clip A is within bounds, untouched
+        assert!(result.contains("data-start=\"0\" data-duration=\"50\""), "Got: {}", result);
     }
 }
