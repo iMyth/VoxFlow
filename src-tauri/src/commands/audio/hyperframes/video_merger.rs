@@ -173,19 +173,23 @@ pub async fn merge_videos(
         probes.push(probe);
     }
 
-    // Check if all uniform
+    // Check if all videos share the same codec and resolution
     let first_codec = &probes[0].0;
     let first_resolution = &probes[0].1;
     let is_uniform = probes
         .iter()
         .all(|(c, r)| c == first_codec && r == first_resolution);
 
+    // If resolutions differ, normalize all to 1920x1080 before concat.
+    // This happens when LLM outputs wrong data-width/data-height in some sections.
+    let all_1080p = probes.iter().all(|(_, r)| r == "1920x1080");
+
     on_progress(20.0, "concatenating");
 
     let ffmpeg_bin = find_ffmpeg();
     let output_str = output_path.to_string_lossy().to_string();
 
-    if is_uniform && !sleep_mode {
+    if is_uniform && all_1080p && !sleep_mode {
         // Re-encode audio during concat to avoid sample rate / AAC priming issues.
         // The concat demuxer with `-c copy` on low sample rate AAC (22050Hz) causes
         // ffmpeg to misinterpret time_base, inflating audio duration vs video duration.
@@ -253,7 +257,7 @@ pub async fn merge_videos(
                 Err(AppError::FFmpeg(format!("Failed to execute ffmpeg: {}", e)))
             }
         }
-    } else if is_uniform && sleep_mode {
+    } else if is_uniform && all_1080p && sleep_mode {
         // Format uniform + sleep mode: concat with audio re-encode, then apply sleep processing.
         // Must re-encode audio during concat to avoid 22050Hz AAC time_base issues.
         let temp_path = output_path
@@ -378,9 +382,9 @@ pub async fn merge_videos(
         on_progress(100.0, "finalizing");
         Ok(output_path.to_string_lossy().to_string())
     } else {
-        // Formats are not uniform, need to re-encode
-        // Use concat filter (not demuxer) to handle different formats
-        // This preserves gaps between sections without xfade/acrossfade mixing
+        // Formats are not uniform (different resolution or codec), OR sleep mode with non-uniform.
+        // Use concat filter with per-input scale to normalize all videos to 1920x1080.
+        // This handles LLM rendering bugs that produce wrong resolutions.
         let mut args: Vec<String> = vec!["-y".to_string()];
 
         // Add all input files
@@ -389,25 +393,36 @@ pub async fn merge_videos(
             args.push(sv.file_path.clone());
         }
 
-        // Build concat filter chain
-        // Format: [0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[vout][aout]
+        // Build filter: scale each input to 1920x1080, then concat
         let n = section_videos.len();
         let mut filter_complex = String::new();
 
-        // Add all inputs to concat filter
+        // Scale + format each video and audio stream
         for i in 0..n {
-            filter_complex.push_str(&format!("[{}:v][{}:a]", i, i));
+            // Scale video to 1920x1080, pad if aspect ratio differs, force yuv420p
+            filter_complex.push_str(&format!(
+                "[{i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,\
+                 pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{i}];",
+                i = i
+            ));
+            // Normalize audio to consistent format
+            filter_complex.push_str(&format!(
+                "[{i}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}];",
+                i = i
+            ));
+        }
+
+        // Feed all normalized streams into concat
+        for i in 0..n {
+            filter_complex.push_str(&format!("[v{i}][a{i}]", i = i));
         }
 
         if sleep_mode {
-            // Add concat and audio processing filters
             filter_complex.push_str(&format!(
-                "concat=n={}:v=1:a=1[vtmp][atmp];[atmp]{sleep_filter}[aout]",
+                "concat=n={}:v=1:a=1[vtmp][atmp];[atmp]{}[aout];[vtmp]copy[vout]",
                 n,
-                sleep_filter = build_sleep_mode_audio_filter()
+                build_sleep_mode_audio_filter()
             ));
-            // Note: video is already in [vtmp], we'll map it directly
-            filter_complex.push_str(";[vtmp]copy[vout]");
         } else {
             filter_complex.push_str(&format!("concat=n={}:v=1:a=1[vout][aout]", n));
         }
@@ -428,12 +443,20 @@ pub async fn merge_videos(
         args.push("23".to_string());
         args.push("-c:a".to_string());
         args.push("aac".to_string());
+        args.push("-ar".to_string());
+        args.push("44100".to_string());
         args.push("-b:a".to_string());
         args.push("192k".to_string());
 
         args.push(output_str.clone());
 
         on_progress(80.0, "concatenating");
+
+        info!(
+            "[Video Merger] Non-uniform merge: {} sections, resolutions: {:?}",
+            n,
+            probes.iter().map(|(_, r)| r.as_str()).collect::<Vec<_>>()
+        );
 
         let result = tokio::task::spawn_blocking(move || {
             std::process::Command::new(&ffmpeg_bin)
@@ -454,7 +477,7 @@ pub async fn merge_videos(
                 let _ = std::fs::remove_file(output_path);
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 Err(AppError::FFmpeg(format!(
-                    "ffmpeg merge with transitions failed: {}",
+                    "ffmpeg merge failed: {}",
                     stderr.chars().take(500).collect::<String>()
                 )))
             }
