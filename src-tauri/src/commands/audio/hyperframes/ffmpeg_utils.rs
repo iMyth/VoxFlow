@@ -14,16 +14,21 @@ use crate::core::error::AppError;
 
 /// Build the FFmpeg audio filter chain for sleep mode.
 ///
-/// Sleep mode applies:
-/// - Slight pitch reduction (0.95x)
-/// - Bass warmth boost (+3dB at 150Hz)
-/// - High-frequency rolloff (8kHz lowpass)
-/// - Quieter target loudness (-20 LUFS)
+/// Sleep mode applies tone/volume adjustments WITHOUT changing duration:
+/// - Bass warmth boost (+3dB at 150Hz) — fuller, warmer sound
+/// - High-frequency rolloff (8kHz lowpass) — removes harsh sibilance
+/// - Slight pitch shift down (-0.5 semitones) via rubberband — deeper, calmer voice
+/// - Quieter target loudness (-20 LUFS) — sleep-appropriate volume
+///
+/// CRITICAL: No tempo/speed change is applied. The audio duration must remain
+/// identical to the video duration to maintain sync. The original `asetrate`
+/// approach broke sync (and broke audio entirely for non-22050Hz inputs).
+/// `atempo` would also break sync by changing duration.
 ///
 /// This is a single source of truth for the sleep mode filter chain,
 /// used by section_audio.rs, video_merger.rs, and render.rs.
 pub fn build_sleep_mode_audio_filter() -> &'static str {
-    "asetrate=22050*0.95,aresample=22050,bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7"
+    "bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7"
 }
 
 /// Merge a silent video with an audio file using FFmpeg.
@@ -86,8 +91,10 @@ pub async fn merge_video_with_audio(
         })?;
 
     if !ffmpeg_status.success() {
-        info!("[FFmpeg Utils] ffmpeg merge failed, falling back to silent video");
-        // Fallback: copy silent video to output
+        info!("[FFmpeg Utils] ffmpeg merge failed, falling back to silent video (audio will be missing!)");
+        // Fallback: copy silent video to output — user gets video without audio
+        // This is intentional: a silent video is better than no video at all,
+        // but we log it clearly so it can be diagnosed.
         let silent_path = std::path::Path::new(silent_video_path);
         let output = std::path::Path::new(output_path);
         std::fs::copy(silent_path, output).map_err(|e| {

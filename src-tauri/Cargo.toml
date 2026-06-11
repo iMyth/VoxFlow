@@ -52,3 +52,6 @@ tokio-util = "0.7"
 proptest = "1"
 tempfile = "3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+

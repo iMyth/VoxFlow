@@ -173,6 +173,11 @@ pub async fn generate_all_sections(
                         section_id, error_msg
                     );
 
+                    // Clean up cancellation token to prevent memory leak
+                    if let Ok(mut tokens) = cancel_tokens.0.lock() {
+                        tokens.remove(&section_id);
+                    }
+
                     // Emit failure event so frontend updates status
                     let _ = app.emit(
                         "section-video-failed",

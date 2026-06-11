@@ -50,7 +50,10 @@ pub async fn export_hyperframes(
 ) -> Result<String, AppError> {
     info!(
         "[Hyperframes] export_hyperframes: project={}, include_audio={}, audio_path={:?}, user_prompt={:?}",
-        project_id, include_audio, audio_path, user_prompt.as_deref().map(|s| &s[..s.len().min(50)])
+        project_id, include_audio, audio_path, user_prompt.as_deref().map(|s| {
+            let end = s.char_indices().take_while(|(i, _)| *i < 50).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
+            &s[..end]
+        })
     );
 
     // --- Emit initial progress ---

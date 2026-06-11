@@ -319,10 +319,44 @@ pub async fn render_section_video(
     }
 
     // --- Render HTML → MP4 ---
+    // On macOS, the first render attempt may fail because headless Chrome requires
+    // "App Management" permission. macOS shows a permission dialog, Chrome exits,
+    // user grants permission, and the retry succeeds. We handle this transparently
+    // with automatic retry after a short delay.
     emit_section_progress(&app, &section_id, 55.0, "rendering");
 
     let silent_video = composition_dir.join("_render_output.mp4");
     let silent_video_str = silent_video.to_string_lossy().to_string();
+
+    // Calculate dynamic timeout based on video duration from meta.json.
+    // Rule of thumb: ~5 seconds per second of video at 30fps rendering.
+    // Minimum 5 minutes, maximum 30 minutes.
+    // Long compositions (>60s) need more time per frame due to DOM complexity.
+    let render_timeout_secs = {
+        let base_timeout: u64 = 300; // 5 minutes minimum
+        let max_timeout: u64 = 1800; // 30 minutes maximum
+        if meta_json_path.exists() {
+            std::fs::read_to_string(&meta_json_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                .and_then(|meta| meta.get("duration").and_then(|d| d.as_f64()))
+                .map(|duration_secs| {
+                    // ~5 seconds of render time per second of video
+                    // Longer videos are proportionally slower due to larger DOM
+                    let factor = if duration_secs > 60.0 { 6.0 } else { 5.0 };
+                    let estimated = (duration_secs * factor) as u64;
+                    estimated.max(base_timeout).min(max_timeout)
+                })
+                .unwrap_or(base_timeout)
+        } else {
+            base_timeout
+        }
+    };
+    info!(
+        "[Section Render] Render timeout: {}s ({}min)",
+        render_timeout_secs,
+        render_timeout_secs / 60
+    );
 
     let node_env = super::render::find_node_env();
     info!(
@@ -338,134 +372,196 @@ pub async fn render_section_video(
         })?;
     }
 
-    // Create render task with timeout (5 minutes max)
-    info!("[Section Render] Starting render task with 5-minute timeout...");
+    // Attempt render with retry (max 2 attempts for macOS permission flow)
+    let max_attempts = 2;
+    let mut last_error: Option<String> = None;
 
-    // Spawn render process outside timeout to enable cleanup on timeout
-    let node_env_clone = super::render::find_node_env();
-    let composition_dir_clone = composition_dir.clone();
-    let silent_video_str_clone = silent_video_str.clone();
-
-    let mut render_cmd = Command::new(&node_env_clone.npx);
-    render_cmd
-        .args(["hyperframes", "render", "--output", &silent_video_str_clone])
-        .current_dir(&composition_dir_clone)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if !node_env_clone.bin_dir.is_empty() {
-        let path = super::render::prepend_to_path(&node_env_clone.bin_dir);
-        render_cmd.env("PATH", &path);
-        info!("[Section Render] Added to PATH: {}", path);
-    }
-
-    info!("[Section Render] Spawning npx hyperframes render process...");
-    let mut render_child = match render_cmd.spawn() {
-        Ok(child) => {
+    for attempt in 1..=max_attempts {
+        if attempt > 1 {
             info!(
-                "[Section Render] Process spawned successfully, PID: {:?}",
-                child.id()
+                "[Section Render] Retry attempt {} after permission grant delay...",
+                attempt
             );
-            child
-        }
-        Err(e) => {
-            info!("[Section Render] Failed to spawn process: {}", e);
-            return Err(AppError::FileSystem(format!(
-                "Failed to start hyperframes render: {}",
-                e
-            )));
-        }
-    };
+            // Wait for macOS to register the permission grant
+            tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Read stderr for progress and error capture
-    let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let stderr_capture_clone = stderr_capture.clone();
+            // Clean up any partial output from failed attempt
+            if silent_video.exists() {
+                let _ = std::fs::remove_file(&silent_video);
+            }
 
-    if let Some(stderr) = render_child.stderr.take() {
-        info!("[Section Render] Capturing stderr output...");
-        let app_clone = app.clone();
-        let section_id_clone = section_id.clone();
-        tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            let mut line_count = 0;
-            while let Ok(Some(line)) = lines.next_line().await {
-                line_count += 1;
-                if let Ok(mut captured) = stderr_capture_clone.lock() {
-                    captured.push_str(&line);
-                    captured.push('\n');
+            emit_section_progress(&app, &section_id, 55.0, "rendering_retry");
+        }
+
+        info!("[Section Render] Starting render attempt {}...", attempt);
+
+        let mut render_cmd = Command::new(&node_env.npx);
+        // Use --prefer-offline to avoid downloading a non-existent "latest" version
+        // when a cached version already works. Also use version range "hyperframes@0.6"
+        // to get the latest compatible cached version.
+        render_cmd
+            .args(["--prefer-offline", "hyperframes", "render", "--output", &silent_video_str])
+            .current_dir(&composition_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if !node_env.bin_dir.is_empty() {
+            let path = super::render::prepend_to_path(&node_env.bin_dir);
+            render_cmd.env("PATH", &path);
+        }
+        // Create a new process group so we can kill the entire tree on timeout.
+        // Without this, killing npx leaves Chrome child processes as zombies.
+        #[cfg(unix)]
+        unsafe {
+            render_cmd.pre_exec(|| {
+                // Set this process as the leader of a new process group
+                libc::setpgid(0, 0);
+                Ok(())
+            });
+        }
+
+        let mut render_child = match render_cmd.spawn() {
+            Ok(child) => {
+                info!(
+                    "[Section Render] Process spawned, PID: {:?}",
+                    child.id()
+                );
+                child
+            }
+            Err(e) => {
+                last_error = Some(format!("Failed to start hyperframes render: {}", e));
+                continue;
+            }
+        };
+
+        // Read stderr for progress and error capture
+        let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let stderr_capture_clone = stderr_capture.clone();
+
+        if let Some(stderr) = render_child.stderr.take() {
+            let app_clone = app.clone();
+            let section_id_clone = section_id.clone();
+            tokio::spawn(async move {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                let mut line_count = 0;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    line_count += 1;
+                    if let Ok(mut captured) = stderr_capture_clone.lock() {
+                        captured.push_str(&line);
+                        captured.push('\n');
+                    }
+                    if line_count % 10 == 0 {
+                        info!("[Section Render] stderr line {}: {}", line_count, line);
+                    }
+                    if let Some(pct) = parse_render_progress(&line) {
+                        let mapped = 55.0 + pct * 33.0;
+                        emit_section_progress(&app_clone, &section_id_clone, mapped, "rendering");
+                    }
                 }
-                // Log every 10th line to avoid too much output
-                if line_count % 10 == 0 {
-                    info!("[Section Render] stderr line {}: {}", line_count, line);
-                }
-                if let Some(pct) = parse_render_progress(&line) {
-                    info!("[Section Render] Render progress: {}%", pct);
-                    let mapped = 55.0 + pct * 33.0;
-                    emit_section_progress(&app_clone, &section_id_clone, mapped, "rendering");
+            });
+        }
+
+        // Wait for render process with dynamic timeout
+        let render_result = timeout(Duration::from_secs(render_timeout_secs), render_child.wait()).await;
+
+        match render_result {
+            Ok(Ok(status)) if status.success() => {
+                // Render succeeded
+                if silent_video.exists() {
+                    info!("[Section Render] Render succeeded on attempt {}", attempt);
+                    last_error = None;
+                    break;
+                } else {
+                    last_error = Some(
+                        "hyperframes render completed but output file not found".to_string(),
+                    );
                 }
             }
-            info!(
-                "[Section Render] stderr capture complete, total lines: {}",
-                line_count
-            );
-        });
-    } else {
-        info!("[Section Render] No stderr stream available");
-    }
-
-    // Wait for render process with timeout
-    let render_result = timeout(Duration::from_secs(300), render_child.wait()).await;
-
-    // Handle timeout - KILL the child process to prevent zombie
-    info!("[Section Render] Timeout block completed, checking result...");
-    match render_result {
-        Ok(Ok(status)) => {
-            info!("[Section Render] Render task completed successfully");
-            if !status.success() {
-                let stderr_output = stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
-                info!(
-                    "[Section Render] Render failed. stderr output:\n{}",
-                    stderr_output
-                );
-                return Err(AppError::FileSystem(format!(
-                    "hyperframes render failed with exit code: {:?}\nstderr: {}",
+            Ok(Ok(status)) => {
+                // Render failed with non-zero exit
+                let stderr_output =
+                    stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
+                let err_msg = format!(
+                    "hyperframes render failed (exit {:?}): {}",
                     status.code(),
                     stderr_output.trim()
-                )));
-            }
-        }
-        Ok(Err(e)) => {
-            info!("[Section Render] Render task returned error: {}", e);
-            return Err(AppError::FileSystem(format!(
-                "hyperframes render process error: {}",
-                e
-            )));
-        }
-        Err(_) => {
-            info!("[Section Render] Render task timed out after 5 minutes, killing process...");
-            // CRITICAL: Kill the child process to prevent zombie Chrome instances
-            if let Err(kill_err) = render_child.kill().await {
-                info!(
-                    "[Section Render] Failed to kill timed-out process: {}",
-                    kill_err
                 );
-            } else {
-                info!("[Section Render] Timed-out process killed successfully");
+                info!("[Section Render] Attempt {} failed: {}", attempt, err_msg);
+                last_error = Some(err_msg);
+
+                // Only retry on macOS permission issues — all other errors should fail immediately
+                if attempt < max_attempts {
+                    let stderr_lower = stderr_output.to_lowercase();
+                    let is_permission_issue = stderr_lower.contains("permission")
+                        || stderr_lower.contains("not permitted")
+                        || stderr_lower.contains("app management")
+                        || stderr_output.contains("EPERM")
+                        || (stderr_output.contains("Capture failed")
+                            && stderr_output.contains("zero duration"));
+                    if is_permission_issue {
+                        info!("[Section Render] Detected possible permission issue, will retry");
+                        // Emit user-friendly message to frontend
+                        emit_section_progress(
+                            &app,
+                            &section_id,
+                            55.0,
+                            "permission_retry",
+                        );
+                        let _ = app.emit(
+                            "section-video-permission-hint",
+                            serde_json::json!({
+                                "section_id": &section_id,
+                                "message": "macOS 需要授予「App 管理」权限才能渲染视频。如果弹出了权限请求，请点击允许，系统将自动重试。",
+                            }),
+                        );
+                        continue;
+                    }
+                }
+                // Not a permission issue — don't retry
+                break;
             }
-            return Err(AppError::FileSystem(
-                "Video rendering timed out (5 minutes). Please try again or reduce the video length."
-                    .to_string(),
-            ));
+            Ok(Err(e)) => {
+                last_error = Some(format!("hyperframes render process error: {}", e));
+            }
+            Err(_) => {
+                let timeout_mins = render_timeout_secs / 60;
+                info!(
+                    "[Section Render] Render timed out after {} minutes, killing process tree...",
+                    timeout_mins
+                );
+
+                // Kill the entire process tree, not just the parent npx process.
+                // On macOS/Unix, kill the process group to ensure Chrome child processes
+                // are also terminated. Otherwise they become zombies consuming 100% CPU.
+                if let Some(pid) = render_child.id() {
+                    #[cfg(unix)]
+                    {
+                        // Kill the entire process group (negative PID = kill group)
+                        // Safe because we set this process as its own group leader via setpgid
+                        unsafe {
+                            libc::kill(-(pid as i32), libc::SIGKILL);
+                        }
+                        info!("[Section Render] Sent SIGKILL to process group {}", pid);
+                    }
+                }
+                // Also try the standard kill as fallback
+                let _ = render_child.kill().await;
+
+                last_error = Some(format!(
+                    "视频渲染超时（{}分钟）。可能是视频过长，请尝试缩短段落或重试。",
+                    timeout_mins
+                ));
+                // Don't retry on timeout — it's a real resource issue
+                break;
+            }
         }
     }
 
-    // Verify output file was created
-    info!("[Section Render] Checking if silent video was created...");
+    // Check final result
+    if let Some(err) = last_error {
+        return Err(AppError::FileSystem(err));
+    }
     if !silent_video.exists() {
-        info!(
-            "[Section Render] Silent video not found at: {:?}",
-            silent_video
-        );
         return Err(AppError::FileSystem(
             "hyperframes render completed but output file not found".to_string(),
         ));

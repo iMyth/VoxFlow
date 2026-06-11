@@ -9,6 +9,7 @@ import { extractErrorMessage } from '../../lib/extractErrorMessage';
 import { checkSectionVideoExists, generateSectionVideo, onSectionVideoProgress } from '../../lib/ipc';
 import { useScriptStore } from '../../store/scriptStore';
 import { useSectionVideoStore } from '../../store/sectionVideoStore';
+import { useToastStore } from '../../store/toastStore';
 import { Button } from '../ui/button';
 import { Label } from '../ui/label';
 import { Progress } from '../ui/progress';
@@ -144,6 +145,13 @@ export default function SectionVideoPanel({ section, projectId }: SectionVideoPa
           state: 'failed',
           error: event.payload.error,
         });
+      }
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    // Listen for macOS permission hint (first-time render needs App Management permission)
+    void listen<{ section_id: string; message: string }>('section-video-permission-hint', (event) => {
+      if (event.payload.section_id === section.id) {
+        useToastStore.getState().addToast(event.payload.message, 'info');
       }
     }).then((unlisten) => unlisteners.push(unlisten));
 

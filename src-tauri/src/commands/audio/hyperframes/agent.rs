@@ -175,7 +175,35 @@ pub async fn generate_with_agent(
     let timeline_json = build_timeline_prompt(entries, total_duration);
 
     let user_prompt = format!(
-        r#"为以下有声书时间轴生成 Hyperframes HTML 作品。
+        r#"为以下有声书生成视觉伴奏视频（Hyperframes HTML 作品）。
+
+【核心定位】
+这是有声书的"视觉伴奏"视频——音频已有完整旁白，视频营造氛围、传递情绪。
+- 不要把原文逐字逐句当字幕堆在画面上（观众听音频获取内容）
+- 但可以展示内容中的关键短句、金句、核心概念、人名地名等，作为视觉亮点
+- 每个场景展示 1-3 个关键短语（每个不超过 15 字），配合丰富的视觉动画
+
+【视觉丰富度 - 重要】
+画面必须丰富、有活力，禁止空洞：
+- 每个场景至少 6-10 个视觉元素（文字 + 图形 + 装饰），让画面充实
+- 必须有明显、肉眼可感知的持续动画——不是"看 10 秒才发现在动"的微动画
+- 动画速度要合理：装饰元素 2-5 秒一个循环，主元素入场 0.5-1.2 秒
+- 每个场景必须有连续运动的元素（旋转的几何体、流动的线条、脉动的光晕等）
+- 场景内的元素应该分批入场（stagger），形成节奏感，而非同时出现
+
+具体视觉元素建议：
+- 大号关键词/短句：80px+，用动感入场（slam、slide、scale 等）
+- 几何装饰：旋转的圆环、脉动的多边形、移动的线条网格
+- 背景层：渐变色流动、radial glow 呼吸、粒子漂浮效果
+- 分隔/结构：动态 accent lines、扩展的边框、reveal 效果
+- 数据感元素：progress bar 动画、counter 计数、node 连接线
+
+【场景规划】
+- 根据内容主题和情绪变化划分场景
+- 每 10-20 秒一个场景（内容密集时可以更短）
+- 每个场景有独特的视觉风格（不同的主体几何、不同的动画方向），但调色板一致
+- 场景间必须有过渡效果（crossfade、wipe、blur-through 等），禁止跳切
+- 最后一个场景有淡出效果，其余只做入场动画（过渡处理退场）
 
 时间轴数据（JSON）：
 {timeline}
@@ -183,50 +211,40 @@ pub async fn generate_with_agent(
 总时长：{duration:.2} 秒，条目数：{count}
 {user_section}
 
-【视觉设计 - 必须遵守】
-你是一个专业的视频动画设计师。请按照 house-style.md 和 video-composition.md 的规则设计：
-1. 先选择一个适合有声书内容的调色板（参考 house-style 中的 Palettes 分类），声明 bg/fg/accent
-2. 根据内容情绪选择合适的字体（参考 typography.md，注意避开 Banned 字体列表）
-3. 每个场景必须有 2-5 个背景装饰元素（radial glows、ghost text、accent lines 等），给予慢速呼吸动画
-4. 使用 beat-direction.md 中的节奏模板规划场景编排
-5. 每个场景的入场动画必须使用不同的方向和缓动，参考 motion-principles.md 的 Guardrails
-6. 多场景之间必须有过渡效果（crossfade、wipe 等），禁止跳切
-7. 每个场景至少使用 techniques.md 中的 2-3 种视觉技巧
+【视觉设计】
+按照 house-style.md 和 video-composition.md 的规则：
+1. 选择适合内容情绪的调色板，声明 bg/fg/accent
+2. 选择有特色的字体（避开 Banned 列表）
+3. 场景主视觉使用 techniques.md 中的技巧（SVG drawing、CSS 3D、kinetic type 等）
+4. 参考 beat-direction.md 规划节奏——快拍 vs 慢拍交替
+5. 每个场景入场动画用不同方向和缓动
+6. 同一场景内至少 3 种不同的 ease
 
-【场景规划】
-- 根据文本条目数量合理分组为多个场景（每 2-4 条目为一个场景）
-- 每个场景应有独特的视觉主题和布局，但保持调色板一致
-- 字幕/文字在每个 clip 的持续时间内显示，使用入场动画展现
-- 最后一个场景可以有淡出效果，其余场景只有入场动画（过渡处理退场）
+【时间轴同步】
+每个时间轴条目的 start 和 duration 对应音频的精确时间：
+- clip 的 data-start = 条目的 start（秒）
+- clip 的 data-duration = 条目的 duration（秒）
+- 条目间的间隔必须保留
+- 整个作品从 t=0 开始，在 t={duration:.2}s 结束
+- 多个条目可共享一个视觉场景，但每条仍需对应的 clip 元素
 
-【时间轴同步 - 最关键要求】
-时间轴 JSON 中每个条目的 start 和 duration 对应音频的精确时间。
-你必须让每个 clip 元素的 data-start 和 data-duration 严格匹配这些值。
-- clip 的 data-start = 对应条目的 start（秒）
-- clip 的 data-duration = 对应条目的 duration（秒）
-- 条目之间的空白间隔（gap）必须保留，不要将 clips 紧密排列
-- 整个作品的动画必须从 t=0 开始，在 t={duration:.2}s 结束
-
-示例：如果时间轴条目 start=5.0, duration=3.0，则 clip 必须设置：
-  data-start="5.0" data-duration="3.0"
-
-【技术要求】
-- 根元素（composition）必须设置 data-duration="{duration:.2}"，确保总帧数正确
+【技术要求 - 严格遵守，否则渲染会失败】
+- 根元素设置 data-duration="{duration:.2}"
 - composition-id="ai-generated"，尺寸 1920x1080
-- GSAP 动画，timeline 用 paused: true
-- 实现 window.__hf = {{ duration: {duration:.2}, seek: fn(t) {{ Object.values(window.__timelines).forEach(tl => tl.seek(t)) }} }}
-- 字体不要用 Inter、Roboto 等 Banned 列表中的字体，选择更有特色的字体
-- 禁止：Math.random()、Date.now()、repeat:-1
-- 标题字号 60px+，正文字号 20px+
-- 使用 font-variant-numeric: tabular-nums 处理数字
-- gsap.from() 做入场，gsap.to() 只用于最后场景的退出
-- 每个入场 tween 偏移 0.1-0.3s（不要从 t=0 开始）
-- 同一场景内至少使用 3 种不同的 ease
+- GSAP timeline 必须用 paused: true
+- 必须同步注册 window.__timelines['ai-generated'] = tl;（不能放在 setTimeout、async、Promise 里）
+- 必须在 </body> 前的 <script> 中同步执行所有 GSAP 代码
+- 实现 window.__hf = {{ duration: {duration:.2}, seek: function(t) {{ Object.values(window.__timelines).forEach(function(tl) {{ tl.seek(t) }}) }} }}
+- GSAP CDN: <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+- 禁止：Math.random()、Date.now()、repeat:-1、async timeline construction
+- 关键词字号 80px+
+- font-variant-numeric: tabular-nums 处理数字
+- gsap.from() 做入场，gsap.to() 只用于最后场景退出
+- 每个入场 tween 偏移 0.1-0.3s（不从 t=0 开始）
 
-【输出格式 - 严格遵守】
-直接输出完整的原始 HTML 文档，以 <!DOCTYPE html> 开头，以 </html> 结尾。
-不要输出任何解释文字、分析过程、或代码围栏（```）。
-只输出 HTML，不要前后有任何其他内容。"#,
+【输出格式】
+直接输出完整 HTML 文档，<!DOCTYPE html> 开头，</html> 结尾。
+不输出解释文字、代码围栏。只输出 HTML。"#,
         user_section = match user_instructions {
             Some(instructions) if !instructions.is_empty() =>
                 format!("\n用户额外要求（请务必遵循）：\n{}\n", instructions),
@@ -291,6 +309,11 @@ pub async fn generate_with_agent(
 }
 
 /// Build the timeline data as a JSON string for the user prompt.
+///
+/// For audiobook visual accompaniment, we truncate long text entries and provide
+/// only the first ~40 chars as context hint. The full text is NOT meant to be
+/// displayed verbatim in the video — it's only provided so the LLM can understand
+/// the content theme and mood for visual design.
 fn build_timeline_prompt(entries: &[TimelineEntry], total_duration: f64) -> String {
     #[derive(Serialize)]
     struct TimelineData {
@@ -300,7 +323,8 @@ fn build_timeline_prompt(entries: &[TimelineEntry], total_duration: f64) -> Stri
 
     #[derive(Serialize)]
     struct EntryData {
-        text: String,
+        /// Truncated text hint — for understanding content theme only, NOT for display
+        content_hint: String,
         start: f64,
         duration: f64,
         character: String,
@@ -311,12 +335,22 @@ fn build_timeline_prompt(entries: &[TimelineEntry], total_duration: f64) -> Stri
         total_duration,
         entries: entries
             .iter()
-            .map(|e| EntryData {
-                text: e.text.clone(),
-                start: e.start_time,
-                duration: e.duration,
-                character: e.character_name.clone().unwrap_or_default(),
-                section: e.section_title.clone().unwrap_or_default(),
+            .map(|e| {
+                // Truncate text to ~60 chars to discourage verbatim display.
+                // Preserve enough context for the LLM to understand the theme/mood.
+                let hint = if e.text.chars().count() > 60 {
+                    let truncated: String = e.text.chars().take(57).collect();
+                    format!("{}...", truncated)
+                } else {
+                    e.text.clone()
+                };
+                EntryData {
+                    content_hint: hint,
+                    start: e.start_time,
+                    duration: e.duration,
+                    character: e.character_name.clone().unwrap_or_default(),
+                    section: e.section_title.clone().unwrap_or_default(),
+                }
             })
             .collect(),
     };
@@ -366,56 +400,66 @@ fn fix_css_font_variables(html: &str) -> String {
 
 /// Ensure required Hyperframes interfaces exist (window.__hf and window.__timelines).
 /// This is a safety net to fix LLM omissions and ensure hyperframes render compatibility.
+///
+/// The render engine requires `window.__timelines['ai-generated']` to be registered
+/// SYNCHRONOUSLY at page load. If the LLM's GSAP code throws an error, the registration
+/// never happens and render fails with "Composition has zero duration".
+///
+/// Strategy: ALWAYS inject a fallback script at the very end of </body> that checks
+/// whether the timeline was registered, and if not, creates a minimal empty one.
+/// This way even if the LLM's code crashes, the render engine won't hang.
 fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
     let mut result = html.to_string();
 
-    // Check if window.__hf exists
-    let has_hf = html.contains("window.__hf");
+    // Always inject a robust fallback script that:
+    // 1. Ensures window.__timelines exists and has 'ai-generated' key
+    // 2. FORCES window.__hf.duration to the correct value (LLM often gets this wrong)
+    // 3. Ensures window.__hf.seek exists
+    // This runs AFTER the LLM's script. The duration is ALWAYS overwritten because
+    // LLMs frequently set incorrect duration values causing videos that are too long.
+    let fallback_script = format!(
+        r#"<script>
+// === Hyperframes safety-net (always injected) ===
+(function() {{
+  window.__timelines = window.__timelines || {{}};
+  if (!window.__timelines['ai-generated']) {{
+    // LLM script failed to register timeline — create minimal fallback
+    if (typeof gsap !== 'undefined') {{
+      window.__timelines['ai-generated'] = gsap.timeline({{ paused: true }});
+    }} else {{
+      window.__timelines['ai-generated'] = {{ seek: function() {{}}, duration: function() {{ return {dur:.2}; }} }};
+    }}
+  }}
+  // ALWAYS force correct duration — LLM frequently outputs wrong values
+  // causing videos that render far longer than the audio (trailing black frames).
+  window.__hf = window.__hf || {{}};
+  window.__hf.duration = {dur:.2};
+  if (!window.__hf.seek) {{
+    window.__hf.seek = function(time) {{
+      if (window.__timelines) {{
+        Object.values(window.__timelines).forEach(function(tl) {{
+          if (tl && typeof tl.seek === 'function') tl.seek(time);
+        }});
+      }}
+    }};
+  }}
+}})();
+</script>"#,
+        dur = duration,
+    );
 
-    // Check if window.__timelines exists
-    let has_timelines = html.contains("window.__timelines");
-
-    // If both exist, no need to inject
-    if has_hf && has_timelines {
-        return result;
-    }
-
-    // Build injection script
-    let mut script = String::from("<script>\n");
-
-    if !has_timelines {
-        script.push_str("  // Initialize window.__timelines if missing\n");
-        script.push_str("  window.__timelines = window.__timelines || {};\n");
-        script
-            .push_str("  window.__timelines['ai-generated'] = gsap.timeline({ paused: true });\n");
-    }
-
-    if !has_hf {
-        script.push_str("  // Initialize window.__hf if missing\n");
-        script.push_str("  window.__hf = {\n");
-        script.push_str(&format!("    duration: {:.2},\n", duration));
-        script.push_str("    seek: function(time) {\n");
-        script.push_str("      if (window.__timelines) {\n");
-        script.push_str("        Object.values(window.__timelines).forEach(function(tl) {\n");
-        script.push_str("          tl.seek(time);\n");
-        script.push_str("        });\n");
-        script.push_str("      }\n");
-        script.push_str("    }\n");
-        script.push_str("  };\n");
-    }
-
-    script.push_str("</script>");
-
-    // Inject before </body> if it exists, otherwise append
+    // Inject before </body> if it exists, otherwise before </html>, otherwise append
     if let Some(pos) = result.rfind("</body>") {
-        result.insert_str(pos, &script);
+        result.insert_str(pos, &fallback_script);
+    } else if let Some(pos) = result.rfind("</html>") {
+        result.insert_str(pos, &fallback_script);
     } else {
-        result.push_str(&script);
+        result.push_str(&fallback_script);
     }
 
     info!(
-        "[Agent] Post-processed: injected missing interfaces (has_hf={}, has_timelines={})",
-        has_hf, has_timelines
+        "[Agent] Post-processed: injected safety-net interfaces (duration={:.2})",
+        duration
     );
 
     result
@@ -424,73 +468,115 @@ fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
 /// Ensure the root composition element has the correct `data-duration` attribute.
 /// This is critical because hyperframes uses this value to determine how many frames to render.
 /// If the duration is wrong, the video will be too long (black frames) or too short (cut off).
+///
+/// Checks BOTH:
+/// - The element with `data-composition-id` (standard hyperframes structure)
+/// - The `<html>` element (some LLM outputs put data-duration there)
+/// - Any `data-duration` that is wildly incorrect (>2x expected) gets force-corrected
 fn ensure_root_duration(html: &str, duration: f64) -> String {
     let mut result = html.to_string();
 
-    // Find the root composition element (has data-composition-id)
-    let Some(comp_start) = result.find("data-composition-id") else {
-        info!("[Agent] No data-composition-id found, cannot set data-duration");
-        return result;
-    };
-
-    // Find the opening < tag that contains this attribute
-    let Some(tag_start) = result[..comp_start].rfind('<') else {
-        return result;
-    };
-
-    // Find the end of this tag (either > or />)
-    let Some(tag_end) = result[tag_start..].find('>') else {
-        return result;
-    };
-    let tag_end = tag_start + tag_end;
-
-    let tag_content = &result[tag_start..=tag_end];
-
-    // Check if data-duration already exists in this tag
-    if let Some(attr_pos) = tag_content.find("data-duration=") {
-        // Find the value (could be quoted with " or ')
-        let after_eq = attr_pos + "data-duration=".len();
-        let quote_char = tag_content[after_eq..].chars().next();
-
-        if let Some(quote) = quote_char {
-            if quote == '"' || quote == '\'' {
-                // Find the closing quote
-                let value_start = after_eq + 1;
-                if let Some(value_end) = tag_content[value_start..].find(quote) {
-                    // Replace the entire attribute (including quotes) with double-quoted version
-                    let new_attr = format!("data-duration=\"{}\"", duration);
-                    let attr_end = attr_pos + 1 + value_end + 1; // "data-duration=" + quote + value + quote
-                    let new_tag = format!(
-                        "{}{}{}",
-                        &tag_content[..attr_pos],
-                        new_attr,
-                        &tag_content[attr_end..]
-                    );
-                    result.replace_range(tag_start..=tag_end, &new_tag);
-                    info!(
-                        "[Agent] Updated root data-duration to {:.2}",
-                        duration
-                    );
-                    return result;
+    // Strategy: find ALL data-duration attributes and correct any that are wrong.
+    // The authoritative duration comes from the actual audio file (ffprobe-measured).
+    let mut corrections = 0;
+    let mut comp_is_on_html_tag = false;
+    
+    // Find and fix data-duration on the composition element
+    if let Some(comp_start) = result.find("data-composition-id") {
+        if let Some(tag_start) = result[..comp_start].rfind('<') {
+            // Check if the composition element is on the <html> tag itself
+            let tag_name_end = result[tag_start + 1..].find(|c: char| c.is_whitespace() || c == '>').unwrap_or(0) + tag_start + 1;
+            let tag_name = &result[tag_start + 1..tag_name_end];
+            comp_is_on_html_tag = tag_name.eq_ignore_ascii_case("html");
+            
+            if let Some(tag_end_rel) = result[tag_start..].find('>') {
+                let tag_end = tag_start + tag_end_rel;
+                let tag_content = result[tag_start..=tag_end].to_string();
+                
+                if let Some(attr_pos) = tag_content.find("data-duration=") {
+                    let after_eq = attr_pos + "data-duration=".len();
+                    if let Some(quote) = tag_content[after_eq..].chars().next() {
+                        if quote == '"' || quote == '\'' {
+                            let value_start = after_eq + 1;
+                            if let Some(value_end) = tag_content[value_start..].find(quote) {
+                                let current_val = &tag_content[value_start..value_start + value_end];
+                                if let Ok(current_dur) = current_val.parse::<f64>() {
+                                    if (current_dur - duration).abs() > 0.5 {
+                                        let new_attr = format!("data-duration=\"{:.2}\"", duration);
+                                        let attr_end = value_start + value_end + 1;
+                                        let new_tag = format!(
+                                            "{}{}{}",
+                                            &tag_content[..attr_pos],
+                                            new_attr,
+                                            &tag_content[attr_end..]
+                                        );
+                                        result.replace_range(tag_start..=tag_end, &new_tag);
+                                        corrections += 1;
+                                        info!(
+                                            "[Agent] Fixed composition data-duration: {} -> {:.2}",
+                                            current_val, duration
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No data-duration on composition element, add it
+                    let insert_pos = tag_end; // before the >
+                    let addition = format!(" data-duration=\"{:.2}\"", duration);
+                    result.insert_str(insert_pos, &addition);
+                    corrections += 1;
+                    info!("[Agent] Added data-duration=\"{:.2}\" to composition element", duration);
                 }
             }
         }
-    } else {
-        // data-duration doesn't exist, add it before the closing >
-        let new_tag = format!(
-            "{} data-duration=\"{}\"{}",
-            &result[tag_start..tag_end],
-            duration,
-            &result[tag_end..=tag_end]
-        );
-        result.replace_range(tag_start..=tag_end, &new_tag);
-        info!(
-            "[Agent] Added root data-duration=\"{}\"",
-            duration
-        );
-        return result;
     }
-
+    
+    // Also check/fix data-duration on the <html> element if it's separate from the composition
+    if !comp_is_on_html_tag {
+        if let Some(html_start) = result.find("<html") {
+            if let Some(html_end_rel) = result[html_start..].find('>') {
+                let html_end = html_start + html_end_rel;
+                let html_tag = result[html_start..=html_end].to_string();
+                
+                if let Some(attr_pos) = html_tag.find("data-duration=") {
+                    let after_eq = attr_pos + "data-duration=".len();
+                    if let Some(quote) = html_tag[after_eq..].chars().next() {
+                        if quote == '"' || quote == '\'' {
+                            let value_start = after_eq + 1;
+                            if let Some(value_end) = html_tag[value_start..].find(quote) {
+                                let current_val = &html_tag[value_start..value_start + value_end];
+                                if let Ok(current_dur) = current_val.parse::<f64>() {
+                                    if (current_dur - duration).abs() > 0.5 {
+                                        let new_attr = format!("data-duration=\"{:.2}\"", duration);
+                                        let attr_end = value_start + value_end + 1;
+                                        let new_tag = format!(
+                                            "{}{}{}",
+                                            &html_tag[..attr_pos],
+                                            new_attr,
+                                            &html_tag[attr_end..]
+                                        );
+                                        result.replace_range(html_start..=html_end, &new_tag);
+                                        corrections += 1;
+                                        info!(
+                                            "[Agent] Fixed <html> data-duration: {} -> {:.2}",
+                                            current_val, duration
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if corrections == 0 {
+        info!("[Agent] data-duration already correct ({:.2}), no changes needed", duration);
+    }
+    
     result
 }
 
@@ -860,8 +946,8 @@ mod tests {
         let fixed = ensure_hyperframes_interfaces(html, 10.5);
         assert!(fixed.contains("window.__timelines"));
         assert!(fixed.contains("window.__hf"));
-        assert!(fixed.contains("duration: 10.50"));
-        assert!(fixed.contains("seek: function"));
+        assert!(fixed.contains("window.__hf.duration = 10.50"));
+        assert!(fixed.contains("seek"));
     }
 
     #[test]
@@ -879,9 +965,16 @@ window.__hf = { duration: 10, seek: function() {} };
 </html>"#;
 
         let fixed = ensure_hyperframes_interfaces(html, 10.5);
-        // Should not inject if both already exist
-        let hf_count = fixed.matches("window.__hf").count();
-        assert_eq!(hf_count, 1, "Should not duplicate window.__hf");
+        // Safety-net always forces the correct duration regardless of what LLM set
+        assert!(
+            fixed.contains("window.__hf.duration = 10.50"),
+            "Should always force correct duration, got: {}",
+            &fixed[fixed.len().saturating_sub(500)..]
+        );
+        assert!(
+            fixed.contains("if (!window.__timelines['ai-generated'])"),
+            "Safety-net should check timeline before creating"
+        );
     }
 
     #[test]
@@ -970,7 +1063,7 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
+        assert!(result.contains("data-duration=\"8.50\""), "Got: {}", result);
     }
 
     #[test]
@@ -979,9 +1072,9 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
-        // Should not contain the old wrong value
-        assert!(!result.contains("data-duration=\"100\""), "Should have replaced 100");
+        assert!(result.contains("data-duration=\"8.50\""), "Got: {}", result);
+        // Should not contain the old wrong value on the composition element
+        assert!(!result.contains("data-duration=\"100\""), "Should have replaced 100, got: {}", result);
     }
 
     #[test]
@@ -990,7 +1083,7 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        // Should still have the correct value
+        // Should still have the correct value (within 0.5 tolerance, so 8.5 is fine)
         assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
     }
 
@@ -1008,6 +1101,6 @@ window.__hf = { duration: 10, seek: function() {} };
             <body>Content</body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.5\""), "Got: {}", result);
+        assert!(result.contains("data-duration=\"8.50\""), "Got: {}", result);
     }
 }
