@@ -735,7 +735,7 @@ fn ensure_clip_timing(html: &str, entries: &[TimelineEntry]) -> String {
     }
 
     // Sort by clip_index descending so we can replace without invalidating positions
-    match_pairs.sort_by(|a, b| b.0.cmp(&a.0));
+    match_pairs.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     // Apply corrections
     for (clip_idx, entry_idx) in &match_pairs {
