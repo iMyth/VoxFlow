@@ -1,6 +1,6 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
-import { AlertTriangle, CheckCircle, Loader2, Sparkles, ExternalLink, Folder } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Loader2, Sparkles, ExternalLink, Folder, Wand2 } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -12,10 +12,6 @@ import { Alert, AlertTitle, AlertDescription } from '../../ui/alert';
 import { Button } from '../../ui/button';
 import { Label } from '../../ui/label';
 import { Progress } from '../../ui/progress';
-import { Tabs, TabsList, TabsTrigger } from '../../ui/tabs';
-
-type HyperframesTemplate = 'minimal-subtitle' | 'dialogue-cards' | 'chapter-sections';
-type HyperframesMode = 'template' | 'ai';
 
 interface HyperframesExportProps {
   lastExportedAudioPath: string | null;
@@ -25,8 +21,6 @@ export default function HyperframesExport({ lastExportedAudioPath }: Hyperframes
   const { t } = useTranslation();
   const currentProject = useProjectStore((s) => s.currentProject);
 
-  const [mode, setMode] = useState<HyperframesMode>('template');
-  const [template, setTemplate] = useState<HyperframesTemplate>('minimal-subtitle');
   const [userPrompt, setUserPrompt] = useState('');
 
   // Export state
@@ -71,11 +65,9 @@ export default function HyperframesExport({ lastExportedAudioPath }: Hyperframes
       await ipc.exportHyperframes({
         project_id: currentProject.project.id,
         output_dir: dir,
-        template,
         include_audio: !!lastExportedAudioPath,
         audio_path: lastExportedAudioPath,
-        use_ai: mode === 'ai',
-        user_prompt: mode === 'ai' && userPrompt.trim() ? userPrompt.trim() : null,
+        user_prompt: userPrompt.trim() || null,
       });
       setOutputDir(dir);
       unlisten();
@@ -111,91 +103,22 @@ export default function HyperframesExport({ lastExportedAudioPath }: Hyperframes
 
   return (
     <>
-      {/* Mode toggle */}
-      <div className="space-y-1.5">
+      {/* User prompt */}
+      <div className="space-y-2">
         <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          {t('export.hyperframesMode')}
+          <Wand2 className="h-3.5 w-3.5 inline mr-1" />
+          {t('export.hyperframesUserPromptLabel')}
         </Label>
-        <Tabs
-          value={mode}
-          onValueChange={(v) => {
-            setMode(v as HyperframesMode);
+        <textarea
+          className="w-full min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+          placeholder={t('export.hyperframesUserPromptPlaceholder')}
+          value={userPrompt}
+          onChange={(e) => {
+            setUserPrompt(e.target.value);
           }}
-        >
-          <TabsList className="w-full">
-            <TabsTrigger value="template" className="flex-1">
-              {t('export.hyperframesModeTemplate')}
-            </TabsTrigger>
-            <TabsTrigger value="ai" className="flex-1">
-              <Sparkles className="h-3.5 w-3.5 mr-1" />
-              {t('export.hyperframesModeAi')}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        />
+        <p className="text-xs text-muted-foreground">{t('export.hyperframesAiHint')}</p>
       </div>
-
-      {/* Template picker */}
-      {mode === 'template' && (
-        <div className="space-y-1.5">
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            {t('export.hyperframesSelectTemplate')}
-          </Label>
-          <div className="grid gap-2">
-            {[
-              {
-                id: 'minimal-subtitle' as const,
-                name: t('export.hyperframesTemplateMinimalSubtitle'),
-                desc: t('export.hyperframesTemplateMinimalSubtitleDesc'),
-              },
-              {
-                id: 'dialogue-cards' as const,
-                name: t('export.hyperframesTemplateDialogueCards'),
-                desc: t('export.hyperframesTemplateDialogueCardsDesc'),
-              },
-              {
-                id: 'chapter-sections' as const,
-                name: t('export.hyperframesTemplateChapterSections'),
-                desc: t('export.hyperframesTemplateChapterSectionsDesc'),
-              },
-            ].map((tmpl) => (
-              <button
-                key={tmpl.id}
-                type="button"
-                className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${template === tmpl.id ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50 hover:bg-muted/50'}`}
-                onClick={() => {
-                  setTemplate(tmpl.id);
-                }}
-              >
-                <div
-                  className={`mt-0.5 h-3 w-3 rounded-full border-2 shrink-0 ${template === tmpl.id ? 'border-primary bg-primary' : 'border-muted-foreground/40'}`}
-                />
-                <div>
-                  <div className="text-sm font-medium">{tmpl.name}</div>
-                  <div className="text-xs text-muted-foreground">{tmpl.desc}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* AI mode prompt */}
-      {mode === 'ai' && (
-        <div className="space-y-2">
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            {t('export.hyperframesUserPromptLabel')}
-          </Label>
-          <textarea
-            className="w-full min-h-[80px] rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-            placeholder={t('export.hyperframesUserPromptPlaceholder')}
-            value={userPrompt}
-            onChange={(e) => {
-              setUserPrompt(e.target.value);
-            }}
-          />
-          <p className="text-xs text-muted-foreground">{t('export.hyperframesAiHint')}</p>
-        </div>
-      )}
 
       {/* Progress */}
       {exporting && progress && (

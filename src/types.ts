@@ -2,6 +2,7 @@ export interface Project {
   id: string;
   name: string;
   outline: string;
+  global_video_style: string;
   created_at: string;
   updated_at: string;
 }
@@ -100,4 +101,31 @@ export interface CharacterInput {
   tts_model: string;
   speed: number;
   pitch: number;
+}
+
+// Section video generation types
+
+export interface SectionStyleConfig {
+  mode: 'agent';
+  user_prompt?: string;
+  useGlobalStyle?: boolean;
+  customStyle?: string;
+}
+
+export type SectionStatus =
+  | { state: 'not_started' }
+  | { state: 'generating'; percent: number; stage: string }
+  | { state: 'completed'; duration_ms: number; file_size_bytes: number }
+  | { state: 'failed'; error: string };
+
+export interface SectionVideoResult {
+  section_id: string;
+  video_path: string;
+  duration_ms: number;
+  file_size_bytes: number;
+}
+
+export interface BatchGenerationResult {
+  completed: string[];
+  failed: [string, string][];
 }

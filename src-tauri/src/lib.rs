@@ -7,7 +7,8 @@ use std::sync::Mutex;
 
 use tauri::Manager;
 
-use crate::core::cancel_token::{CancellationToken, VideoCancelToken};
+use crate::commands::audio::hyperframes::batch_video::SectionCancelTokens;
+use crate::core::cancel_token::CancellationToken;
 use crate::core::db::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -47,7 +48,7 @@ pub fn run() {
             app.manage(Mutex::new(db));
             app.manage(commands::audio::AudioPlayer::new());
             app.manage(CancellationToken::default());
-            app.manage(VideoCancelToken::default());
+            app.manage(SectionCancelTokens::default());
 
             Ok(())
         })
@@ -58,6 +59,7 @@ pub fn run() {
             commands::load_project,
             commands::delete_project,
             commands::save_outline,
+            commands::save_global_video_style,
             commands::export_script_text,
             commands::create_character,
             commands::update_character,
@@ -83,8 +85,6 @@ pub fn run() {
             commands::clear_tts_fragments,
             commands::delete_audio_by_line,
             commands::export_audio_mix,
-            commands::export_video,
-            commands::cancel_video_export,
             commands::import_bgm,
             commands::play_audio,
             commands::stop_audio,
@@ -105,6 +105,11 @@ pub fn run() {
             commands::install_update,
             commands::audio::hyperframes::export_hyperframes,
             commands::audio::hyperframes::render::render_hyperframes_video,
+            commands::audio::hyperframes::section_video::generate_section_video,
+            commands::audio::hyperframes::section_video::check_section_video_exists,
+            commands::audio::hyperframes::batch_video::generate_all_sections,
+            commands::audio::hyperframes::batch_video::cancel_section_generation,
+            commands::audio::hyperframes::video_merger::merge_section_videos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

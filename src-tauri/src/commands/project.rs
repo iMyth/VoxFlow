@@ -19,6 +19,7 @@ pub fn create_project(
         id: id.clone(),
         name,
         outline: String::new(),
+        global_video_style: String::new(),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -103,6 +104,16 @@ pub fn save_outline(
 ) -> Result<(), AppError> {
     let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
     db.save_project_outline(&project_id, &outline)
+}
+
+#[tauri::command]
+pub fn save_global_video_style(
+    db: tauri::State<'_, Mutex<Database>>,
+    project_id: String,
+    style: String,
+) -> Result<(), AppError> {
+    let db = db.lock().map_err(|e| AppError::Database(e.to_string()))?;
+    db.save_global_video_style(&project_id, &style)
 }
 
 #[tauri::command]

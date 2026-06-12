@@ -175,6 +175,11 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
             "",
             &[("audio_fragments", "source", "TEXT NOT NULL DEFAULT 'tts'")],
         ),
+        (
+            7,
+            "",
+            &[("projects", "global_video_style", "TEXT NOT NULL DEFAULT ''")],
+        ),
     ];
 
     for (version, extra_sql, columns) in alter_migrations {

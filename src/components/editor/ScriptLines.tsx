@@ -1,17 +1,22 @@
-import { Plus, Undo2, Redo2, Wand2, X, Volume2, RefreshCw, Save, Sparkles } from 'lucide-react';
+import { Plus, Undo2, Redo2, Wand2, X, Volume2, RefreshCw, Save, Sparkles, Video } from 'lucide-react';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { GlobalStyleConfig } from './GlobalStyleConfig';
 import ModeSelector from './ModeSelector';
 import ScriptLineComponent from './ScriptLine';
 import SectionGroup from './SectionGroup';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
+import { generateAllSections } from '../../lib/ipc';
+import { useProjectStore } from '../../store/projectStore';
 import { useScriptStore } from '../../store/scriptStore';
+import { useSectionVideoStore } from '../../store/sectionVideoStore';
+import { useToastStore } from '../../store/toastStore';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Progress } from '../ui/progress';
 
-import type { ScriptLine, ScriptSection } from '../../types';
+import type { ScriptLine, ScriptSection, SectionStyleConfig } from '../../types';
 
 interface ScriptLinesProps {
   lines: ScriptLine[];
@@ -30,6 +35,7 @@ interface ScriptLinesProps {
   onSave?: () => void;
   onGenerateAllTts?: () => void;
   onRegenerateAllTts?: () => void;
+  projectId: string;
 }
 
 export default function ScriptLines({
@@ -49,9 +55,14 @@ export default function ScriptLines({
   onSave,
   onGenerateAllTts,
   onRegenerateAllTts,
+  projectId,
 }: ScriptLinesProps) {
   const { t } = useTranslation();
+  const currentProject = useProjectStore((s) => s.currentProject);
+  const globalVideoStyle = useScriptStore((s) => s.globalVideoStyle);
   const { addLine, addSection, setAllInstructions, reorderLines } = useScriptStore();
+  const { configs, audioReady, setStatus, setBatchState, setVideoReady, batchInProgress } = useSectionVideoStore();
+  const addToast = useToastStore((s) => s.addToast);
   const [batchInstructionsOpen, setBatchInstructionsOpen] = useState(false);
   const [batchInstructionsValue, setBatchInstructionsValue] = useState('');
   const [outlineBtnBouncing, setOutlineBtnBouncing] = useState(false);
@@ -91,6 +102,74 @@ export default function ScriptLines({
     } else if (e.key === 'Escape') {
       setBatchInstructionsOpen(false);
       setBatchInstructionsValue('');
+    }
+  };
+
+  const handleGenerateAllVideos = async () => {
+    if (!currentProject || batchInProgress) return;
+
+    // Find sections with audio ready
+    const sectionsToGenerate = sortedSections.filter((section) => audioReady[section.id]);
+
+    if (sectionsToGenerate.length === 0) {
+      addToast(t('editor.batchVideoNoReady'), 'error');
+      return;
+    }
+
+    // Prepare configs for each section
+    const sectionConfigs: [string, SectionStyleConfig][] = sectionsToGenerate.map((section) => {
+      const existingConfig = configs[section.id];
+      const effectivePrompt =
+        existingConfig?.useGlobalStyle === false
+          ? (existingConfig.customStyle ?? '')
+          : (existingConfig?.user_prompt ?? globalVideoStyle ?? '');
+
+      return [
+        section.id,
+        {
+          mode: 'agent',
+          user_prompt: effectivePrompt,
+          useGlobalStyle: existingConfig?.useGlobalStyle ?? true,
+          customStyle: existingConfig?.customStyle,
+        },
+      ];
+    });
+
+    setBatchState({
+      batchInProgress: true,
+      batchCompleted: 0,
+      batchFailed: 0,
+      batchTotal: sectionConfigs.length,
+    });
+
+    // Set all sections to generating
+    for (const [sectionId] of sectionConfigs) {
+      setStatus(sectionId, { state: 'generating', percent: 0, stage: 'queued' });
+    }
+
+    try {
+      const result = await generateAllSections(currentProject.project.id, sectionConfigs);
+
+      setBatchState({
+        batchInProgress: false,
+        batchCompleted: result.completed.length,
+        batchFailed: result.failed.length,
+      });
+
+      // Update videoReady for completed sections
+      for (const sectionId of result.completed) {
+        setVideoReady(sectionId, true);
+      }
+
+      if (result.failed.length > 0) {
+        addToast(t('editor.batchVideoPartial', { failed: result.failed.length }), 'error');
+      } else {
+        addToast(t('editor.batchVideoSuccess', { count: result.completed.length }), 'success');
+      }
+    } catch (error) {
+      setBatchState({ batchInProgress: false });
+      addToast(t('editor.batchVideoFailed'), 'error');
+      console.error('Batch video generation failed:', error);
     }
   };
 
@@ -258,6 +337,41 @@ export default function ScriptLines({
           )}
         </div>
       )}
+
+      {/* Video batch actions */}
+      {sortedSections.length > 0 && (
+        <div className="flex items-center gap-2 mt-2.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-3 text-xs gap-1.5 border-purple-200 dark:border-purple-800 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+            onClick={() => void handleGenerateAllVideos()}
+            disabled={batchInProgress}
+          >
+            <Video className="h-3.5 w-3.5" />
+            {batchInProgress
+              ? t('editor.batchVideoGenerating', {
+                  current: useSectionVideoStore.getState().batchCompleted + useSectionVideoStore.getState().batchFailed,
+                  total: useSectionVideoStore.getState().batchTotal,
+                })
+              : t('editor.generateAllVideos', { count: sortedSections.filter((s) => audioReady[s.id]).length })}
+          </Button>
+          {batchInProgress && (
+            <div className="flex-1 min-w-[120px] space-y-1">
+              <Progress
+                value={
+                  useSectionVideoStore.getState().batchTotal > 0
+                    ? ((useSectionVideoStore.getState().batchCompleted + useSectionVideoStore.getState().batchFailed) /
+                        useSectionVideoStore.getState().batchTotal) *
+                      100
+                    : 0
+                }
+                className="h-1.5"
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -267,6 +381,7 @@ export default function ScriptLines({
       <div className="relative">
         {Toolbar}
         <div className="space-y-6">
+          <GlobalStyleConfig />
           {sortedSections.map((section, index) => (
             <SectionGroup
               key={section.id}
@@ -277,6 +392,7 @@ export default function ScriptLines({
               onAddLine={() => {
                 addLine(-1, section.id);
               }}
+              projectId={projectId}
             />
           ))}
           {unassignedLines.length > 0 && (
@@ -319,15 +435,24 @@ export default function ScriptLines({
             </div>
             <p className="text-sm text-muted-foreground max-w-xs">{emptyHint}</p>
             {workflow === 'manual' && (
-              <Button
-                variant="outline"
-                className="mt-4 border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
-                onClick={() => {
-                  addLine(-1);
-                }}
-              >
-                <Plus className="h-4 w-4" /> {t('editor.addLine')}
-              </Button>
+              <div className="flex gap-2 mt-4">
+                <Button
+                  variant="outline"
+                  className="border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+                  onClick={() => {
+                    addLine(-1);
+                  }}
+                >
+                  <Plus className="h-4 w-4" /> {t('editor.addLine')}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+                  onClick={addSection}
+                >
+                  <Plus className="h-4 w-4" /> {t('editor.addSection')}
+                </Button>
+              </div>
             )}
           </div>
         )}
@@ -344,15 +469,24 @@ export default function ScriptLines({
           />
         ))}
         {lines.length > 0 && (
-          <Button
-            variant="outline"
-            className="w-full border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
-            onClick={() => {
-              addLine(lines.length - 1);
-            }}
-          >
-            <Plus className="h-4 w-4" /> {t('editor.addLine')}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1 border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+              onClick={() => {
+                addLine(lines.length - 1);
+              }}
+            >
+              <Plus className="h-4 w-4" /> {t('editor.addLine')}
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1 border-dashed text-muted-foreground hover:text-foreground hover:border-solid transition-all"
+              onClick={addSection}
+            >
+              <Plus className="h-4 w-4" /> {t('editor.addSection')}
+            </Button>
+          </div>
         )}
       </div>
     </div>

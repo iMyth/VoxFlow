@@ -7,6 +7,7 @@ import ScriptLines from './ScriptLines';
 import StreamingCard from './StreamingCard';
 import ThinkingPanel from './ThinkingPanel';
 import ToolCallList from './ToolCallList';
+import { VideoPlaybackProvider } from '../../contexts/VideoPlaybackContext';
 import { useCharacterStore } from '../../store/characterStore';
 import { useProjectStore } from '../../store/projectStore';
 import { useScriptStore } from '../../store/scriptStore';
@@ -275,183 +276,186 @@ export default function ScriptEditor() {
   const isAiMode = workflow === 'ai';
 
   return (
-    <div className="px-6 py-4 space-y-4 relative">
-      {/* Batch TTS floating progress bar (non-blocking) */}
-      {isBatchTtsRunning && (
-        <div className="fixed bottom-4 right-4 z-50 pointer-events-auto">
-          <div className="card p-4 space-y-2 shadow-lg border max-w-xs bg-background">
-            <p className="text-sm font-medium">
-              {t('editor.batchTtsRunning', {
-                current: batchTtsProgress?.current ?? 0,
-                total: batchTtsProgress?.total ?? 0,
-              })}
-            </p>
-            {batchTtsProgress && batchTtsProgress.total > 0 && (
-              <div className="space-y-1">
-                <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
-                  <div
-                    className="h-full bg-primary rounded-full transition-all duration-300"
-                    style={{ width: `${String((batchTtsProgress.current / batchTtsProgress.total) * 100)}%` }}
-                  />
+    <VideoPlaybackProvider>
+      <div className="px-6 py-4 space-y-4 relative">
+        {/* Batch TTS floating progress bar (non-blocking) */}
+        {isBatchTtsRunning && (
+          <div className="fixed bottom-4 right-4 z-50 pointer-events-auto">
+            <div className="card p-4 space-y-2 shadow-lg border max-w-xs bg-background">
+              <p className="text-sm font-medium">
+                {t('editor.batchTtsRunning', {
+                  current: batchTtsProgress?.current ?? 0,
+                  total: batchTtsProgress?.total ?? 0,
+                })}
+              </p>
+              {batchTtsProgress && batchTtsProgress.total > 0 && (
+                <div className="space-y-1">
+                  <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
+                    <div
+                      className="h-full bg-primary rounded-full transition-all duration-300"
+                      style={{ width: `${String((batchTtsProgress.current / batchTtsProgress.total) * 100)}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {batchTtsProgress.current} / {batchTtsProgress.total}
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {batchTtsProgress.current} / {batchTtsProgress.total}
-                </p>
-              </div>
-            )}
-            <Button variant="destructive" size="sm" className="w-full" onClick={() => void cancelBatchTts()}>
-              {t('editor.cancelBatchTts')}
-            </Button>
+              )}
+              <Button variant="destructive" size="sm" className="w-full" onClick={() => void cancelBatchTts()}>
+                {t('editor.cancelBatchTts')}
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Outline dialog */}
-      <OutlinePanel
-        outline={outline}
-        onOutlineChange={setOutline}
-        isAnalyzing={isAnalyzing}
-        enableThinking={enableThinking}
-        onToggleThinking={setEnableThinking}
-        onAnalyze={handleAnalyze}
-        onCancel={() => void cancelLlm()}
-        hasAgentPlan={!!agentPlan}
-        open={showOutlineDialog}
-        onOpenChange={setShowOutlineDialog}
-        saved={outlineSaved}
-      />
-
-      {/* Analyzing streaming */}
-      {isAnalyzing && (
-        <StreamingCard
-          color="blue"
-          label={t('editor.analyzing')}
-          text={streamingText}
+        {/* Outline dialog */}
+        <OutlinePanel
+          outline={outline}
+          onOutlineChange={setOutline}
+          isAnalyzing={isAnalyzing}
+          enableThinking={enableThinking}
+          onToggleThinking={setEnableThinking}
+          onAnalyze={handleAnalyze}
           onCancel={() => void cancelLlm()}
+          hasAgentPlan={!!agentPlan}
+          open={showOutlineDialog}
+          onOpenChange={setShowOutlineDialog}
+          saved={outlineSaved}
         />
-      )}
 
-      {/* Generating streaming */}
-      {isGenerating && streamingText && (
-        <StreamingCard
-          color="purple"
-          label={t('editor.aiGenerating')}
-          text={streamingText}
-          onCancel={() => void cancelLlm()}
-        />
-      )}
+        {/* Analyzing streaming */}
+        {isAnalyzing && (
+          <StreamingCard
+            color="blue"
+            label={t('editor.analyzing')}
+            text={streamingText}
+            onCancel={() => void cancelLlm()}
+          />
+        )}
 
-      {/* Thinking panel - shown during analysis or generation when thinking content is present */}
-      {(isAnalyzing || isGenerating) && thinkingText && (
-        <ThinkingPanel thinkingText={thinkingText} isThinking={isAnalyzing || isGenerating} />
-      )}
+        {/* Generating streaming */}
+        {isGenerating && streamingText && (
+          <StreamingCard
+            color="purple"
+            label={t('editor.aiGenerating')}
+            text={streamingText}
+            onCancel={() => void cancelLlm()}
+          />
+        )}
 
-      {/* Tool calls - shown during generation when tools are invoked */}
-      {toolCalls.length > 0 && <ToolCallList entries={toolCalls} />}
+        {/* Thinking panel - shown during analysis or generation when thinking content is present */}
+        {(isAnalyzing || isGenerating) && thinkingText && (
+          <ThinkingPanel thinkingText={thinkingText} isThinking={isAnalyzing || isGenerating} />
+        )}
 
-      {/* Plan card - AI mode only */}
-      {isAiMode && agentPlan && (
-        <PlanCard
-          plan={agentPlan}
-          existingCharacters={existingCharacters}
-          currentProjectId={currentProject?.project.id ?? ''}
-          onDismiss={() => {
-            setAgentPlan(null);
-          }}
-          onConfirmGenerate={handleConfirmGenerate}
-          onManualMode={handlePlanManualMode}
-          onCharacterMapping={handleCharacterMapping}
-          onNewChar={handleCreateNewChar}
-          onCancelNewChar={handleCancelNewChar}
-          creatingChars={creatingChars}
-          newCharForms={newCharForms}
-          onFormChange={handleFormChange}
-          characterMapping={characterMapping}
-          extraInstructions={extraInstructions}
-          onExtraChange={setExtraInstructions}
-          isGenerating={isGenerating}
-        />
-      )}
+        {/* Tool calls - shown during generation when tools are invoked */}
+        {toolCalls.length > 0 && <ToolCallList entries={toolCalls} />}
 
-      {/* Script lines */}
-      <ScriptLines
-        lines={lines}
-        sections={sections}
-        emptyHint={t('editor.emptyHint')}
-        showOutlineBtn={workflow !== 'manual'}
-        onEditOutline={() => {
-          setShowOutlineDialog(true);
-        }}
-        workflow={workflow}
-        onSelectAi={handleAiModeSelect}
-        onSelectManual={handleManualModeSelect}
-        isDirty={isDirty}
-        isBatchTtsRunning={isBatchTtsRunning}
-        batchTtsProgress={batchTtsProgress}
-        missingTtsCount={missingTtsCount}
-        hasAudioCount={coveredLineIds.size}
-        onSave={() => void saveScript()}
-        onGenerateAllTts={() => void generateAllTts()}
-        onRegenerateAllTts={() => {
-          setShowRegenerateConfirm(true);
-        }}
-      />
-
-      {/* Confirm dialogs */}
-      <ConfirmDialog
-        open={showOverwriteConfirm}
-        onOpenChange={setShowOverwriteConfirm}
-        title={t('editor.confirmOverwriteTitle')}
-        description={t('editor.confirmOverwrite', {
-          textCount: confirmData.textCount,
-          audioCount: confirmData.audioCount,
-        })}
-        confirmText={t('editor.confirmOverwriteBtn')}
-        cancelText={t('editor.cancel')}
-        irreversibleWarning={t('editor.irreversibleWarning')}
-        onConfirm={() => {
-          const { pendingExtraInstructions, pendingCharNames, clearPending } = useUiStore.getState();
-          if (pendingExtraInstructions) {
-            void generateScript(outline.trim(), pendingExtraInstructions, pendingCharNames ?? undefined);
-            setAgentPlan(null);
-            clearPending();
-          } else {
-            void generateScript(outline.trim());
-          }
-        }}
-      />
-
-      <ConfirmDialog
-        open={showAnalyzeConfirm}
-        onOpenChange={setShowAnalyzeConfirm}
-        title={t('editor.confirmAnalyzeTitle')}
-        description={t('editor.confirmAnalyze', { textCount: lines.filter((l) => l.text.trim()).length })}
-        confirmText={t('editor.confirmAnalyzeBtn')}
-        cancelText={t('editor.cancel')}
-        onConfirm={() => void analyzeOutline(outline.trim())}
-      />
-
-      <ConfirmDialog
-        open={showRegenerateConfirm}
-        onOpenChange={setShowRegenerateConfirm}
-        title={t('editor.confirmRegenerateTitle')}
-        description={t('editor.confirmRegenerate', { count: coveredLineIds.size })}
-        confirmText={t('editor.confirmRegenerateBtn')}
-        cancelText={t('editor.cancel')}
-        irreversibleWarning={t('editor.irreversibleWarning')}
-        onConfirm={() => void regenerateAllTts(false)}
-        extraActions={
-          <Button
-            variant="default"
-            onClick={() => {
-              setShowRegenerateConfirm(false);
-              void regenerateAllTts(true);
+        {/* Plan card - AI mode only */}
+        {isAiMode && agentPlan && (
+          <PlanCard
+            plan={agentPlan}
+            existingCharacters={existingCharacters}
+            currentProjectId={currentProject?.project.id ?? ''}
+            onDismiss={() => {
+              setAgentPlan(null);
             }}
-          >
-            {t('editor.regeneratePreserveRecordings')}
-          </Button>
-        }
-      />
-    </div>
+            onConfirmGenerate={handleConfirmGenerate}
+            onManualMode={handlePlanManualMode}
+            onCharacterMapping={handleCharacterMapping}
+            onNewChar={handleCreateNewChar}
+            onCancelNewChar={handleCancelNewChar}
+            creatingChars={creatingChars}
+            newCharForms={newCharForms}
+            onFormChange={handleFormChange}
+            characterMapping={characterMapping}
+            extraInstructions={extraInstructions}
+            onExtraChange={setExtraInstructions}
+            isGenerating={isGenerating}
+          />
+        )}
+
+        {/* Script lines */}
+        <ScriptLines
+          lines={lines}
+          sections={sections}
+          emptyHint={t('editor.emptyHint')}
+          showOutlineBtn={workflow !== 'manual'}
+          onEditOutline={() => {
+            setShowOutlineDialog(true);
+          }}
+          workflow={workflow}
+          onSelectAi={handleAiModeSelect}
+          onSelectManual={handleManualModeSelect}
+          isDirty={isDirty}
+          isBatchTtsRunning={isBatchTtsRunning}
+          batchTtsProgress={batchTtsProgress}
+          missingTtsCount={missingTtsCount}
+          hasAudioCount={coveredLineIds.size}
+          onSave={() => void saveScript()}
+          onGenerateAllTts={() => void generateAllTts()}
+          onRegenerateAllTts={() => {
+            setShowRegenerateConfirm(true);
+          }}
+          projectId={currentProject?.project.id ?? ''}
+        />
+
+        {/* Confirm dialogs */}
+        <ConfirmDialog
+          open={showOverwriteConfirm}
+          onOpenChange={setShowOverwriteConfirm}
+          title={t('editor.confirmOverwriteTitle')}
+          description={t('editor.confirmOverwrite', {
+            textCount: confirmData.textCount,
+            audioCount: confirmData.audioCount,
+          })}
+          confirmText={t('editor.confirmOverwriteBtn')}
+          cancelText={t('editor.cancel')}
+          irreversibleWarning={t('editor.irreversibleWarning')}
+          onConfirm={() => {
+            const { pendingExtraInstructions, pendingCharNames, clearPending } = useUiStore.getState();
+            if (pendingExtraInstructions) {
+              void generateScript(outline.trim(), pendingExtraInstructions, pendingCharNames ?? undefined);
+              setAgentPlan(null);
+              clearPending();
+            } else {
+              void generateScript(outline.trim());
+            }
+          }}
+        />
+
+        <ConfirmDialog
+          open={showAnalyzeConfirm}
+          onOpenChange={setShowAnalyzeConfirm}
+          title={t('editor.confirmAnalyzeTitle')}
+          description={t('editor.confirmAnalyze', { textCount: lines.filter((l) => l.text.trim()).length })}
+          confirmText={t('editor.confirmAnalyzeBtn')}
+          cancelText={t('editor.cancel')}
+          onConfirm={() => void analyzeOutline(outline.trim())}
+        />
+
+        <ConfirmDialog
+          open={showRegenerateConfirm}
+          onOpenChange={setShowRegenerateConfirm}
+          title={t('editor.confirmRegenerateTitle')}
+          description={t('editor.confirmRegenerate', { count: coveredLineIds.size })}
+          confirmText={t('editor.confirmRegenerateBtn')}
+          cancelText={t('editor.cancel')}
+          irreversibleWarning={t('editor.irreversibleWarning')}
+          onConfirm={() => void regenerateAllTts(false)}
+          extraActions={
+            <Button
+              variant="default"
+              onClick={() => {
+                setShowRegenerateConfirm(false);
+                void regenerateAllTts(true);
+              }}
+            >
+              {t('editor.regeneratePreserveRecordings')}
+            </Button>
+          }
+        />
+      </div>
+    </VideoPlaybackProvider>
   );
 }

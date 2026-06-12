@@ -28,7 +28,8 @@ pub use character::{
     list_all_project_characters, list_characters, update_character,
 };
 pub use project::{
-    delete_project, get_project, insert_project, list_projects, save_project_outline,
+    delete_project, get_project, insert_project, list_projects, save_global_video_style,
+    save_project_outline,
 };
 pub use script::{
     delete_sections, list_sections, load_script, load_script_lines, save_script, save_sections,
@@ -136,6 +137,11 @@ impl Database {
     /// Save only the outline text for a project.
     pub fn save_project_outline(&self, id: &str, outline: &str) -> Result<(), AppError> {
         project::save_project_outline(&self.conn, id, outline)
+    }
+
+    /// Save the global video style for a project.
+    pub fn save_global_video_style(&self, id: &str, style: &str) -> Result<(), AppError> {
+        project::save_global_video_style(&self.conn, id, style)
     }
 
     // ---- Character CRUD ----

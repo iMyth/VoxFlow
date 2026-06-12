@@ -327,6 +327,7 @@ async fn main() -> Result<()> {
                     id: id.clone(),
                     name: name.clone(),
                     outline: outline_text,
+                    global_video_style: String::new(),
                     created_at: now.clone(),
                     updated_at: now,
                 };

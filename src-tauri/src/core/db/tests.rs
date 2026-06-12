@@ -224,6 +224,7 @@ mod tests {
             id: "p1".to_string(),
             name: "My Audiobook".to_string(),
             outline: String::new(),
+            global_video_style: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
@@ -250,6 +251,7 @@ mod tests {
             id: "p1".to_string(),
             name: "First".to_string(),
             outline: String::new(),
+            global_video_style: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
@@ -257,6 +259,7 @@ mod tests {
             id: "p2".to_string(),
             name: "Second".to_string(),
             outline: String::new(),
+            global_video_style: String::new(),
             created_at: "2024-01-02 00:00:00".to_string(),
             updated_at: "2024-01-02 00:00:00".to_string(),
         };
@@ -284,6 +287,7 @@ mod tests {
             id: "p1".to_string(),
             name: "To Delete".to_string(),
             outline: String::new(),
+            global_video_style: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
@@ -310,6 +314,7 @@ mod tests {
             id: "p1".to_string(),
             name: "Cascade Test".to_string(),
             outline: String::new(),
+            global_video_style: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };
@@ -374,6 +379,7 @@ mod tests {
             id: id.to_string(),
             name: "Test Project".to_string(),
             outline: String::new(),
+            global_video_style: String::new(),
             created_at: "2024-01-01 00:00:00".to_string(),
             updated_at: "2024-01-01 00:00:00".to_string(),
         };

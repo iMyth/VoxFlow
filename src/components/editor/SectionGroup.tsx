@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import ScriptLineComponent from './ScriptLine';
+import SectionAudioPreview from './SectionAudioPreview';
+import SectionVideoPanel from './SectionVideoPanel';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
 import { useScriptStore } from '../../store/scriptStore';
 import { Button } from '../ui/button';
@@ -16,9 +18,17 @@ interface SectionGroupProps {
   index: number;
   totalSections: number;
   onAddLine: () => void;
+  projectId?: string;
 }
 
-export default function SectionGroup({ section, lines, index, totalSections, onAddLine }: SectionGroupProps) {
+export default function SectionGroup({
+  section,
+  lines,
+  index,
+  totalSections,
+  onAddLine,
+  projectId = '',
+}: SectionGroupProps) {
   const { t } = useTranslation();
   const { deleteSection, renameSection } = useScriptStore();
   const [editing, setEditing] = useState(false);
@@ -71,7 +81,7 @@ export default function SectionGroup({ section, lines, index, totalSections, onA
             }}
             onBlur={handleTitleBlur}
             onKeyDown={handleTitleKeyDown}
-            className="h-7 text-sm font-semibold max-w-[200px]"
+            className="h-7 text-sm font-semibold max-w-50"
             autoFocus
           />
         ) : (
@@ -118,6 +128,8 @@ export default function SectionGroup({ section, lines, index, totalSections, onA
               onDragEnd={handleDragEnd}
             />
           ))}
+          <SectionAudioPreview sectionId={section.id} lines={lines} />
+          <SectionVideoPanel section={section} projectId={projectId} />
           <Button variant="outline" className="w-full border-dashed" onClick={onAddLine}>
             <Plus className="h-4 w-4" /> {t('editor.addLine')}
           </Button>
