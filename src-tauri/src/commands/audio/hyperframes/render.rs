@@ -238,7 +238,13 @@ pub async fn render_hyperframes_video(
 
     let mut render_cmd = Command::new(&node_env.npx);
     render_cmd
-        .args(["--prefer-offline", "hyperframes", "render", "--output", &silent_video_str])
+        .args([
+            "--prefer-offline",
+            "hyperframes",
+            "render",
+            "--output",
+            &silent_video_str,
+        ])
         .current_dir(comp_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

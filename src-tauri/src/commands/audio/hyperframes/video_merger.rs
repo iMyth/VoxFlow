@@ -561,10 +561,14 @@ pub async fn merge_section_videos(
     section_videos.retain(|sv| {
         let has_audio = std::process::Command::new(&ffprobe_path)
             .args([
-                "-v", "quiet",
-                "-select_streams", "a:0",
-                "-show_entries", "stream=codec_name",
-                "-of", "csv=p=0",
+                "-v",
+                "quiet",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "csv=p=0",
                 &sv.file_path,
             ])
             .output()

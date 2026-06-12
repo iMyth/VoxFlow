@@ -61,8 +61,7 @@ impl SkillsContext {
         // the LLM produces generic, low-quality compositions.
         let video_composition =
             get_embedded_file("references/video-composition.md").unwrap_or_default();
-        let beat_direction =
-            get_embedded_file("references/beat-direction.md").unwrap_or_default();
+        let beat_direction = get_embedded_file("references/beat-direction.md").unwrap_or_default();
         let typography = get_embedded_file("references/typography.md").unwrap_or_default();
         let techniques = get_embedded_file("references/techniques.md").unwrap_or_default();
 
@@ -725,9 +724,8 @@ fn ensure_clip_timing(html: &str, entries: &[TimelineEntry]) -> String {
         let unmatched_clips: Vec<usize> = (0..clip_positions.len())
             .filter(|i| !matched_clips.contains(i))
             .collect();
-        let unmatched_entries: Vec<usize> = (0..entries.len())
-            .filter(|i| !entry_matched[*i])
-            .collect();
+        let unmatched_entries: Vec<usize> =
+            (0..entries.len()).filter(|i| !entry_matched[*i]).collect();
 
         // Match remaining clips to remaining entries by order
         let fallback_count = unmatched_entries.len().min(unmatched_clips.len());
@@ -748,11 +746,9 @@ fn ensure_clip_timing(html: &str, entries: &[TimelineEntry]) -> String {
         let mut new_tag = tag_content.to_string();
 
         // Replace or add data-start
-        new_tag =
-            replace_or_add_attr(&new_tag, "data-start", &format!("{:.3}", entry.start_time));
+        new_tag = replace_or_add_attr(&new_tag, "data-start", &format!("{:.3}", entry.start_time));
         // Replace or add data-duration
-        new_tag =
-            replace_or_add_attr(&new_tag, "data-duration", &format!("{:.3}", entry.duration));
+        new_tag = replace_or_add_attr(&new_tag, "data-duration", &format!("{:.3}", entry.duration));
 
         if new_tag != tag_content {
             corrections += 1;
@@ -763,7 +759,8 @@ fn ensure_clip_timing(html: &str, entries: &[TimelineEntry]) -> String {
     if corrections > 0 {
         info!(
             "[Agent] Post-processed: corrected timing on {}/{} clip elements (proximity-matched)",
-            corrections, clip_positions.len()
+            corrections,
+            clip_positions.len()
         );
     }
 
@@ -802,10 +799,10 @@ fn clamp_overflow_clips(html: &str, total_duration: f64) -> String {
     for &(tag_start, tag_end) in clip_positions.iter().rev() {
         let tag_content = result[tag_start..=tag_end].to_string();
 
-        let start = extract_attr_value(&tag_content, "data-start")
-            .and_then(|v| v.parse::<f64>().ok());
-        let dur = extract_attr_value(&tag_content, "data-duration")
-            .and_then(|v| v.parse::<f64>().ok());
+        let start =
+            extract_attr_value(&tag_content, "data-start").and_then(|v| v.parse::<f64>().ok());
+        let dur =
+            extract_attr_value(&tag_content, "data-duration").and_then(|v| v.parse::<f64>().ok());
 
         if let (Some(start), Some(dur)) = (start, dur) {
             // Allow a small epsilon for float rounding.
@@ -1178,7 +1175,11 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.500\""), "Got: {}", result);
+        assert!(
+            result.contains("data-duration=\"8.500\""),
+            "Got: {}",
+            result
+        );
     }
 
     #[test]
@@ -1187,9 +1188,17 @@ window.__hf = { duration: 10, seek: function() {} };
             <body><div class="clip" data-start="0" data-duration="3">Hi</div></body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.500\""), "Got: {}", result);
+        assert!(
+            result.contains("data-duration=\"8.500\""),
+            "Got: {}",
+            result
+        );
         // Should not contain the old wrong value on the composition element
-        assert!(!result.contains("data-duration=\"100\""), "Should have replaced 100, got: {}", result);
+        assert!(
+            !result.contains("data-duration=\"100\""),
+            "Should have replaced 100, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -1216,7 +1225,11 @@ window.__hf = { duration: 10, seek: function() {} };
             <body>Content</body>
         </html>"#;
         let result = ensure_root_duration(html, 8.5);
-        assert!(result.contains("data-duration=\"8.500\""), "Got: {}", result);
+        assert!(
+            result.contains("data-duration=\"8.500\""),
+            "Got: {}",
+            result
+        );
     }
 
     #[test]
@@ -1232,11 +1245,22 @@ window.__hf = { duration: 10, seek: function() {} };
 </body></html>"#;
         let result = ensure_root_duration(html, 116.273);
         // The real element's data-duration should be corrected
-        assert!(result.contains("data-duration=\"116.273\""), "Got: {}", result);
+        assert!(
+            result.contains("data-duration=\"116.273\""),
+            "Got: {}",
+            result
+        );
         // The wrong 480 value must be gone
-        assert!(!result.contains("data-duration=\"480\""), "Should have replaced 480, got: {}", result);
+        assert!(
+            !result.contains("data-duration=\"480\""),
+            "Should have replaced 480, got: {}",
+            result
+        );
         // The CSS selector must remain untouched
-        assert!(result.contains("[data-composition-id=\"ai-generated\"]"), "CSS selector should be intact");
+        assert!(
+            result.contains("[data-composition-id=\"ai-generated\"]"),
+            "CSS selector should be intact"
+        );
     }
 
     #[test]
@@ -1247,8 +1271,16 @@ window.__hf = { duration: 10, seek: function() {} };
 </body></html>"#;
         // total duration = 100s; clip B (start 50 + dur 200 = 250) must clamp to dur=50
         let result = clamp_overflow_clips(html, 100.0);
-        assert!(result.contains("data-duration=\"50.000\""), "Got: {}", result);
+        assert!(
+            result.contains("data-duration=\"50.000\""),
+            "Got: {}",
+            result
+        );
         // clip A is within bounds, untouched
-        assert!(result.contains("data-start=\"0\" data-duration=\"50\""), "Got: {}", result);
+        assert!(
+            result.contains("data-start=\"0\" data-duration=\"50\""),
+            "Got: {}",
+            result
+        );
     }
 }

@@ -400,7 +400,13 @@ pub async fn render_section_video(
         // when a cached version already works. Also use version range "hyperframes@0.6"
         // to get the latest compatible cached version.
         render_cmd
-            .args(["--prefer-offline", "hyperframes", "render", "--output", &silent_video_str])
+            .args([
+                "--prefer-offline",
+                "hyperframes",
+                "render",
+                "--output",
+                &silent_video_str,
+            ])
             .current_dir(&composition_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -421,10 +427,7 @@ pub async fn render_section_video(
 
         let mut render_child = match render_cmd.spawn() {
             Ok(child) => {
-                info!(
-                    "[Section Render] Process spawned, PID: {:?}",
-                    child.id()
-                );
+                info!("[Section Render] Process spawned, PID: {:?}", child.id());
                 child
             }
             Err(e) => {
@@ -462,7 +465,11 @@ pub async fn render_section_video(
         }
 
         // Wait for render process with dynamic timeout
-        let render_result = timeout(Duration::from_secs(render_timeout_secs), render_child.wait()).await;
+        let render_result = timeout(
+            Duration::from_secs(render_timeout_secs),
+            render_child.wait(),
+        )
+        .await;
 
         match render_result {
             Ok(Ok(status)) if status.success() => {
@@ -472,15 +479,13 @@ pub async fn render_section_video(
                     last_error = None;
                     break;
                 } else {
-                    last_error = Some(
-                        "hyperframes render completed but output file not found".to_string(),
-                    );
+                    last_error =
+                        Some("hyperframes render completed but output file not found".to_string());
                 }
             }
             Ok(Ok(status)) => {
                 // Render failed with non-zero exit
-                let stderr_output =
-                    stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
+                let stderr_output = stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
                 let err_msg = format!(
                     "hyperframes render failed (exit {:?}): {}",
                     status.code(),
@@ -501,12 +506,7 @@ pub async fn render_section_video(
                     if is_permission_issue {
                         info!("[Section Render] Detected possible permission issue, will retry");
                         // Emit user-friendly message to frontend
-                        emit_section_progress(
-                            &app,
-                            &section_id,
-                            55.0,
-                            "permission_retry",
-                        );
+                        emit_section_progress(&app, &section_id, 55.0, "permission_retry");
                         let _ = app.emit(
                             "section-video-permission-hint",
                             serde_json::json!({
