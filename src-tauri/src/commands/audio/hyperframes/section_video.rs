@@ -533,15 +533,15 @@ pub async fn render_section_video(
                 // Kill the entire process tree, not just the parent npx process.
                 // On macOS/Unix, kill the process group to ensure Chrome child processes
                 // are also terminated. Otherwise they become zombies consuming 100% CPU.
-                if let Some(pid) = render_child.id() {
+                if let Some(_pid) = render_child.id() {
                     #[cfg(unix)]
                     {
                         // Kill the entire process group (negative PID = kill group)
                         // Safe because we set this process as its own group leader via setpgid
                         unsafe {
-                            libc::kill(-(pid as i32), libc::SIGKILL);
+                            libc::kill(-(_pid as i32), libc::SIGKILL);
                         }
-                        info!("[Section Render] Sent SIGKILL to process group {}", pid);
+                        info!("[Section Render] Sent SIGKILL to process group {}", _pid);
                     }
                 }
                 // Also try the standard kill as fallback
