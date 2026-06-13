@@ -7,7 +7,8 @@
     "tab": {
       "editor": "剧本编辑",
       "characters": "角色管理",
-      "export": "导出"
+      "export": "导出",
+      "resources": "资源管理"
     },
     "theme": "切换主题",
     "themeLight": "浅色",
@@ -406,5 +407,33 @@
     "downloading": "下载中...",
     "installSuccess": "更新已安装，应用将自动重启",
     "installFailed": "更新安装失败"
+  },
+  "resources": {
+    "filter": {
+      "all": "全部",
+      "audio": "音频",
+      "video": "视频",
+      "bgm": "BGM",
+      "export": "导出",
+      "composition": "合成"
+    },
+    "summary": {
+      "total": "总占用",
+      "audio": "音频",
+      "video": "视频",
+      "other": "其他",
+      "files": "个文件"
+    },
+    "openFolder": "打开文件夹",
+    "refresh": "刷新",
+    "deleteSelected": "删除选中 ({{count}})",
+    "selectAll": "全选",
+    "clearSelection": "取消选择",
+    "delete": "删除",
+    "loading": "加载中...",
+    "empty": "暂无生成资源",
+    "confirmDelete": "确定删除选中的 {{count}} 个文件？此操作不可撤销。",
+    "deleteSuccess": "已删除 {{count}} 个文件",
+    "deleteFailed": "删除失败"
   }
 }

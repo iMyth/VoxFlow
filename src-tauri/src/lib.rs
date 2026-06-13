@@ -110,6 +110,11 @@ pub fn run() {
             commands::audio::hyperframes::batch_video::generate_all_sections,
             commands::audio::hyperframes::batch_video::cancel_section_generation,
             commands::audio::hyperframes::video_merger::merge_section_videos,
+            commands::list_resources,
+            commands::get_resource_summary,
+            commands::delete_resource,
+            commands::delete_resources_batch,
+            commands::open_resource_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

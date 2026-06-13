@@ -731,3 +731,48 @@ export function onMergeProgress(callback: (progress: MergeProgress) => void): Pr
     callback(event.payload);
   });
 }
+
+// ---- Resource Management ----
+
+export interface ResourceEntry {
+  id: string;
+  name: string;
+  resource_type: 'audio' | 'video' | 'composition' | 'bgm' | 'export';
+  file_path: string;
+  file_size: number;
+  created_at: string;
+  duration_ms: number | null;
+  section_id: string | null;
+  section_title: string | null;
+}
+
+export interface ResourceSummary {
+  total_files: number;
+  total_size_bytes: number;
+  audio_count: number;
+  audio_size_bytes: number;
+  video_count: number;
+  video_size_bytes: number;
+  other_count: number;
+  other_size_bytes: number;
+}
+
+export async function listResources(projectId: string): Promise<ResourceEntry[]> {
+  return ipcCall<ResourceEntry[]>('list_resources', { projectId });
+}
+
+export async function getResourceSummary(projectId: string): Promise<ResourceSummary> {
+  return ipcCall<ResourceSummary>('get_resource_summary', { projectId });
+}
+
+export async function deleteResource(projectId: string, filePath: string): Promise<void> {
+  return ipcCall<void>('delete_resource', { projectId, filePath });
+}
+
+export async function deleteResourcesBatch(projectId: string, filePaths: string[]): Promise<number> {
+  return ipcCall<number>('delete_resources_batch', { projectId, filePaths });
+}
+
+export async function openResourceFolder(projectId: string, subfolder?: string): Promise<void> {
+  return ipcCall<void>('open_resource_folder', { projectId, subfolder: subfolder ?? null });
+}
