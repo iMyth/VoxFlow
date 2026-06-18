@@ -76,8 +76,19 @@ export default function InlineVideoPlayer({
       if (video) {
         video.pause();
       }
+      // Explicitly reset playing state in case onPause event doesn't fire
+      setIsPlaying(false);
     }
   }, [playingSectionId, sectionId, isPlaying]);
+
+  // Reset playing state when video scrolls out of viewport
+  // The video element is unmounted when not in viewport, so onPause may not fire reliably
+  useEffect(() => {
+    if (!isInViewport && isPlaying) {
+      setIsPlaying(false);
+      notifyPause(sectionId);
+    }
+  }, [isInViewport, isPlaying, notifyPause, sectionId]);
 
   // Cleanup on unmount: explicitly pause video to ensure cleanup within 500ms of navigation
   useEffect(() => {

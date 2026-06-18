@@ -148,6 +148,14 @@ pub async fn generate_section_html(
     // preventing audio-video desync caused by loudnorm/resampling drift.
     let actual_audio_duration_secs = audio_result.total_duration_ms as f64 / 1000.0;
 
+    // Round UP to the next frame boundary so the rendered video is guaranteed to be
+    // at least as long as the audio. Without this, floor(duration * fps) can produce
+    // a video that is one frame too short, and the `-shortest` flag in the final
+    // audio merge then truncates the last bit of audio (cutting off the final word).
+    // Formula: ceil(duration * fps) / fps
+    let fps = 30.0_f64;
+    let render_duration_secs = (actual_audio_duration_secs * fps).ceil() / fps;
+
     // Check cancellation before expensive LLM call
     if let Some(ref token) = cancel_token {
         if token.is_cancelled() {
@@ -215,7 +223,7 @@ pub async fn generate_section_html(
         &agent_config,
         Some(on_progress),
         style_config.user_prompt.as_deref(),
-        Some(actual_audio_duration_secs),
+        Some(render_duration_secs),
     )
     .await
     .map_err(AppError::LlmService)?;
@@ -233,9 +241,9 @@ pub async fn generate_section_html(
     std::fs::write(composition_dir.join("index.html"), &html)
         .map_err(|e| AppError::FileSystem(format!("Failed to write index.html: {}", e)))?;
 
-    // Use actual audio duration for meta.json — this is what hyperframes render uses
-    // to determine total frame count. Must match the audio file's true length.
-    let total_duration = actual_audio_duration_secs;
+    // Use rounded-up duration for meta.json — this is what hyperframes render uses
+    // to determine total frame count. Must be >= audio length so the video isn't short.
+    let total_duration = render_duration_secs;
     let meta_json = serde_json::json!({
         "id": &section_id,
         "title": format!("Section {}", section_id),
@@ -517,7 +525,7 @@ pub async fn render_section_video(
                         continue;
                     }
                 }
-                // Not a permission issue — don't retry
+                // Not a retriable issue — don't retry
                 break;
             }
             Ok(Err(e)) => {
@@ -565,6 +573,19 @@ pub async fn render_section_video(
         return Err(AppError::FileSystem(
             "hyperframes render completed but output file not found".to_string(),
         ));
+    }
+
+    // Validate render output is not corrupted (0 bytes or suspiciously small)
+    let render_size = std::fs::metadata(&silent_video)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if render_size < 10_000 {
+        // Less than 10KB is almost certainly a corrupted/empty render
+        let _ = std::fs::remove_file(&silent_video);
+        return Err(AppError::FileSystem(format!(
+            "视频渲染产出文件异常（仅 {} 字节），可能是渲染器崩溃。请重试。",
+            render_size
+        )));
     }
 
     let metadata = std::fs::metadata(&silent_video)

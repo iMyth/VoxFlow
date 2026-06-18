@@ -5,6 +5,7 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::OnceLock;
 
 use log::info;
 use tauri::Emitter;
@@ -30,7 +31,16 @@ pub struct NodeEnv {
 ///
 /// Tauri production builds do not inherit the user's shell PATH (e.g. nvm,
 /// `/opt/homebrew/bin` are missing), so we must find npx/node explicitly.
-pub fn find_node_env() -> NodeEnv {
+///
+/// Results are cached after the first successful probe to avoid repeated
+/// filesystem scanning on every render call.
+pub fn find_node_env() -> &'static NodeEnv {
+    static CACHED: OnceLock<NodeEnv> = OnceLock::new();
+    CACHED.get_or_init(find_node_env_uncached)
+}
+
+/// Internal: perform the actual Node.js environment probe.
+fn find_node_env_uncached() -> NodeEnv {
     // 1. Well-known absolute paths (Homebrew, system Node, MacPorts)
     let candidates = [
         "/opt/homebrew/bin", // Homebrew on Apple Silicon (M1/M2/M3)
@@ -288,10 +298,19 @@ pub async fn render_hyperframes_video(
         });
     }
 
-    let render_status = render_child
-        .wait()
-        .await
-        .map_err(|e| AppError::FileSystem(format!("hyperframes render process error: {}", e)))?;
+    // Wait with a 20-minute timeout to prevent indefinite hangs
+    let render_timeout = std::time::Duration::from_secs(1200);
+    let render_status = match tokio::time::timeout(render_timeout, render_child.wait()).await {
+        Ok(result) => result
+            .map_err(|e| AppError::FileSystem(format!("hyperframes render process error: {}", e)))?,
+        Err(_) => {
+            // Timeout — kill the process
+            let _ = render_child.kill().await;
+            return Err(AppError::FileSystem(
+                "视频渲染超时（20分钟）。请尝试缩短内容或重试。".to_string(),
+            ));
+        }
+    };
 
     if !render_status.success() {
         let stderr_output = stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();

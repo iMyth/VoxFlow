@@ -147,9 +147,9 @@ pub async fn generate_with_agent(
         // Visual creativity comes from the rich reference docs in the system prompt,
         // not from high randomness which causes broken GSAP/HTML output.
         .temperature(0.4)
-        // Thinking mode disabled to avoid LLM timeout on longer sections.
-        // The enriched system prompt (all references loaded) compensates.
-        .additional_params(json!({ "enable_thinking": false }))
+        // Thinking mode enabled: allows the model to reason about complex layouts.
+        // The extract_html function strips <think> blocks from the response.
+        .additional_params(json!({ "enable_thinking": true }))
         .build();
 
     // Build the user prompt with timeline data
@@ -259,32 +259,65 @@ pub async fn generate_with_agent(
     // Run the agent with single turn — force direct HTML generation.
     // All necessary references (beat-direction, techniques) are already in the system prompt.
     // Tool calls would waste turns on read_reference instead of generating.
-    let start = std::time::Instant::now();
-    info!("[Agent] Sending prompt to LLM (model: {})...", config.model);
-    let response = agent
-        .prompt(&user_prompt)
-        .max_turns(1)
-        .await
-        .map_err(|e| format!("Agent execution failed: {}", e))?;
-    info!("[Agent] LLM response received in {:?}", start.elapsed());
+    // Retry up to 2 times on extraction failure (LLM may return malformed output).
+    let max_attempts = 2;
+    let mut last_error: Option<String> = None;
+    let mut html = String::new();
 
-    report("extracting_html");
+    for attempt in 1..=max_attempts {
+        let start = std::time::Instant::now();
+        info!(
+            "[Agent] Sending prompt to LLM (model: {}, attempt {}/{})...",
+            config.model, attempt, max_attempts
+        );
 
-    // Log the response for debugging — use char boundary safe truncation
-    info!("[Agent] Response length: {} chars", response.len());
-    let preview_end = response
-        .char_indices()
-        .take_while(|(i, _)| *i < 200)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
-    info!("[Agent] Response preview: {}", &response[..preview_end]);
+        let response = agent
+            .prompt(&user_prompt)
+            .max_turns(1)
+            .await
+            .map_err(|e| format!("Agent execution failed: {}", e))?;
+        info!("[Agent] LLM response received in {:?}", start.elapsed());
 
-    // Extract HTML from the agent's final response
-    let html = extract_html(&response)?;
+        report("extracting_html");
+
+        // Log the response for debugging — use char boundary safe truncation
+        info!("[Agent] Response length: {} chars", response.len());
+        let preview_end = response
+            .char_indices()
+            .take_while(|(i, _)| *i < 200)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        info!("[Agent] Response preview: {}", &response[..preview_end]);
+
+        // Extract HTML from the agent's final response
+        match extract_html(&response) {
+            Ok(extracted) => {
+                html = extracted;
+                last_error = None;
+                break;
+            }
+            Err(e) => {
+                info!(
+                    "[Agent] HTML extraction failed on attempt {}: {}",
+                    attempt, e
+                );
+                last_error = Some(e);
+                if attempt < max_attempts {
+                    info!("[Agent] Retrying LLM generation...");
+                    report("retrying");
+                }
+            }
+        }
+    }
+
+    if let Some(err) = last_error {
+        return Err(err);
+    }
 
     // Post-process: fix common issues as a safety net
     let html = fix_css_font_variables(&html);
+    let html = sanitize_unsupported_fonts(&html);
     let html = ensure_hyperframes_interfaces(&html, total_duration);
     let html = ensure_root_duration(&html, total_duration);
     let html = ensure_clip_timing(&html, entries);
@@ -367,36 +400,187 @@ fn fix_css_font_variables(html: &str) -> String {
 
     // Replace common font variable patterns with hyperframes-supported fonts.
     // Avoid banned fonts (Inter, Roboto, etc.) — use distinctive alternatives.
+    // IMPORTANT: Use actual font display names (e.g., "DM Sans" not "dm-sans")
+    // because hyperframes maps CSS font-family names to its internal IDs.
     // Pattern 1: Standard --font-* naming
     result = result
-        .replace("var(--font-body)", "'dm-sans', sans-serif")
-        .replace("var(--font-heading)", "'space-grotesk', sans-serif")
-        .replace("var(--font-mono)", "'jetbrains-mono', monospace")
-        .replace("var(--font-main)", "'dm-sans', sans-serif")
-        .replace("var(--font-display)", "'space-grotesk', sans-serif")
-        .replace("var(--font-serif)", "'libre-baskerville', serif")
-        .replace("var(--font-sans)", "'dm-sans', sans-serif");
+        .replace("var(--font-body)", "'DM Sans', sans-serif")
+        .replace("var(--font-heading)", "'Space Grotesk', sans-serif")
+        .replace("var(--font-mono)", "'JetBrains Mono', monospace")
+        .replace("var(--font-main)", "'DM Sans', sans-serif")
+        .replace("var(--font-display)", "'Space Grotesk', sans-serif")
+        .replace("var(--font-serif)", "'Libre Baskerville', serif")
+        .replace("var(--font-sans)", "'DM Sans', sans-serif");
 
     // Pattern 2: Short naming (--mono, --sans, --serif)
     result = result
-        .replace("var(--mono)", "'jetbrains-mono', monospace")
-        .replace("var(--sans)", "'dm-sans', sans-serif")
-        .replace("var(--serif)", "'libre-baskerville', serif")
-        .replace("var(--body)", "'dm-sans', sans-serif")
-        .replace("var(--heading)", "'space-grotesk', sans-serif");
+        .replace("var(--mono)", "'JetBrains Mono', monospace")
+        .replace("var(--sans)", "'DM Sans', sans-serif")
+        .replace("var(--serif)", "'Libre Baskerville', serif")
+        .replace("var(--body)", "'DM Sans', sans-serif")
+        .replace("var(--heading)", "'Space Grotesk', sans-serif");
 
     // Pattern 3: Suffix naming (--body-font, --heading-font)
     result = result
-        .replace("var(--body-font)", "'dm-sans', sans-serif")
-        .replace("var(--heading-font)", "'space-grotesk', sans-serif")
-        .replace("var(--mono-font)", "'jetbrains-mono', monospace");
+        .replace("var(--body-font)", "'DM Sans', sans-serif")
+        .replace("var(--heading-font)", "'Space Grotesk', sans-serif")
+        .replace("var(--mono-font)", "'JetBrains Mono', monospace");
 
     // Pattern 4: Primary/secondary naming
     result = result
-        .replace("var(--font-primary)", "'dm-sans', sans-serif")
-        .replace("var(--font-secondary)", "'space-grotesk', sans-serif");
+        .replace("var(--font-primary)", "'DM Sans', sans-serif")
+        .replace("var(--font-secondary)", "'Space Grotesk', sans-serif");
+
+    // Fix kebab-case internal IDs that the LLM or our own code might have output
+    // These are hyperframes internal names, not valid CSS font names.
+    result = result
+        .replace("'jetbrains-mono'", "'JetBrains Mono'")
+        .replace("\"jetbrains-mono\"", "\"JetBrains Mono\"")
+        .replace("'dm-sans'", "'DM Sans'")
+        .replace("\"dm-sans\"", "\"DM Sans\"")
+        .replace("'space-grotesk'", "'Space Grotesk'")
+        .replace("\"space-grotesk\"", "\"Space Grotesk\"")
+        .replace("'libre-baskerville'", "'Libre Baskerville'")
+        .replace("\"libre-baskerville\"", "\"Libre Baskerville\"")
+        .replace("'archivo-black'", "'Archivo Black'")
+        .replace("\"archivo-black\"", "\"Archivo Black\"")
+        .replace("'comic-neue'", "'Comic Neue'")
+        .replace("\"comic-neue\"", "\"Comic Neue\"")
+        .replace("'playfair-display'", "'Playfair Display'")
+        .replace("\"playfair-display\"", "\"Playfair Display\"")
+        .replace("'fira-code'", "'Fira Code'")
+        .replace("\"fira-code\"", "\"Fira Code\"");
 
     result
+}
+
+/// Strip all specific font names from font-family declarations at generation time.
+///
+/// Hyperframes compiler treats ANY unmapped font name as a fatal error (exit 1),
+/// regardless of whether a generic fallback is present. There's no CLI flag to
+/// suppress this. So we must remove all specific font names before rendering.
+///
+/// We preserve the intended category (sans/serif/mono) by detecting keywords in
+/// the original value and mapping to the correct generic family.
+fn sanitize_unsupported_fonts(html: &str) -> String {
+    sanitize_fonts_for_retry(html)
+}
+
+/// Strip all specific font names from font-family declarations, keeping only
+/// generic CSS families (sans-serif, serif, monospace). Called by the render
+/// retry path when the first attempt fails due to unmapped fonts.
+pub fn sanitize_fonts_for_retry(html: &str) -> String {
+    let mut result = html.to_string();
+
+    // Pattern 1: Explicit font-family declarations
+    let font_family_re = regex::Regex::new(
+        r#"font-family\s*:\s*([^;}"]+)"#
+    ).unwrap();
+
+    let matches: Vec<(usize, usize, String)> = font_family_re
+        .find_iter(&result)
+        .map(|m| (m.start(), m.end(), m.as_str().to_string()))
+        .collect();
+
+    for (start, end, matched) in matches.into_iter().rev() {
+        let colon_pos = matched.find(':').unwrap_or(0);
+        let value_part = matched[colon_pos + 1..].trim().to_lowercase();
+
+        if is_all_generic(&value_part) {
+            continue;
+        }
+
+        let replacement = infer_generic_family(&value_part);
+        let new_declaration = format!("font-family: {}", replacement);
+        result.replace_range(start..end, &new_declaration);
+    }
+
+    // Pattern 2: CSS `font` shorthand — the font family comes after the size/line-height.
+    // e.g., `font: bold 16px/1.5 "Noto Serif CJK SC", STSong, serif;`
+    // We replace the entire font shorthand's family portion with just the generic.
+    let font_shorthand_re = regex::Regex::new(
+        r#"(?i)\bfont\s*:\s*([^;}"]*)"#
+    ).unwrap();
+    let size_re = regex::Regex::new(r#"[\d.]+(?:px|em|rem|pt|vw|vh|%|ex|ch)(?:\s*/\s*[\d.]+)?"#).unwrap();
+
+    let matches: Vec<(usize, usize, String)> = font_shorthand_re
+        .find_iter(&result)
+        .map(|m| (m.start(), m.end(), m.as_str().to_string()))
+        .collect();
+
+    for (start, end, matched) in matches.into_iter().rev() {
+        // Skip if this is actually font-family, font-size, font-weight, etc.
+        let prop_name = matched.split(':').next().unwrap_or("").trim().to_lowercase();
+        if prop_name != "font" {
+            continue;
+        }
+
+        let colon_pos = matched.find(':').unwrap_or(0);
+        let value_part = matched[colon_pos + 1..].trim();
+
+        // The font shorthand format: [style] [variant] [weight] [stretch] size[/line-height] family
+        // We need to find where the family part starts (after size/line-height).
+        // Strategy: find all quoted strings and known font names, replace them with generic.
+        let lower_value = value_part.to_lowercase();
+
+        // If it contains a specific font name (quoted or known CJK fonts), sanitize
+        let has_specific_font = value_part.contains('"') || value_part.contains('\'')
+            || lower_value.contains("noto") || lower_value.contains("song")
+            || lower_value.contains("hei") || lower_value.contains("kai")
+            || lower_value.contains("ming") || lower_value.contains("gothic");
+
+        if !has_specific_font {
+            continue;
+        }
+
+        // Find the family portion: everything after the last numeric value (size/line-height)
+        // Look for pattern like "16px" or "1.5em" or "16px/1.5"
+        if let Some(size_match) = size_re.find(value_part) {
+            let family_start_in_value = size_match.end();
+            let family_part = value_part[family_start_in_value..].trim();
+
+            if !is_all_generic(&family_part.to_lowercase()) {
+                let replacement = infer_generic_family(&family_part.to_lowercase());
+                let new_value = format!(
+                    "font: {} {}",
+                    value_part[..family_start_in_value].trim(),
+                    replacement
+                );
+                result.replace_range(start..end, &new_value);
+            }
+        }
+    }
+
+    // Pattern 3: Remove @font-face blocks entirely — they reference external fonts
+    // that hyperframes can't resolve and will error on.
+    let fontface_re = regex::Regex::new(r#"(?is)@font-face\s*\{[^}]*\}"#).unwrap();
+    result = fontface_re.replace_all(&result, "").to_string();
+
+    result
+}
+
+/// Check if a font value string contains only generic CSS families.
+fn is_all_generic(value: &str) -> bool {
+    value.split(',').all(|f| {
+        let f = f.trim().trim_matches('\'').trim_matches('"').trim();
+        matches!(f, "sans-serif" | "serif" | "monospace" | "cursive" | "fantasy"
+            | "inherit" | "initial" | "unset" | "")
+    })
+}
+
+/// Infer the best generic fallback from a font declaration's value.
+fn infer_generic_family(value: &str) -> &'static str {
+    if value.contains("mono") || value.contains("code") || value.contains("courier") {
+        "monospace"
+    } else if (value.contains("serif") || value.contains("song") || value.contains("ming")
+        || value.contains("baskerville") || value.contains("georgia")
+        || value.contains("times"))
+        && !value.contains("sans")
+    {
+        "serif"
+    } else {
+        "sans-serif"
+    }
 }
 
 /// Ensure required Hyperframes interfaces exist (window.__hf and window.__timelines).
@@ -896,7 +1080,10 @@ fn replace_or_add_attr(tag: &str, attr_name: &str, new_value: &str) -> String {
 /// 3. HTML embedded in explanatory text
 /// 4. HTML with leading/trailing whitespace or text
 fn extract_html(response: &str) -> Result<String, String> {
-    let trimmed = response.trim();
+    // Strip thinking blocks (e.g., <think>...</think>) that models emit in thinking mode.
+    // These appear before the actual HTML content and would otherwise confuse extraction.
+    let cleaned = strip_thinking_blocks(response);
+    let trimmed = cleaned.trim();
 
     // Fast path: already raw HTML
     if let Some(html) = try_extract_raw_html(trimmed) {
@@ -920,6 +1107,30 @@ fn extract_html(response: &str) -> Result<String, String> {
          Hint: Ensure the model outputs raw HTML starting with <!DOCTYPE html> or <html>.",
         preview
     ))
+}
+
+/// Strip `<think>...</think>` blocks from the response.
+/// Models with thinking mode enabled may prepend reasoning in these tags.
+fn strip_thinking_blocks(text: &str) -> String {
+    let mut result = text.to_string();
+    // Repeatedly remove <think>...</think> blocks (case-insensitive, possibly multiline)
+    loop {
+        let lower = result.to_ascii_lowercase();
+        let Some(start) = lower.find("<think>") else {
+            break;
+        };
+        let end_tag = "</think>";
+        if let Some(end_pos) = lower[start..].find(end_tag) {
+            let remove_end = start + end_pos + end_tag.len();
+            result = format!("{}{}", &result[..start], &result[remove_end..]);
+        } else {
+            // Opening <think> without closing tag — remove from <think> to end of text
+            // since the rest is likely all thinking content
+            result = result[..start].to_string();
+            break;
+        }
+    }
+    result
 }
 
 /// Try to extract HTML that starts at the beginning of the text.
@@ -1008,9 +1219,9 @@ mod tests {
 
         let fixed = fix_css_font_variables(html);
         assert!(!fixed.contains("var(--font-"));
-        assert!(fixed.contains("'dm-sans', sans-serif"));
-        assert!(fixed.contains("'space-grotesk', sans-serif"));
-        assert!(fixed.contains("'jetbrains-mono', monospace"));
+        assert!(fixed.contains("'DM Sans', sans-serif"));
+        assert!(fixed.contains("'Space Grotesk', sans-serif"));
+        assert!(fixed.contains("'JetBrains Mono', monospace"));
     }
 
     #[test]
@@ -1038,11 +1249,11 @@ mod tests {
         assert!(!fixed.contains("var(--font-primary)"));
         assert!(!fixed.contains("var(--font-secondary)"));
 
-        // Verify replacements use non-banned fonts
-        assert!(fixed.contains("'jetbrains-mono', monospace"));
-        assert!(fixed.contains("'dm-sans', sans-serif"));
-        assert!(fixed.contains("'libre-baskerville', serif"));
-        assert!(fixed.contains("'space-grotesk', sans-serif"));
+        // Verify replacements use correct display names
+        assert!(fixed.contains("'JetBrains Mono', monospace"));
+        assert!(fixed.contains("'DM Sans', sans-serif"));
+        assert!(fixed.contains("'Libre Baskerville', serif"));
+        assert!(fixed.contains("'Space Grotesk', sans-serif"));
     }
 
     #[test]

@@ -50,7 +50,7 @@ export default function SectionVideoPanel({ section, projectId }: SectionVideoPa
   const [isExpanded, setIsExpanded] = useState(status.state === 'completed');
   const [videoVersion, setVideoVersion] = useState(0);
   const [videoPath, setVideoPath] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(status.state === 'generating');
 
   // Track whether user has manually toggled (overrides auto-expand)
   const userToggledRef = useRef(false);
