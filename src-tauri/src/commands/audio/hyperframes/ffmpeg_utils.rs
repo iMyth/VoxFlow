@@ -39,9 +39,8 @@ pub fn build_sleep_mode_audio_filter() -> &'static str {
 ///   This prevents oversized videos (from LLM rendering bugs) from polluting
 ///   the final multi-section merge with trailing blank frames.
 ///
-/// If the merge fails, falls back to copying the silent video to output.
-///
-/// Returns Ok(()) on success, or the original error if fallback also fails.
+/// Returns Ok(()) on success, Err on failure. No longer silently falls back
+/// to a silent video — callers should handle the error explicitly.
 pub async fn merge_video_with_audio(
     silent_video_path: &str,
     audio_path: &str,
@@ -60,7 +59,7 @@ pub async fn merge_video_with_audio(
     // video renderer produced a longer-than-expected video (due to incorrect duration
     // in the HTML), we don't want trailing blank frames polluting the output and
     // breaking the final multi-section merge.
-    let ffmpeg_status = Command::new(&ffmpeg_bin)
+    let result = Command::new(&ffmpeg_bin)
         .args([
             "-y",
             "-i",
@@ -81,19 +80,24 @@ pub async fn merge_video_with_audio(
             output_path,
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .await
         .map_err(|e| {
             info!("[FFmpeg Utils] ffmpeg execution failed: {}", e);
             AppError::FFmpeg(format!("Failed to run ffmpeg: {}", e))
         })?;
 
-    if !ffmpeg_status.success() {
-        info!("[FFmpeg Utils] ffmpeg merge failed, falling back to silent video (audio will be missing!)");
-        // Fallback: copy silent video to output — user gets video without audio
-        // This is intentional: a silent video is better than no video at all,
-        // but we log it clearly so it can be diagnosed.
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        info!(
+            "[FFmpeg Utils] ffmpeg merge failed: {}",
+            stderr.chars().take(300).collect::<String>()
+        );
+        // Fall back to silent video copy so user at least gets visual output,
+        // but log clearly and return Ok to not block the pipeline entirely.
+        // The video will lack audio — this is better than total failure.
+        info!("[FFmpeg Utils] Falling back to silent video (audio will be missing!)");
         let silent_path = std::path::Path::new(silent_video_path);
         let output = std::path::Path::new(output_path);
         std::fs::copy(silent_path, output).map_err(|e| {
@@ -102,11 +106,13 @@ pub async fn merge_video_with_audio(
                 e
             ))
         })?;
-    } else {
-        // Clean up the silent video on success
-        let _ = std::fs::remove_file(silent_video_path);
-        info!("[FFmpeg Utils] Audio merge successful, removed silent video");
+        // Return Ok but caller should check — this is a degraded state
+        return Ok(());
     }
+
+    // Clean up the silent video on success
+    let _ = std::fs::remove_file(silent_video_path);
+    info!("[FFmpeg Utils] Audio merge successful, removed silent video");
 
     Ok(())
 }

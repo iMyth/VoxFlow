@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/
 
 import type { ProjectDetail } from '../../types';
 
-type Tab = 'editor' | 'characters' | 'export';
+type Tab = 'editor' | 'characters' | 'export' | 'resources';
 
 interface AppHeaderProps {
   project: ProjectDetail;
@@ -25,6 +25,7 @@ export default function AppHeader({ project, activeTab, onTabChange, onBack, onS
     editor: t('app.tab.editor'),
     characters: t('app.tab.characters'),
     export: t('app.tab.export'),
+    resources: t('app.tab.resources'),
   };
 
   return (

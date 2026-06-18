@@ -7,7 +7,8 @@
     "tab": {
       "editor": "Script Editor",
       "characters": "Characters",
-      "export": "Export"
+      "export": "Export",
+      "resources": "Resources"
     },
     "theme": "Toggle Theme",
     "themeLight": "Light",
@@ -406,5 +407,33 @@
     "downloading": "Downloading...",
     "installSuccess": "Update installed, app will restart automatically",
     "installFailed": "Failed to install update"
+  },
+  "resources": {
+    "filter": {
+      "all": "All",
+      "audio": "Audio",
+      "video": "Video",
+      "bgm": "BGM",
+      "export": "Export",
+      "composition": "Composition"
+    },
+    "summary": {
+      "total": "Total",
+      "audio": "Audio",
+      "video": "Video",
+      "other": "Other",
+      "files": "files"
+    },
+    "openFolder": "Open Folder",
+    "refresh": "Refresh",
+    "deleteSelected": "Delete Selected ({{count}})",
+    "selectAll": "Select All",
+    "clearSelection": "Clear Selection",
+    "delete": "Delete",
+    "loading": "Loading...",
+    "empty": "No generated resources yet",
+    "confirmDelete": "Delete {{count}} selected files? This cannot be undone.",
+    "deleteSuccess": "Deleted {{count}} files",
+    "deleteFailed": "Delete failed"
   }
 }

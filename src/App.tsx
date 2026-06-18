@@ -8,6 +8,7 @@ import AppHeader from './components/layout/AppHeader';
 import ProjectListPage from './components/layout/ProjectListPage';
 import ToastContainer from './components/layout/ToastContainer';
 import UpdateBanner from './components/layout/UpdateBanner';
+import ResourcePanel from './components/resources/ResourcePanel';
 import SettingsDialog from './components/settings/SettingsDialog';
 import { useCharacterStore } from './store/characterStore';
 import { useProjectStore } from './store/projectStore';
@@ -17,7 +18,7 @@ import { useSettingsStore } from './store/settingsStore';
 import { useUpdateStore } from './store/updateStore';
 import './App.css';
 
-type Tab = 'editor' | 'characters' | 'export';
+type Tab = 'editor' | 'characters' | 'export' | 'resources';
 
 function App() {
   const { t: _t } = useTranslation(); // Reserved for future i18n usage
@@ -120,6 +121,7 @@ function App() {
       <main className="flex-1 overflow-auto">
         {activeTab === 'editor' && <ScriptEditor />}
         {activeTab === 'characters' && <CharacterPanel />}
+        {activeTab === 'resources' && <ResourcePanel />}
         <div className={activeTab === 'export' ? '' : 'hidden'}>
           <ExportPanel />
         </div>
