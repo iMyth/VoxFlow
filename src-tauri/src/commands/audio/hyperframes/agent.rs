@@ -473,9 +473,7 @@ pub fn sanitize_fonts_for_retry(html: &str) -> String {
     let mut result = html.to_string();
 
     // Pattern 1: Explicit font-family declarations
-    let font_family_re = regex::Regex::new(
-        r#"font-family\s*:\s*([^;}"]+)"#
-    ).unwrap();
+    let font_family_re = regex::Regex::new(r#"font-family\s*:\s*([^;}"]+)"#).unwrap();
 
     let matches: Vec<(usize, usize, String)> = font_family_re
         .find_iter(&result)
@@ -498,10 +496,9 @@ pub fn sanitize_fonts_for_retry(html: &str) -> String {
     // Pattern 2: CSS `font` shorthand — the font family comes after the size/line-height.
     // e.g., `font: bold 16px/1.5 "Noto Serif CJK SC", STSong, serif;`
     // We replace the entire font shorthand's family portion with just the generic.
-    let font_shorthand_re = regex::Regex::new(
-        r#"(?i)\bfont\s*:\s*([^;}"]*)"#
-    ).unwrap();
-    let size_re = regex::Regex::new(r#"[\d.]+(?:px|em|rem|pt|vw|vh|%|ex|ch)(?:\s*/\s*[\d.]+)?"#).unwrap();
+    let font_shorthand_re = regex::Regex::new(r#"(?i)\bfont\s*:\s*([^;}"]*)"#).unwrap();
+    let size_re =
+        regex::Regex::new(r#"[\d.]+(?:px|em|rem|pt|vw|vh|%|ex|ch)(?:\s*/\s*[\d.]+)?"#).unwrap();
 
     let matches: Vec<(usize, usize, String)> = font_shorthand_re
         .find_iter(&result)
@@ -510,7 +507,12 @@ pub fn sanitize_fonts_for_retry(html: &str) -> String {
 
     for (start, end, matched) in matches.into_iter().rev() {
         // Skip if this is actually font-family, font-size, font-weight, etc.
-        let prop_name = matched.split(':').next().unwrap_or("").trim().to_lowercase();
+        let prop_name = matched
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
         if prop_name != "font" {
             continue;
         }
@@ -524,10 +526,14 @@ pub fn sanitize_fonts_for_retry(html: &str) -> String {
         let lower_value = value_part.to_lowercase();
 
         // If it contains a specific font name (quoted or known CJK fonts), sanitize
-        let has_specific_font = value_part.contains('"') || value_part.contains('\'')
-            || lower_value.contains("noto") || lower_value.contains("song")
-            || lower_value.contains("hei") || lower_value.contains("kai")
-            || lower_value.contains("ming") || lower_value.contains("gothic");
+        let has_specific_font = value_part.contains('"')
+            || value_part.contains('\'')
+            || lower_value.contains("noto")
+            || lower_value.contains("song")
+            || lower_value.contains("hei")
+            || lower_value.contains("kai")
+            || lower_value.contains("ming")
+            || lower_value.contains("gothic");
 
         if !has_specific_font {
             continue;
@@ -563,8 +569,18 @@ pub fn sanitize_fonts_for_retry(html: &str) -> String {
 fn is_all_generic(value: &str) -> bool {
     value.split(',').all(|f| {
         let f = f.trim().trim_matches('\'').trim_matches('"').trim();
-        matches!(f, "sans-serif" | "serif" | "monospace" | "cursive" | "fantasy"
-            | "inherit" | "initial" | "unset" | "")
+        matches!(
+            f,
+            "sans-serif"
+                | "serif"
+                | "monospace"
+                | "cursive"
+                | "fantasy"
+                | "inherit"
+                | "initial"
+                | "unset"
+                | ""
+        )
     })
 }
 
@@ -572,8 +588,11 @@ fn is_all_generic(value: &str) -> bool {
 fn infer_generic_family(value: &str) -> &'static str {
     if value.contains("mono") || value.contains("code") || value.contains("courier") {
         "monospace"
-    } else if (value.contains("serif") || value.contains("song") || value.contains("ming")
-        || value.contains("baskerville") || value.contains("georgia")
+    } else if (value.contains("serif")
+        || value.contains("song")
+        || value.contains("ming")
+        || value.contains("baskerville")
+        || value.contains("georgia")
         || value.contains("times"))
         && !value.contains("sans")
     {

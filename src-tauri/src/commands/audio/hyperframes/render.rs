@@ -301,8 +301,9 @@ pub async fn render_hyperframes_video(
     // Wait with a 20-minute timeout to prevent indefinite hangs
     let render_timeout = std::time::Duration::from_secs(1200);
     let render_status = match tokio::time::timeout(render_timeout, render_child.wait()).await {
-        Ok(result) => result
-            .map_err(|e| AppError::FileSystem(format!("hyperframes render process error: {}", e)))?,
+        Ok(result) => result.map_err(|e| {
+            AppError::FileSystem(format!("hyperframes render process error: {}", e))
+        })?,
         Err(_) => {
             // Timeout — kill the process
             let _ = render_child.kill().await;

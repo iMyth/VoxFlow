@@ -77,8 +77,7 @@ pub fn list_resources(
         let secs = db.list_sections(&project_id)?;
         secs.into_iter().map(|s| (s.id, s.title)).collect()
     };
-    let section_map: std::collections::HashMap<String, String> =
-        sections.into_iter().collect();
+    let section_map: std::collections::HashMap<String, String> = sections.into_iter().collect();
 
     let mut resources = Vec::new();
 
@@ -231,12 +230,7 @@ pub fn delete_resources_batch(
 ) -> Result<u32, AppError> {
     let mut deleted = 0u32;
     for path in file_paths {
-        match delete_resource(
-            db.clone(),
-            app.clone(),
-            project_id.clone(),
-            path,
-        ) {
+        match delete_resource(db.clone(), app.clone(), project_id.clone(), path) {
             Ok(_) => deleted += 1,
             Err(e) => {
                 log::warn!("Failed to delete resource: {}", e);
@@ -264,9 +258,8 @@ pub fn open_resource_folder(
     }
 
     if !target.exists() {
-        std::fs::create_dir_all(&target).map_err(|e| {
-            AppError::FileSystem(format!("Failed to create directory: {}", e))
-        })?;
+        std::fs::create_dir_all(&target)
+            .map_err(|e| AppError::FileSystem(format!("Failed to create directory: {}", e)))?;
     }
 
     #[cfg(target_os = "macos")]
