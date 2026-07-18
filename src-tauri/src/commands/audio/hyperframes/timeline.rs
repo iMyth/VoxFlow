@@ -70,21 +70,16 @@ pub fn compute_section_timeline(
 
     for line in &section_lines {
         // Check if this line has audio with valid duration
-        let has_audio = frag_map
-            .get(line.id.as_str())
-            .and_then(|f| f.duration_ms)
-            .is_some();
-
-        if !has_audio {
-            // Line without usable audio: accumulate gap as silence (matches merge_section_audio)
-            if line.gap_after_ms > 0 {
-                cursor += line.gap_after_ms as f64 / 1000.0;
+        let duration_ms = match frag_map.get(line.id.as_str()).and_then(|f| f.duration_ms) {
+            Some(d) => d,
+            None => {
+                // Line without usable audio: accumulate gap as silence (matches merge_section_audio)
+                if line.gap_after_ms > 0 {
+                    cursor += line.gap_after_ms as f64 / 1000.0;
+                }
+                continue;
             }
-            continue;
-        }
-
-        let frag = frag_map.get(line.id.as_str()).unwrap();
-        let duration_ms = frag.duration_ms.unwrap();
+        };
         let duration_secs = duration_ms as f64 / 1000.0;
 
         timeline.push(TimelineEntry {
@@ -144,21 +139,16 @@ pub fn compute_timeline(
 
     for line in lines {
         // Check if this line has audio with valid duration
-        let has_audio = frag_map
-            .get(line.id.as_str())
-            .and_then(|f| f.duration_ms)
-            .is_some();
-
-        if !has_audio {
-            // Line without usable audio: accumulate gap as silence (matches merge_section_audio)
-            if line.gap_after_ms > 0 {
-                cursor += line.gap_after_ms as f64 / 1000.0;
+        let duration_ms = match frag_map.get(line.id.as_str()).and_then(|f| f.duration_ms) {
+            Some(d) => d,
+            None => {
+                // Line without usable audio: accumulate gap as silence (matches merge_section_audio)
+                if line.gap_after_ms > 0 {
+                    cursor += line.gap_after_ms as f64 / 1000.0;
+                }
+                continue;
             }
-            continue;
-        }
-
-        let frag = frag_map.get(line.id.as_str()).unwrap();
-        let duration_ms = frag.duration_ms.unwrap();
+        };
         let duration_secs = duration_ms as f64 / 1000.0;
 
         timeline.push(TimelineEntry {

@@ -256,7 +256,10 @@ pub async fn render_hyperframes_video(
             &silent_video_str,
         ])
         .current_dir(comp_dir)
-        .stdout(Stdio::piped())
+        // stdout must be null (not piped-without-reader): Chrome writes progress
+        // to stdout. If we pipe it but never drain, the OS buffer (64 KB) fills up
+        // and the render process deadlocks on write.
+        .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if !node_env.bin_dir.is_empty() {
         let path = prepend_to_path(&node_env.bin_dir);
