@@ -174,35 +174,37 @@ pub async fn generate_with_agent(
     let timeline_json = build_timeline_prompt(entries, total_duration);
 
     let user_prompt = format!(
-        r#"为以下有声书生成视觉伴奏视频（Hyperframes HTML 作品）。
+        r#"为以下有声书生成 Hyperframes HTML 视觉伴奏视频。
 
-【核心定位】
-这是有声书的"视觉伴奏"视频——音频已有完整旁白，视频营造氛围、传递情绪。
-- 不要把原文逐字逐句当字幕堆在画面上（观众听音频获取内容）
-- 但可以展示内容中的关键短句、金句、核心概念、人名地名等，作为视觉亮点
-- 每个场景展示 1-3 个关键短语（每个不超过 15 字），配合丰富的视觉动画
+# 你的角色
 
-【视觉丰富度 - 重要】
-画面必须丰富、有活力，禁止空洞：
-- 每个场景至少 6-10 个视觉元素（文字 + 图形 + 装饰），让画面充实
-- 必须有明显、肉眼可感知的持续动画——不是"看 10 秒才发现在动"的微动画
-- 动画速度要合理：装饰元素 2-5 秒一个循环，主元素入场 0.5-1.2 秒
-- 每个场景必须有连续运动的元素（旋转的几何体、流动的线条、脉动的光晕等）
-- 场景内的元素应该分批入场（stagger），形成节奏感，而非同时出现
+你是一位动态影像设计师。音频已有完整旁白，你的视频是"视觉伴奏"——营造氛围、传递情绪、强化记忆点。观众听着音频，看着你的画面感受内容的力量。
 
-具体视觉元素建议：
-- 大号关键词/短句：80px+，用动感入场（slam、slide、scale 等）
-- 几何装饰：旋转的圆环、脉动的多边形、移动的线条网格
-- 背景层：渐变色流动、radial glow 呼吸、粒子漂浮效果
-- 分隔/结构：动态 accent lines、扩展的边框、reveal 效果
-- 数据感元素：progress bar 动画、counter 计数、node 连接线
+# 内容呈现
 
-【场景规划】
-- 根据内容主题和情绪变化划分场景
-- 每 10-20 秒一个场景（内容密集时可以更短）
-- 每个场景有独特的视觉风格（不同的主体几何、不同的动画方向），但调色板一致
-- 场景间必须有过渡效果（crossfade、wipe、blur-through 等），禁止跳切
-- 最后一个场景有淡出效果，其余只做入场动画（过渡处理退场）
+从每一段内容中提炼 1-3 个关键短语（每个 ≤ 15 字）作为视觉亮点——金句、核心概念、人名地名。
+这些短语是画面中的"锚点"，用 80px+ 大字号、动感入场（slam / slide / scale）让观众一眼抓住。
+
+# 视觉丰富度
+
+每个场景 6-10 个视觉元素，分层构建：
+- **文字层**：关键词/短句，80px+，动感入场
+- **几何层**：旋转圆环、脉动多边形、流动线条网格
+- **背景层**：渐变流动、radial glow 呼吸、粒子漂浮
+- **结构层**：动态 accent lines、扩展边框、reveal 效果
+- **数据层**（可选）：progress bar、counter 计数、node 连接线
+
+让画面持续运动——装饰元素 2-5s 一个循环，主元素入场 0.5-1.2s，元素分批 stagger 入场形成节奏。
+"看一眼就能感受到生命力"是你的最低标准。
+
+# 场景与节奏
+
+- 每 10-20 秒一个场景，根据内容和情绪变化划分
+- 每个场景有独特的视觉个性（不同主体几何、不同动画方向），但调色板统一
+- 场景间用 crossfade / wipe / blur-through 平滑过渡
+- 最后一个场景淡出收束，其余场景只做入场动画（退场由过渡处理）
+- 参考 beat-direction.md 规划快拍与慢拍交替
+- 同一场景内至少 3 种不同的 ease
 
 时间轴数据（JSON）：
 {timeline}
@@ -210,40 +212,40 @@ pub async fn generate_with_agent(
 总时长：{duration:.2} 秒，条目数：{count}
 {user_section}
 
-【视觉设计】
-按照 house-style.md 和 video-composition.md 的规则：
-1. 选择适合内容情绪的调色板，声明 bg/fg/accent
-2. 选择有特色的字体（避开 Banned 列表）
-3. 场景主视觉使用 techniques.md 中的技巧（SVG drawing、CSS 3D、kinetic type 等）
-4. 参考 beat-direction.md 规划节奏——快拍 vs 慢拍交替
-5. 每个场景入场动画用不同方向和缓动
-6. 同一场景内至少 3 种不同的 ease
+# 视觉设计
 
-【时间轴同步】
-每个时间轴条目的 start 和 duration 对应音频的精确时间：
-- clip 的 data-start = 条目的 start（秒）
-- clip 的 data-duration = 条目的 duration（秒）
-- 条目间的间隔必须保留
-- 整个作品从 t=0 开始，在 t={duration:.2}s 结束
+按照 house-style.md 和 video-composition.md 的规则：
+1. 选择匹配内容情绪的调色板，声明 bg/fg/accent
+2. 选择有特色的字体（参考 typography.md）
+3. 场景主视觉运用 techniques.md 中的技巧（SVG drawing、CSS 3D、kinetic type 等）
+
+# 时间轴同步
+
+每个条目的 start 和 duration 精确对应音频时间：
+- clip 的 data-start = 条目 start（秒）
+- clip 的 data-duration = 条目 duration（秒）
+- 条目间的间隔保留
+- 整个作品 t=0 开始，t={duration:.2}s 结束
 - 多个条目可共享一个视觉场景，但每条仍需对应的 clip 元素
 
-【技术要求 - 严格遵守，否则渲染会失败】
-- 根元素设置 data-duration="{duration:.2}"
-- composition-id="ai-generated"，尺寸 1920x1080
-- GSAP timeline 必须用 paused: true
-- 必须同步注册 window.__timelines['ai-generated'] = tl;（不能放在 setTimeout、async、Promise 里）
-- 必须在 </body> 前的 <script> 中同步执行所有 GSAP 代码
-- 实现 window.__hf = {{ duration: {duration:.2}, seek: function(t) {{ Object.values(window.__timelines).forEach(function(tl) {{ tl.seek(t) }}) }} }}
-- GSAP CDN: <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
-- 禁止：Math.random()、Date.now()、repeat:-1、async timeline construction
-- 关键词字号 80px+
-- font-variant-numeric: tabular-nums 处理数字
-- gsap.from() 做入场，gsap.to() 只用于最后场景退出
-- 每个入场 tween 偏移 0.1-0.3s（不从 t=0 开始）
+# 渲染引擎技术要求
 
-【输出格式】
-直接输出完整 HTML 文档，<!DOCTYPE html> 开头，</html> 结尾。
-不输出解释文字、代码围栏。只输出 HTML。"#,
+这些是 Hyperframes 渲染器的硬性要求，违反任何一条都会导致渲染失败：
+
+1. 根元素：data-composition-id="ai-generated"，data-width="1920"，data-height="1080"，data-duration="{duration:.2}"
+2. GSAP timeline 使用 paused: true
+3. 同步注册 window.__timelines['ai-generated'] = tl;（在 </body> 前的 <script> 中直接执行）
+4. 注册方式必须是同步代码——setTimeout、async、Promise 回调中的注册会被渲染器忽略
+5. 实现 window.__hf = {{ duration: {duration:.2}, seek: function(t) {{ Object.values(window.__timelines).forEach(function(tl) {{ tl.seek(t) }}) }} }}
+6. GSAP CDN: <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+7. 渲染器逐帧截图，所以所有动画必须是确定性的——使用 seed、公式、固定时间线，确保同一帧每次渲染结果完全一致
+8. 关键词字号 80px+，数字用 font-variant-numeric: tabular-nums
+9. gsap.from() 做入场动画，gsap.to() 仅用于最后场景的退出动画
+10. 每个入场 tween 起始时间偏移 0.1-0.3s
+
+# 输出
+
+输出完整 HTML 文档：<!DOCTYPE html> 开头，</html> 结尾，中间不加任何解释文字或代码围栏。"#,
         user_section = match user_instructions {
             Some(instructions) if !instructions.is_empty() =>
                 format!("\n用户额外要求（请务必遵循）：\n{}\n", instructions),
@@ -1170,9 +1172,9 @@ fn try_extract_from_code_fences(text: &str) -> Option<String> {
     let after_fence_start = &text[fence_start + 3..];
 
     // Skip the language identifier (e.g., "html", "HTML", "htm")
-    let content_start = match after_fence_start.find('\n') {
-        Some(nl_pos) => fence_start + 3 + nl_pos + 1,
-        None => return None, // No newline after fence, malformed
+    let content_start = {
+        let nl_pos = after_fence_start.find('\n')?;
+        fence_start + 3 + nl_pos + 1
     };
 
     let content = &text[content_start..];

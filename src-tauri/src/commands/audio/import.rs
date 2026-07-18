@@ -105,7 +105,7 @@ pub async fn import_audio(
 
     // Save as .webm (native MediaRecorder format)
     let file_path = recording_dir
-        .join(format!("{}.webm", &line_id))
+        .join(format!("{}.webm", line_id))
         .to_string_lossy()
         .to_string();
 
