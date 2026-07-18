@@ -175,7 +175,7 @@ pub async fn preview_voice(
 
     // Cache by voice name — skip regeneration if preview already exists
     let file_path = preview_dir
-        .join(format!("{}.mp3", &voice))
+        .join(format!("{}.mp3", voice))
         .to_string_lossy()
         .to_string();
 

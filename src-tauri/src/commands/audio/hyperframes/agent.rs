@@ -1172,9 +1172,9 @@ fn try_extract_from_code_fences(text: &str) -> Option<String> {
     let after_fence_start = &text[fence_start + 3..];
 
     // Skip the language identifier (e.g., "html", "HTML", "htm")
-    let content_start = match after_fence_start.find('\n') {
-        Some(nl_pos) => fence_start + 3 + nl_pos + 1,
-        None => return None, // No newline after fence, malformed
+    let content_start = {
+        let nl_pos = after_fence_start.find('\n')?;
+        fence_start + 3 + nl_pos + 1
     };
 
     let content = &text[content_start..];
