@@ -28,16 +28,50 @@ use crate::core::error::AppError;
 /// This is a single source of truth for the sleep mode filter chain,
 /// used by section_audio.rs, video_merger.rs, and render.rs.
 pub fn build_sleep_mode_audio_filter() -> &'static str {
-    "bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7"
+    "bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7:linear=true"
+}
+
+/// Probe the duration of a media file in seconds using ffprobe.
+fn probe_duration_secs(file_path: &str) -> Result<f64, AppError> {
+    let ffmpeg_path = find_ffmpeg();
+    let ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe");
+
+    let output = std::process::Command::new(&ffprobe_path)
+        .args([
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            file_path,
+        ])
+        .output()
+        .map_err(|e| AppError::FFmpeg(format!("Failed to run ffprobe for duration: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(AppError::FFmpeg(format!(
+            "ffprobe duration query failed for '{}'",
+            file_path
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| AppError::FFmpeg(format!("Failed to parse duration from ffprobe for '{}'", file_path)))
 }
 
 /// Merge a silent video with an audio file using FFmpeg.
 ///
 /// - Video is copied without re-encoding (`-c:v copy`)
 /// - Audio is encoded to AAC (`-c:a aac`)
-/// - Uses `-shortest` to truncate output to the shorter stream (audio).
-///   This prevents oversized videos (from LLM rendering bugs) from polluting
-///   the final multi-section merge with trailing blank frames.
+/// - Uses audio duration as the authoritative length via `-t` from ffprobe.
+///   This prevents audio truncation that occurred with `-shortest` when the
+///   video stream was slightly shorter than the audio stream (due to frame
+///   rounding). If the video is shorter, the last frame holds; if longer,
+///   it gets trimmed to audio duration — preventing trailing blank frames.
 ///
 /// Returns Ok(()) on success, Err on failure. No longer silently falls back
 /// to a silent video — callers should handle the error explicitly.
@@ -53,12 +87,14 @@ pub async fn merge_video_with_audio(
         silent_video_path, audio_path, output_path
     );
 
-    // Use audio as the duration reference:
-    // -map 0:v -map 1:a ensures we take video from first input, audio from second.
-    // -shortest: truncate to the shorter stream. This is critical because if the
-    // video renderer produced a longer-than-expected video (due to incorrect duration
-    // in the HTML), we don't want trailing blank frames polluting the output and
-    // breaking the final multi-section merge.
+    // Probe audio duration to use as the authoritative output length.
+    // Previously we used -shortest which would truncate audio if the video stream
+    // ended slightly earlier (due to frame duration rounding). Now we explicitly
+    // set the output duration to match audio, ensuring no audio is lost.
+    let audio_duration_secs = probe_duration_secs(audio_path)?;
+
+    let duration_str = format!("{:.6}", audio_duration_secs);
+
     let result = Command::new(&ffmpeg_bin)
         .args([
             "-y",
@@ -76,7 +112,8 @@ pub async fn merge_video_with_audio(
             "aac",
             "-b:a",
             "192k",
-            "-shortest",
+            "-t",
+            &duration_str,
             output_path,
         ])
         .stdout(Stdio::null())

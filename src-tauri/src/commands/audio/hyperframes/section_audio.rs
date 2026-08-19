@@ -210,7 +210,7 @@ pub async fn merge_section_audio(
     } else {
         // Normal mode: concat → single loudnorm pass
         filter.push_str(&format!(
-            "concat=n={}:v=0:a=1[raw];[raw]loudnorm=I=-16:TP=-1.5:LRA=11[out]",
+            "concat=n={}:v=0:a=1[raw];[raw]loudnorm=I=-16:TP=-1.5:LRA=11:linear=true[out]",
             n
         ));
     }
