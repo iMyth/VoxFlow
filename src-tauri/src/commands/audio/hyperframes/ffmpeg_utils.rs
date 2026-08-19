@@ -57,10 +57,12 @@ fn probe_duration_secs(file_path: &str) -> Result<f64, AppError> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .trim()
-        .parse::<f64>()
-        .map_err(|_| AppError::FFmpeg(format!("Failed to parse duration from ffprobe for '{}'", file_path)))
+    stdout.trim().parse::<f64>().map_err(|_| {
+        AppError::FFmpeg(format!(
+            "Failed to parse duration from ffprobe for '{}'",
+            file_path
+        ))
+    })
 }
 
 /// Merge a silent video with an audio file using FFmpeg.
