@@ -12,8 +12,8 @@ use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::core::db::Database;
 use crate::core::error::AppError;
 
-use super::ffmpeg_utils::build_sleep_mode_audio_filter;
 use super::section_types::{MergeProgress, SectionVideoFile};
+use crate::commands::audio::loudness::{master_sleep, TemporaryMedia};
 
 /// Probe a video file's codec and resolution using ffprobe.
 fn probe_video(file_path: &str) -> Result<(String, String), AppError> {
@@ -63,25 +63,32 @@ fn probe_video(file_path: &str) -> Result<(String, String), AppError> {
     }
 }
 
-/// Merge section videos into a final output.
-///
-/// - Validates all section files exist
-/// - Probes codec/resolution via ffprobe
-/// - Uses concat demuxer if uniform and no audio processing needed
-/// - Re-encodes if mixed formats or audio processing needed
-/// - Applies sleep mode audio processing if enabled:
-///   - Slight pitch reduction (0.95x)
-///   - Bass warmth boost (+3dB at 150Hz)
-///   - High-frequency rolloff (8kHz lowpass)
-///   - Quieter target loudness (-20 LUFS instead of -16 LUFS)
-/// - Single section: copies without re-encoding unless sleep mode enabled
-/// - Emits progress via callback
-/// - Cleans up partial output on failure
+/// Merge sections, then master the complete audio track once for sleep mode.
+/// Both uniform and mixed-resolution exports share exactly the same audio path.
 pub async fn merge_videos(
     section_videos: &[SectionVideoFile],
     output_path: &Path,
     _transition_duration_ms: u32,
     sleep_mode: bool,
+    on_progress: impl Fn(f32, &str),
+) -> Result<String, AppError> {
+    if !sleep_mode {
+        return merge_videos_raw(section_videos, output_path, on_progress).await;
+    }
+    let intermediate = TemporaryMedia::beside(output_path, "mp4");
+    merge_videos_raw(section_videos, &intermediate.0, |p, stage| {
+        on_progress(p * 0.7, stage)
+    })
+    .await?;
+    on_progress(75.0, "processing_audio");
+    master_sleep(&intermediate.0, output_path, true).await?;
+    on_progress(100.0, "finalizing");
+    Ok(output_path.to_string_lossy().into_owned())
+}
+
+async fn merge_videos_raw(
+    section_videos: &[SectionVideoFile],
+    output_path: &Path,
     on_progress: impl Fn(f32, &str),
 ) -> Result<String, AppError> {
     if section_videos.is_empty() {
@@ -106,60 +113,12 @@ pub async fn merge_videos(
         )));
     }
 
-    // Single section: just copy if no sleep mode, otherwise re-encode with audio processing
+    // Single section: mastering (if requested) happens in the outer wrapper.
     if section_videos.len() == 1 {
         on_progress(50.0, "concatenating");
 
-        if !sleep_mode {
-            std::fs::copy(&section_videos[0].file_path, output_path).map_err(|e| {
-                AppError::FFmpeg(format!("Failed to copy single section video: {}", e))
-            })?;
-        } else {
-            // Re-encode with sleep mode audio processing
-            let ffmpeg_bin = find_ffmpeg();
-            let input_path = section_videos[0].file_path.clone();
-            let output_str = output_path.to_string_lossy().to_string();
-
-            let args = vec![
-                "-y".to_string(),
-                "-i".to_string(),
-                input_path.clone(),
-                "-c:v".to_string(),
-                "copy".to_string(),
-                "-af".to_string(),
-                build_sleep_mode_audio_filter().to_string(),
-                output_str.clone(),
-            ];
-
-            let result = tokio::task::spawn_blocking(move || {
-                std::process::Command::new(&ffmpeg_bin)
-                    .args(&args)
-                    .stderr(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .output()
-            })
-            .await
-            .map_err(|e| AppError::FFmpeg(format!("spawn_blocking failed: {}", e)))?;
-
-            match result {
-                Ok(output) if output.status.success() => {}
-                Ok(output) => {
-                    let _ = std::fs::remove_file(output_path);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(AppError::FFmpeg(format!(
-                        "Failed to process single section with sleep mode: {}",
-                        stderr.chars().take(300).collect::<String>()
-                    )));
-                }
-                Err(e) => {
-                    let _ = std::fs::remove_file(output_path);
-                    return Err(AppError::FFmpeg(format!(
-                        "Failed to execute ffmpeg for sleep mode: {}",
-                        e
-                    )));
-                }
-            }
-        }
+        std::fs::copy(&section_videos[0].file_path, output_path)
+            .map_err(|e| AppError::FFmpeg(format!("Failed to copy section video: {e}")))?;
 
         on_progress(100.0, "finalizing");
         return Ok(output_path.to_string_lossy().to_string());
@@ -189,7 +148,7 @@ pub async fn merge_videos(
     let ffmpeg_bin = find_ffmpeg();
     let output_str = output_path.to_string_lossy().to_string();
 
-    if is_uniform && all_1080p && !sleep_mode {
+    if is_uniform && all_1080p {
         // Re-encode audio during concat to avoid sample rate / AAC priming issues.
         // The concat demuxer with `-c copy` on low sample rate AAC (22050Hz) causes
         // ffmpeg to misinterpret time_base, inflating audio duration vs video duration.
@@ -257,132 +216,8 @@ pub async fn merge_videos(
                 Err(AppError::FFmpeg(format!("Failed to execute ffmpeg: {}", e)))
             }
         }
-    } else if is_uniform && all_1080p && sleep_mode {
-        // Format uniform + sleep mode: concat with audio re-encode, then apply sleep processing.
-        // Must re-encode audio during concat to avoid 22050Hz AAC time_base issues.
-        let temp_path = output_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("_temp_concat.mp4");
-        let temp_path_str = temp_path.to_string_lossy().to_string();
-
-        // Step 1: Concat all sections (video copy, audio re-encode to fix sample rate)
-        let concat_path = temp_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("_concat_list.txt");
-        let concat_path_str = concat_path.to_string_lossy().to_string();
-
-        let mut content = String::new();
-        for sv in section_videos {
-            content.push_str(&format!("file '{}'\n", sv.file_path));
-        }
-        std::fs::write(&concat_path, &content)
-            .map_err(|e| AppError::FFmpeg(format!("Failed to write concat list: {}", e)))?;
-
-        on_progress(30.0, "concatenating");
-
-        let ffmpeg_bin_clone = ffmpeg_bin.clone();
-        let concat_result = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(&ffmpeg_bin_clone)
-                .args([
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    &concat_path_str,
-                    "-c:v",
-                    "copy",
-                    "-c:a",
-                    "aac",
-                    "-ar",
-                    "44100",
-                    "-b:a",
-                    "192k",
-                    &temp_path_str,
-                ])
-                .stderr(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .output()
-        })
-        .await
-        .map_err(|e| AppError::FFmpeg(format!("spawn_blocking failed: {}", e)))?;
-
-        let _ = std::fs::remove_file(&concat_path);
-
-        match concat_result {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                let _ = std::fs::remove_file(&temp_path);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(AppError::FFmpeg(format!(
-                    "Failed to concat sections: {}",
-                    stderr.chars().take(300).collect::<String>()
-                )));
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(AppError::FFmpeg(format!(
-                    "Failed to execute ffmpeg concat: {}",
-                    e
-                )));
-            }
-        }
-
-        on_progress(60.0, "processing_audio");
-
-        // Step 2: Apply sleep mode audio processing
-        let output_str = output_path.to_string_lossy().to_string();
-        let temp_path_str = temp_path.to_string_lossy().to_string();
-
-        let args = vec![
-            "-y".to_string(),
-            "-i".to_string(),
-            temp_path_str.clone(),
-            "-c:v".to_string(),
-            "copy".to_string(),
-            "-af".to_string(),
-            build_sleep_mode_audio_filter().to_string(),
-            output_str.clone(),
-        ];
-
-        let result = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(&ffmpeg_bin)
-                .args(&args)
-                .stderr(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .output()
-        })
-        .await
-        .map_err(|e| AppError::FFmpeg(format!("spawn_blocking failed: {}", e)))?;
-
-        let _ = std::fs::remove_file(&temp_path);
-
-        match result {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                let _ = std::fs::remove_file(output_path);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(AppError::FFmpeg(format!(
-                    "Failed to apply sleep mode processing: {}",
-                    stderr.chars().take(300).collect::<String>()
-                )));
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(output_path);
-                return Err(AppError::FFmpeg(format!(
-                    "Failed to execute ffmpeg sleep mode: {}",
-                    e
-                )));
-            }
-        }
-
-        on_progress(100.0, "finalizing");
-        Ok(output_path.to_string_lossy().to_string())
     } else {
-        // Formats are not uniform (different resolution or codec), OR sleep mode with non-uniform.
+        // Formats are not uniform (different resolution or codec).
         // Use concat filter with per-input scale to normalize all videos to 1920x1080.
         // This handles LLM rendering bugs that produce wrong resolutions.
         let mut args: Vec<String> = vec!["-y".to_string()];
@@ -417,15 +252,7 @@ pub async fn merge_videos(
             filter_complex.push_str(&format!("[v{i}][a{i}]", i = i));
         }
 
-        if sleep_mode {
-            filter_complex.push_str(&format!(
-                "concat=n={}:v=1:a=1[vtmp][atmp];[atmp]{}[aout];[vtmp]copy[vout]",
-                n,
-                build_sleep_mode_audio_filter()
-            ));
-        } else {
-            filter_complex.push_str(&format!("concat=n={}:v=1:a=1[vout][aout]", n));
-        }
+        filter_complex.push_str(&format!("concat=n={}:v=1:a=1[vout][aout]", n));
 
         args.push("-filter_complex".to_string());
         args.push(filter_complex);

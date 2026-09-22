@@ -100,14 +100,36 @@ pub async fn export_audio_mix(
         },
     );
 
+    let sleep_enabled = sleep_mode.unwrap_or(false);
+    let gains = if sleep_enabled {
+        let _ = app.emit(
+            "mix-progress",
+            MixProgress {
+                percent: 15.0,
+                stage: "正在测量逐句响度".into(),
+            },
+        );
+        super::loudness::clip_gains(&audio_paths).await?
+    } else {
+        Vec::new()
+    };
+    let intermediate =
+        super::loudness::TemporaryMedia::beside(std::path::Path::new(&output_path), "wav");
+    let mix_path = if sleep_enabled {
+        intermediate.0.to_string_lossy().into_owned()
+    } else {
+        output_path.clone()
+    };
+
     // Build FFmpeg command
     let ffmpeg_args = build_ffmpeg_args(
         &audio_paths,
         bgm_path.as_deref(),
         bgm_volume,
         &gaps_ms,
-        &output_path,
-        sleep_mode.unwrap_or(false),
+        &mix_path,
+        sleep_enabled,
+        &gains,
     );
 
     let _ = app.emit(
@@ -148,6 +170,18 @@ pub async fn export_audio_mix(
             "FFmpeg exited with error: {}",
             stderr
         )));
+    }
+
+    if sleep_enabled {
+        let _ = app.emit(
+            "mix-progress",
+            MixProgress {
+                percent: 75.0,
+                stage: "正在平衡睡眠音轨响度".into(),
+            },
+        );
+        super::loudness::master_sleep(&intermediate.0, std::path::Path::new(&output_path), false)
+            .await?;
     }
 
     let _ = app.emit(

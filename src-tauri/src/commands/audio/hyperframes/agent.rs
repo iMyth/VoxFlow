@@ -104,83 +104,76 @@ pub async fn generate_with_agent(
 
     report("agent_generating");
 
-    // Retry up to 2 times on extraction failure (LLM may return malformed output).
-    let max_attempts = 2;
-    let mut last_error: Option<String> = None;
-    let mut html = String::new();
-
-    for attempt in 1..=max_attempts {
-        let start = std::time::Instant::now();
-        info!(
-            "[Agent] Sending prompt to LLM (model: {}, attempt {}/{})...",
-            config.model, attempt, max_attempts
-        );
-
+    // Retry the entire extraction / post-processing / validation pipeline.
+    // A failed validation must never be published as a successful composition.
+    let mut last_error = String::new();
+    for attempt in 1..=2 {
+        let prompt = if attempt == 1 {
+            user_prompt.clone()
+        } else {
+            report("retrying");
+            format!("{user_prompt}\n\nThe previous attempt failed: {last_error}\nGenerate the entire corrected HTML document, including </body> and </html>. Simplify the visuals if needed to fit the output limit. Return HTML only.")
+        };
+        info!("[Agent] Generating composition, attempt {}", attempt);
         let response = agent
-            .prompt(&user_prompt)
+            .prompt(&prompt)
             .max_turns(1)
             .await
             .map_err(|e| format!("Agent execution failed: {e}"))?;
-        info!("[Agent] LLM response received in {:?}", start.elapsed());
 
         report("extracting_html");
-
-        // Log the response for debugging — use char boundary safe truncation
-        info!("[Agent] Response length: {} chars", response.len());
-        let preview_end = response
-            .char_indices()
-            .take_while(|(i, _)| *i < 200)
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
-        info!("[Agent] Response preview: {}", &response[..preview_end]);
-
-        match extract_html(&response) {
-            Ok(extracted) => {
-                html = extracted;
-                last_error = None;
-                break;
+        match prepare_composition(&response, entries, total_duration) {
+            Ok(html) => {
+                report("agent_done");
+                return Ok(html);
             }
-            Err(e) => {
-                info!(
-                    "[Agent] HTML extraction failed on attempt {}: {}",
-                    attempt, e
-                );
-                last_error = Some(e);
-                if attempt < max_attempts {
-                    info!("[Agent] Retrying LLM generation...");
-                    report("retrying");
-                }
+            Err(error) => {
+                info!("[Agent] Attempt {} rejected: {}", attempt, error);
+                last_error = error;
             }
         }
     }
+    Err(format!(
+        "Composition generation failed after 2 attempts: {last_error}"
+    ))
+}
 
-    if let Some(err) = last_error {
-        return Err(err);
-    }
-
-    // Post-process: apply safety-net fixes in dependency order
+fn prepare_composition(
+    response: &str,
+    entries: &[TimelineEntry],
+    duration: f64,
+) -> Result<String, String> {
+    let mut html = extract_html(response)?;
     html = fix_css_font_variables(&html);
     html = sanitize_unsupported_fonts(&html);
-    html = ensure_hyperframes_interfaces(&html, total_duration);
-    html = ensure_root_duration(&html, total_duration);
+    html = ensure_hyperframes_interfaces(&html, duration);
+    html = ensure_root_duration(&html, duration);
     html = ensure_clip_timing(&html, entries);
-    html = clamp_overflow_clips(&html, total_duration);
+    html = clamp_overflow_clips(&html, duration);
+    validate_composition(&html).map_err(|errors| errors.join("\n"))?;
+    Ok(html)
+}
 
-    // Final validation
-    match validate_composition(&html) {
-        Ok(()) => {
-            info!("[Agent] Generation complete, validation passed");
-            report("agent_done");
-            Ok(html)
-        }
-        Err(errors) => {
-            info!(
-                "[Agent] Generation complete with {} validation warnings",
-                errors.len()
-            );
-            report("agent_done_with_warnings");
-            Ok(html)
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_complete_document_without_composition() {
+        assert!(prepare_composition(
+            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"></head><body>hello</body></html>",
+            &[],
+            5.0
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_truncation_before_injecting_safety_net() {
+        assert!(
+            prepare_composition("<!DOCTYPE html><html><head><style>.scene{top:", &[], 5.0)
+                .unwrap_err()
+                .contains("incomplete")
+        );
     }
 }

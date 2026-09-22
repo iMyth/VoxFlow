@@ -10,6 +10,7 @@ mod export;
 pub mod ffmpeg;
 pub mod hyperframes;
 mod import;
+pub mod loudness;
 mod player;
 
 // Re-export all public items from submodules (includes __cmd__ functions from #[tauri::command])
