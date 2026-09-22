@@ -16,6 +16,104 @@ use crate::core::error::AppError;
 
 use super::ffmpeg_utils::{copy_video_file, merge_video_with_audio};
 
+// Keep both entry points on the same tested renderer and memory budget.
+pub const HYPERFRAMES_PACKAGE: &str = "hyperframes@0.6.25";
+pub static RENDER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Drain both pipes concurrently so Chrome cannot block on a full pipe.
+/// Keep a bounded tail for errors and persist the complete output for diagnosis.
+pub struct RenderLogs {
+    tail: std::sync::Arc<std::sync::Mutex<String>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl RenderLogs {
+    pub fn start(
+        child: &mut tokio::process::Child,
+        file: std::fs::File,
+        progress: impl Fn(f32) + Send + Sync + 'static,
+    ) -> Self {
+        use std::io::Write;
+        let tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let file = std::sync::Arc::new(std::sync::Mutex::new(file));
+        let progress = std::sync::Arc::new(progress);
+        let mut tasks = Vec::new();
+        let streams: Vec<Box<dyn tokio::io::AsyncRead + Unpin + Send>> = vec![
+            Box::new(child.stdout.take().expect("piped stdout")),
+            Box::new(child.stderr.take().expect("piped stderr")),
+        ];
+        for stream in streams {
+            let tail = tail.clone();
+            let file = file.clone();
+            let progress = progress.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut lines = BufReader::new(stream).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Ok(mut log) = file.lock() {
+                        let _ = writeln!(log, "{line}");
+                    }
+                    if let Ok(mut captured) = tail.lock() {
+                        captured.push_str(&line);
+                        captured.push('\n');
+                        if captured.len() > 32_768 {
+                            let mut cut = captured.len() - 32_768;
+                            while !captured.is_char_boundary(cut) {
+                                cut += 1;
+                            }
+                            captured.drain(..cut);
+                        }
+                    }
+                    if let Some(pct) = parse_render_progress(&line) {
+                        progress(pct);
+                    }
+                }
+            }));
+        }
+        Self { tail, tasks }
+    }
+
+    pub async fn finish(mut self) -> String {
+        // Descendants can inherit pipe handles. Never wait indefinitely for EOF.
+        for task in &mut self.tasks {
+            if tokio::time::timeout(std::time::Duration::from_secs(2), &mut *task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+        self.tail.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+}
+
+pub fn configure_render_process(command: &mut Command) {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+pub async fn kill_render_process(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill().await;
+}
+
 /// Node.js environment: npx path + the bin directory it lives in.
 ///
 /// The bin directory must be added to PATH when spawning npx/node processes,
@@ -196,6 +294,7 @@ pub async fn render_hyperframes_video(
         composition_dir, output_path, audio_path
     );
 
+    let _render_guard = RENDER_LOCK.lock().await;
     let comp_dir = Path::new(&composition_dir);
     if !comp_dir.join("index.html").exists() {
         return Err(AppError::FileSystem(
@@ -249,18 +348,22 @@ pub async fn render_hyperframes_video(
     let mut render_cmd = Command::new(&node_env.npx);
     render_cmd
         .args([
+            "--yes",
             "--prefer-offline",
-            "hyperframes",
+            HYPERFRAMES_PACKAGE,
             "render",
+            "--workers",
+            "1",
             "--output",
             &silent_video_str,
         ])
-        .current_dir(comp_dir)
-        // stdout must be null (not piped-without-reader): Chrome writes progress
-        // to stdout. If we pipe it but never drain, the OS buffer (64 KB) fills up
-        // and the render process deadlocks on write.
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .current_dir(comp_dir);
+    configure_render_process(&mut render_cmd);
+    let log_file = std::fs::File::create(comp_dir.join("render.log"))
+        .map_err(|e| AppError::FileSystem(format!("Cannot create render log: {e}")))?;
+    if silent_video.exists() {
+        std::fs::remove_file(&silent_video).map_err(|e| AppError::FileSystem(e.to_string()))?;
+    }
     if !node_env.bin_dir.is_empty() {
         let path = prepend_to_path(&node_env.bin_dir);
         render_cmd.env("PATH", &path);
@@ -270,36 +373,16 @@ pub async fn render_hyperframes_video(
     let mut render_child = render_result
         .map_err(|e| AppError::FileSystem(format!("Failed to start hyperframes render: {}", e)))?;
 
-    // Read stderr for progress and error capture
-    let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let stderr_capture_clone = stderr_capture.clone();
-
-    if let Some(stderr) = render_child.stderr.take() {
-        let app_clone = app.clone();
-        tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                // Capture all stderr for error reporting
-                if let Ok(mut captured) = stderr_capture_clone.lock() {
-                    captured.push_str(&line);
-                    captured.push('\n');
-                }
-                // Try to parse progress from hyperframes render output
-                // Typical format: "Rendering frame 30/900 (3%)"
-                if let Some(pct) = parse_render_progress(&line) {
-                    let mapped = 5.0 + pct * 0.7; // Map to 5%-75% range
-                    let _ = app_clone.emit(
-                        "hyperframes-render-progress",
-                        RenderProgress {
-                            percent: mapped,
-                            stage: format!("渲染中... {}%", (pct * 100.0) as u32),
-                        },
-                    );
-                }
-            }
-        });
-    }
+    let app_clone = app.clone();
+    let logs = RenderLogs::start(&mut render_child, log_file, move |pct| {
+        let _ = app_clone.emit(
+            "hyperframes-render-progress",
+            RenderProgress {
+                percent: 5.0 + pct * 70.0,
+                stage: format!("渲染中... {}%", (pct * 100.0) as u32),
+            },
+        );
+    });
 
     // Wait with a 20-minute timeout to prevent indefinite hangs
     let render_timeout = std::time::Duration::from_secs(1200);
@@ -309,15 +392,16 @@ pub async fn render_hyperframes_video(
         })?,
         Err(_) => {
             // Timeout — kill the process
-            let _ = render_child.kill().await;
+            kill_render_process(&mut render_child).await;
+            let _ = logs.finish().await;
             return Err(AppError::FileSystem(
                 "视频渲染超时（20分钟）。请尝试缩短内容或重试。".to_string(),
             ));
         }
     };
 
+    let stderr_output = logs.finish().await;
     if !render_status.success() {
-        let stderr_output = stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
         return Err(AppError::FileSystem(format!(
             "hyperframes render failed with exit code: {:?}\nstderr: {}",
             render_status.code(),
@@ -338,9 +422,9 @@ pub async fn render_hyperframes_video(
     if let Some(ref audio) = audio_path {
         let audio_file = Path::new(audio);
         if !audio_file.exists() {
-            // No audio file, just copy the silent video to output
-            info!("[Hyperframes Render] Audio file not found, using silent video");
-            copy_video_file(&silent_video_str, &output_path)?;
+            return Err(AppError::FileSystem(format!(
+                "Requested audio file not found: {audio}"
+            )));
         } else {
             emit_progress(78.0, "正在合并音频...");
 
@@ -409,6 +493,29 @@ pub fn parse_render_progress(line: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drains_both_pipes_and_keeps_final_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("render.log");
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "i=0; while [ $i -lt 3000 ]; do echo 'stdout progress line'; echo 'stderr progress line' >&2; i=$((i+1)); done; echo 'final failure' >&2; exit 7"]);
+        configure_render_process(&mut command);
+        let mut child = command.spawn().unwrap();
+        let logs = RenderLogs::start(&mut child, std::fs::File::create(&path).unwrap(), |_| {});
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.code(), Some(7));
+        let tail = logs.finish().await;
+        assert!(tail.len() <= 32_768);
+        let full = std::fs::read_to_string(path).unwrap();
+        assert_eq!(full.matches("stdout progress line").count(), 3000);
+        assert_eq!(full.matches("stderr progress line").count(), 3000);
+        assert!(full.contains("final failure"));
+    }
 
     #[test]
     fn test_parse_render_progress_frame_format() {

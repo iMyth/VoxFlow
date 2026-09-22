@@ -7,9 +7,8 @@
 /// Each voice clip is normalized to -16 LUFS (EBU R128) using the `loudnorm` filter
 /// to ensure consistent volume across TTS fragments before concatenation.
 ///
-/// When `sleep_mode` is true, additional audio processing is applied to create a
-/// soothing, sleep-friendly sound: slight pitch reduction, warmth boost (bass EQ),
-/// gentle high-frequency rolloff, and reduced overall loudness target (-20 LUFS).
+/// When `sleep_mode` is true, level speech using measured fixed gains. The caller masters the complete mix
+/// (including BGM) with the shared two-pass sleep processor.
 pub fn build_ffmpeg_args(
     audio_paths: &[String],
     bgm_path: Option<&str>,
@@ -17,6 +16,7 @@ pub fn build_ffmpeg_args(
     gaps_ms: &[i32],
     output_path: &str,
     sleep_mode: bool,
+    gains_db: &[f64],
 ) -> Vec<String> {
     let n = audio_paths.len();
     let mut args = Vec::new();
@@ -32,44 +32,14 @@ pub fn build_ffmpeg_args(
         args.push(bgm.to_string());
     }
 
-    // Single file without BGM or gaps: still normalize for consistency
-    if n == 1 && bgm_path.is_none() && (gaps_ms.is_empty() || gaps_ms[0] == 0) {
-        let mut filter = "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11[voice]".to_string();
-        if sleep_mode {
-            // Sleep mode: warm tone + gentle rolloff + quieter target
-            filter.push_str(
-                ";[voice]equalizer=f=200:t=q:w=0.8:g=3,\
-                 equalizer=f=3000:t=q:w=1.0:g=-2,\
-                 lowpass=f=8000:p=1,\
-                 loudnorm=I=-20:TP=-2:LRA=7[out]",
-            );
-            args.push("-filter_complex".to_string());
-            args.push(filter);
-            args.push("-map".to_string());
-            args.push("[out]".to_string());
-        } else {
-            args.push("-filter_complex".to_string());
-            args.push(filter);
-            args.push("-map".to_string());
-            args.push("[voice]".to_string());
-        }
-        args.push(output_path.to_string());
-        return args;
-    }
-
     let mut filter = String::new();
-
-    // Step 1: Normalize each voice clip to -16 LUFS (EBU R128)
-    // This ensures consistent volume across TTS fragments without distortion.
-    // loudnorm parameters:
-    //   I=-16    target integrated loudness (LUFS)
-    //   TP=-1.5  true peak limit (dBTP) — prevents clipping
-    //   LRA=11   loudness range target (LU) — preserves natural dynamics
     for i in 0..n {
-        filter.push_str(&format!(
-            "[{i}:a]loudnorm=I=-16:TP=-1.5:LRA=11[norm{i}];",
-            i = i
-        ));
+        let leveling = if sleep_mode {
+            format!("volume={:.4}dB", gains_db.get(i).copied().unwrap_or(0.0))
+        } else {
+            "loudnorm=I=-16:TP=-1.5:LRA=11".to_string()
+        };
+        filter.push_str(&format!("[{i}:a]{leveling},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[norm{i}];"));
     }
 
     // Check if any gap > 0 exists between clips
@@ -83,7 +53,7 @@ pub fn build_ffmpeg_args(
             if gap > 0 {
                 let gap_sec = gap as f64 / 1000.0;
                 filter.push_str(&format!(
-                    "anullsrc=r=44100:cl=stereo[sil{s}];[sil{s}]atrim=0:{dur}[gap{s}];",
+                    "anullsrc=r=48000:cl=stereo[sil{s}];[sil{s}]atrim=0:{dur}[gap{s}];",
                     s = i,
                     dur = gap_sec
                 ));
@@ -113,28 +83,18 @@ pub fn build_ffmpeg_args(
         }
     }
 
-    // Sleep mode: apply soothing audio processing to the concatenated voice
-    // - equalizer f=200 g=3: gentle bass warmth (adds body/comfort to voice)
-    // - equalizer f=3000 g=-2: slight upper-mid reduction (less harsh/bright)
-    // - lowpass f=8000: roll off high frequencies (removes sibilance/sharpness)
-    // - loudnorm I=-20: quieter target loudness (sleep-appropriate level)
-    let voice_label = if sleep_mode {
-        filter.push_str(
-            ";[voice]equalizer=f=200:t=q:w=0.8:g=3,\
-             equalizer=f=3000:t=q:w=1.0:g=-2,\
-             lowpass=f=8000:p=1,\
-             loudnorm=I=-20:TP=-2:LRA=7[sleepvoice]",
-        );
-        "[sleepvoice]"
-    } else {
-        "[voice]"
-    };
+    let voice_label = "[voice]";
 
     if bgm_path.is_some() {
         let bgm_idx = n;
+        let mixing = if sleep_mode {
+            "dropout_transition=0:normalize=0"
+        } else {
+            "dropout_transition=2"
+        };
         filter.push_str(&format!(
-            ";[{}:a]volume={}[bgm];{}[bgm]amix=inputs=2:duration=first:dropout_transition=2[out]",
-            bgm_idx, bgm_volume, voice_label
+            ";[{}:a]volume={}[bgm];{}[bgm]amix=inputs=2:duration=first:{}[out]",
+            bgm_idx, bgm_volume, voice_label, mixing
         ));
         args.push("-filter_complex".to_string());
         args.push(filter);
@@ -147,6 +107,10 @@ pub fn build_ffmpeg_args(
         args.push(voice_label.to_string());
     }
 
+    if sleep_mode {
+        // Floating-point intermediate avoids clipping before final mastering.
+        args.extend(["-c:a".to_string(), "pcm_f32le".to_string()]);
+    }
     args.push(output_path.to_string());
     args
 }

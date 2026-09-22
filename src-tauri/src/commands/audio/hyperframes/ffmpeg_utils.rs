@@ -12,25 +12,6 @@ use tokio::process::Command;
 use crate::commands::audio::ffmpeg::find_ffmpeg;
 use crate::core::error::AppError;
 
-/// Build the FFmpeg audio filter chain for sleep mode.
-///
-/// Sleep mode applies tone/volume adjustments WITHOUT changing duration:
-/// - Bass warmth boost (+3dB at 150Hz) — fuller, warmer sound
-/// - High-frequency rolloff (8kHz lowpass) — removes harsh sibilance
-/// - Slight pitch shift down (-0.5 semitones) via rubberband — deeper, calmer voice
-/// - Quieter target loudness (-20 LUFS) — sleep-appropriate volume
-///
-/// CRITICAL: No tempo/speed change is applied. The audio duration must remain
-/// identical to the video duration to maintain sync. The original `asetrate`
-/// approach broke sync (and broke audio entirely for non-22050Hz inputs).
-/// `atempo` would also break sync by changing duration.
-///
-/// This is a single source of truth for the sleep mode filter chain,
-/// used by section_audio.rs, video_merger.rs, and render.rs.
-pub fn build_sleep_mode_audio_filter() -> &'static str {
-    "bass=g=3:f=150,lowpass=f=8000:p=1,loudnorm=I=-20:TP=-2:LRA=7:linear=true"
-}
-
 /// Probe the duration of a media file in seconds using ffprobe.
 fn probe_duration_secs(file_path: &str) -> Result<f64, AppError> {
     let ffmpeg_path = find_ffmpeg();
@@ -97,6 +78,16 @@ pub async fn merge_video_with_audio(
 
     let duration_str = format!("{:.6}", audio_duration_secs);
 
+    // Publish only after a successful merge, preserving any previous good output.
+    let destination = std::path::Path::new(output_path);
+    let extension = destination
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mp4");
+    let temporary =
+        destination.with_file_name(format!(".voxflow-{}.{}", uuid::Uuid::new_v4(), extension));
+    let temporary_str = temporary.to_string_lossy().to_string();
+
     let result = Command::new(&ffmpeg_bin)
         .args([
             "-y",
@@ -116,7 +107,7 @@ pub async fn merge_video_with_audio(
             "192k",
             "-t",
             &duration_str,
-            output_path,
+            &temporary_str,
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -133,20 +124,19 @@ pub async fn merge_video_with_audio(
             "[FFmpeg Utils] ffmpeg merge failed: {}",
             stderr.chars().take(300).collect::<String>()
         );
-        // Fall back to silent video copy so user at least gets visual output,
-        // but log clearly and return Ok to not block the pipeline entirely.
-        // The video will lack audio — this is better than total failure.
-        info!("[FFmpeg Utils] Falling back to silent video (audio will be missing!)");
-        let silent_path = std::path::Path::new(silent_video_path);
-        let output = std::path::Path::new(output_path);
-        std::fs::copy(silent_path, output).map_err(|e| {
-            AppError::FFmpeg(format!(
-                "ffmpeg merge failed and fallback copy also failed: {}",
-                e
-            ))
-        })?;
-        // Return Ok but caller should check — this is a degraded state
-        return Ok(());
+        let _ = std::fs::remove_file(&temporary);
+        return Err(AppError::FFmpeg(format!(
+            "Audio/video merge failed (exit {:?}): {}",
+            result.status.code(),
+            stderr.trim()
+        )));
+    }
+
+    if let Err(error) = std::fs::rename(&temporary, destination) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(AppError::FileSystem(format!(
+            "Failed to publish merged video: {error}"
+        )));
     }
 
     // Clean up the silent video on success
@@ -171,4 +161,93 @@ pub fn copy_video_file(source: &str, destination: &str) -> Result<(), AppError> 
 
     info!("[FFmpeg Utils] Copied video: {} -> {}", source, destination);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires installed FFmpeg and FFprobe"]
+    async fn failed_merge_preserves_previous_output_and_reports_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("audio.wav");
+        let video = dir.path().join("broken.mp4");
+        let output = dir.path().join("output.mp4");
+        let result = std::process::Command::new(find_ffmpeg())
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=24000:cl=mono",
+                "-t",
+                "0.1",
+            ])
+            .arg(&audio)
+            .status()
+            .unwrap();
+        assert!(result.success());
+        std::fs::write(&video, b"invalid video").unwrap();
+        std::fs::write(&output, b"previous good output").unwrap();
+        let error = merge_video_with_audio(
+            video.to_str().unwrap(),
+            audio.to_str().unwrap(),
+            output.to_str().unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("merge failed"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous good output");
+        assert!(video.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+
+        // A subsequent successful merge publishes a playable file with both streams.
+        let status = std::process::Command::new(find_ffmpeg())
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=32x32:r=30",
+                "-t",
+                "0.1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&video)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        merge_video_with_audio(
+            video.to_str().unwrap(),
+            audio.to_str().unwrap(),
+            output.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(!video.exists());
+        let probe = std::process::Command::new(find_ffmpeg().replace("ffmpeg", "ffprobe"))
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "json",
+            ])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(probe.status.success());
+        let metadata: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let streams = metadata["streams"].as_array().unwrap();
+        assert!(streams.iter().any(|s| s["codec_type"] == "audio"));
+        assert!(streams.iter().any(|s| s["codec_type"] == "video"));
+    }
 }

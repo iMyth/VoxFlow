@@ -13,7 +13,7 @@ use crate::core::db::ScriptLineWithMeta;
 use crate::core::error::AppError;
 use crate::core::models::AudioFragment;
 
-use super::ffmpeg_utils::build_sleep_mode_audio_filter;
+use crate::commands::audio::loudness;
 
 /// Result of merging audio for a section.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,10 +34,8 @@ pub struct SectionAudioResult {
 /// - Output: MP3 format, libmp3lame codec, 22050 Hz sample rate, 192 kbps bitrate.
 ///
 /// When `sleep_mode` is true, additional audio processing is applied:
-/// - Slight pitch reduction (0.95x)
-/// - Bass warmth boost (+3dB at 150Hz)
-/// - High-frequency rolloff (8kHz lowpass)
-/// - Quieter target loudness (-20 LUFS instead of -16 LUFS)
+/// - Gentle compression and softened high frequencies
+/// - Two-pass mastering to -21 LUFS / -3 dBTP, without pitch or tempo changes
 ///
 /// Users can control inter-section pauses by setting gap_after_ms on the last line of each section.
 pub async fn merge_section_audio(
@@ -158,6 +156,9 @@ pub async fn merge_section_audio(
         args.push(file_path.clone());
     }
 
+    // Fixed gain changes do not alter sample counts or accumulate timing drift.
+    let gains = loudness::clip_gains(&input_files).await?;
+
     // Build filter_complex string
     let mut filter = String::new();
     let mut segment_labels: Vec<String> = Vec::new();
@@ -166,13 +167,11 @@ pub async fn merge_section_audio(
     for segment in &segments {
         match segment {
             Segment::Audio { input_idx, .. } => {
-                // Resample audio input to 22050 Hz mono WITHOUT per-fragment loudnorm.
-                // Per-fragment loudnorm causes each fragment's actual duration to drift
-                // from its stored duration_ms, leading to cumulative audio-video desync.
-                // Instead, we normalize the entire concatenated output once at the end.
+                // Apply bounded speech gain before resampling, preserving timing.
                 let label = format!("a{}", input_idx);
                 let filter_chain = format!(
-                    "[{i}:a]aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono[{l}];",
+                    "[{i}:a]volume={gain:.4}dB,aresample=22050,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS[{l}];",
+                    gain = gains[*input_idx],
                     i = input_idx,
                     l = label
                 );
@@ -194,26 +193,12 @@ pub async fn merge_section_audio(
         }
     }
 
-    // Concat all segments, then apply loudnorm ONCE on the entire output.
-    // This preserves per-fragment timing accuracy while still normalizing loudness.
+    // Concatenate leveled fragments without changing the per-line timing.
     let n = segment_labels.len();
     for label in &segment_labels {
         filter.push_str(label);
     }
-    if sleep_mode {
-        // Sleep mode: concat → sleep audio processing (pitch + bass + lowpass + loudnorm)
-        filter.push_str(&format!(
-            "concat=n={}:v=0:a=1[raw];[raw]{}[out]",
-            n,
-            build_sleep_mode_audio_filter()
-        ));
-    } else {
-        // Normal mode: concat → single loudnorm pass
-        filter.push_str(&format!(
-            "concat=n={}:v=0:a=1[raw];[raw]loudnorm=I=-16:TP=-1.5:LRA=11:linear=true[out]",
-            n
-        ));
-    }
+    filter.push_str(&format!("concat=n={}:v=0:a=1[out]", n));
 
     args.push("-filter_complex".to_string());
     args.push(filter);
@@ -251,6 +236,9 @@ pub async fn merge_section_audio(
 
     match result {
         Ok(output) if output.status.success() => {
+            if sleep_mode {
+                loudness::master_sleep(&output_path_clone, &output_path_clone, false).await?;
+            }
             // Use ffprobe to get the ACTUAL output duration instead of the calculated one.
             // This is critical for audio-video sync: loudnorm and resampling can shift
             // the actual duration by tens of milliseconds per fragment, which accumulates.
