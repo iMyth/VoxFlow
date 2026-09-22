@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   check:
@@ -20,6 +19,7 @@ jobs:
             targets: ''
 
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -27,15 +27,8 @@ jobs:
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            pkg-config
+        timeout-minutes: 15
+        run: bash scripts/install-linux-deps.sh
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@master

@@ -198,16 +198,23 @@ fn infer_generic_family(value: &str) -> &'static str {
 /// Ensure required Hyperframes interfaces exist (window.__hf and window.__timelines).
 /// This safety-net prevents render failures when the LLM omits required JS setup.
 pub fn ensure_hyperframes_interfaces(html: &str, duration: f64) -> String {
+    let composition_id = find_composition_tag_range(html)
+        .and_then(|(start, end)| extract_attr_value(&html[start..=end], "data-composition-id"))
+        .unwrap_or("ai-generated");
+    // Encode for JavaScript and avoid accidentally closing the script element.
+    let timeline_key = serde_json::to_string(composition_id)
+        .unwrap()
+        .replace('<', "\\u003c");
     let fallback_script = format!(
         r#"<script>
 // === Hyperframes safety-net (always injected) ===
 (function() {{
   window.__timelines = window.__timelines || {{}};
-  if (!window.__timelines['ai-generated']) {{
+  if (!window.__timelines[{timeline_key}]) {{
     if (typeof gsap !== 'undefined') {{
-      window.__timelines['ai-generated'] = gsap.timeline({{ paused: true }});
+      window.__timelines[{timeline_key}] = gsap.timeline({{ paused: true }});
     }} else {{
-      window.__timelines['ai-generated'] = {{ seek: function() {{}}, duration: function() {{ return {dur:.2}; }} }};
+      window.__timelines[{timeline_key}] = {{ seek: function() {{}}, duration: function() {{ return {dur:.2}; }} }};
     }}
   }}
   window.__hf = window.__hf || {{}};
@@ -589,9 +596,17 @@ window.__hf = { duration: 10, seek: function() {} };
             "Should always force correct duration"
         );
         assert!(
-            fixed.contains("if (!window.__timelines['ai-generated'])"),
+            fixed.contains("if (!window.__timelines[\"ai-generated\"])"),
             "Safety-net should check timeline before creating"
         );
+    }
+
+    #[test]
+    fn safety_net_uses_actual_composition_id() {
+        let html = r#"<html><body><div data-composition-id="chapter-7"></div></body></html>"#;
+        let fixed = ensure_hyperframes_interfaces(html, 5.0);
+        assert!(fixed.contains(r#"window.__timelines["chapter-7"]"#));
+        assert!(!fixed.contains("ai-generated"));
     }
 
     #[test]

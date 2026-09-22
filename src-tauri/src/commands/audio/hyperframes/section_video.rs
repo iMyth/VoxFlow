@@ -8,13 +8,11 @@
 //! 5. Rendering HTML to MP4 via `npx hyperframes render`
 //! 6. Merging audio into the final video
 
-use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use log::info;
 use tauri::{Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -24,8 +22,8 @@ use crate::core::db::Database;
 use crate::core::error::AppError;
 
 use super::agent::{generate_with_agent, AgentConfig};
-use super::ffmpeg_utils::{copy_video_file, merge_video_with_audio};
-use super::render::parse_render_progress;
+use super::ffmpeg_utils::merge_video_with_audio;
+use super::render::{configure_render_process, RenderLogs, HYPERFRAMES_PACKAGE, RENDER_LOCK};
 use super::section_audio::merge_section_audio;
 use super::section_types::{SectionProgress, SectionStyleConfig, SectionVideoResult};
 use super::timeline::compute_section_timeline;
@@ -278,6 +276,7 @@ pub async fn render_section_video(
     project_id: String,
     section_id: String,
 ) -> Result<SectionVideoResult, AppError> {
+    let _render_guard = RENDER_LOCK.lock().await;
     let start_time = std::time::Instant::now();
     info!(
         "[Section Render] ===== STARTING VIDEO RENDERING ===== section={}",
@@ -404,38 +403,27 @@ pub async fn render_section_video(
         info!("[Section Render] Starting render attempt {}...", attempt);
 
         let mut render_cmd = Command::new(&node_env.npx);
-        // Use --prefer-offline to avoid downloading a non-existent "latest" version
-        // when a cached version already works. Also use version range "hyperframes@0.6"
-        // to get the latest compatible cached version.
+        // Pin the renderer and use one Chrome worker to bound memory use.
         render_cmd
             .args([
+                "--yes",
                 "--prefer-offline",
-                "hyperframes",
+                HYPERFRAMES_PACKAGE,
                 "render",
+                "--workers",
+                "1",
                 "--output",
                 &silent_video_str,
             ])
-            .current_dir(&composition_dir)
-            // stdout must be null (not piped-without-reader): Chrome writes progress
-            // to stdout. If we pipe it but never drain, the OS buffer (64 KB) fills up
-            // and the render process deadlocks on write.
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+            .current_dir(&composition_dir);
+        configure_render_process(&mut render_cmd);
+        let log_file =
+            std::fs::File::create(composition_dir.join(format!("render-attempt-{attempt}.log")))
+                .map_err(|e| AppError::FileSystem(format!("Cannot create render log: {e}")))?;
         if !node_env.bin_dir.is_empty() {
             let path = super::render::prepend_to_path(&node_env.bin_dir);
             render_cmd.env("PATH", &path);
         }
-        // Create a new process group so we can kill the entire tree on timeout.
-        // Without this, killing npx leaves Chrome child processes as zombies.
-        #[cfg(unix)]
-        unsafe {
-            render_cmd.pre_exec(|| {
-                // Set this process as the leader of a new process group
-                libc::setpgid(0, 0);
-                Ok(())
-            });
-        }
-
         let mut render_child = match render_cmd.spawn() {
             Ok(child) => {
                 info!("[Section Render] Process spawned, PID: {:?}", child.id());
@@ -447,33 +435,16 @@ pub async fn render_section_video(
             }
         };
 
-        // Read stderr for progress and error capture
-        let stderr_capture = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let stderr_capture_clone = stderr_capture.clone();
-
-        if let Some(stderr) = render_child.stderr.take() {
-            let app_clone = app.clone();
-            let section_id_clone = section_id.clone();
-            tokio::spawn(async move {
-                let reader = BufReader::new(stderr);
-                let mut lines = reader.lines();
-                let mut line_count = 0;
-                while let Ok(Some(line)) = lines.next_line().await {
-                    line_count += 1;
-                    if let Ok(mut captured) = stderr_capture_clone.lock() {
-                        captured.push_str(&line);
-                        captured.push('\n');
-                    }
-                    if line_count % 10 == 0 {
-                        info!("[Section Render] stderr line {}: {}", line_count, line);
-                    }
-                    if let Some(pct) = parse_render_progress(&line) {
-                        let mapped = 55.0 + pct * 33.0;
-                        emit_section_progress(&app_clone, &section_id_clone, mapped, "rendering");
-                    }
-                }
-            });
-        }
+        let app_clone = app.clone();
+        let section_id_clone = section_id.clone();
+        let logs = RenderLogs::start(&mut render_child, log_file, move |pct| {
+            emit_section_progress(
+                &app_clone,
+                &section_id_clone,
+                55.0 + pct * 33.0,
+                "rendering",
+            );
+        });
 
         // Wait for render process with dynamic timeout
         let render_result = timeout(
@@ -481,6 +452,11 @@ pub async fn render_section_video(
             render_child.wait(),
         )
         .await;
+
+        if render_result.is_err() {
+            super::render::kill_render_process(&mut render_child).await;
+        }
+        let stderr_output = logs.finish().await;
 
         match render_result {
             Ok(Ok(status)) if status.success() => {
@@ -496,7 +472,6 @@ pub async fn render_section_video(
             }
             Ok(Ok(status)) => {
                 // Render failed with non-zero exit
-                let stderr_output = stderr_capture.lock().map(|s| s.clone()).unwrap_or_default();
                 let err_msg = format!(
                     "hyperframes render failed (exit {:?}): {}",
                     status.code(),
@@ -540,23 +515,6 @@ pub async fn render_section_video(
                     "[Section Render] Render timed out after {} minutes, killing process tree...",
                     timeout_mins
                 );
-
-                // Kill the entire process tree, not just the parent npx process.
-                // On macOS/Unix, kill the process group to ensure Chrome child processes
-                // are also terminated. Otherwise they become zombies consuming 100% CPU.
-                if let Some(_pid) = render_child.id() {
-                    #[cfg(unix)]
-                    {
-                        // Kill the entire process group (negative PID = kill group)
-                        // Safe because we set this process as its own group leader via setpgid
-                        unsafe {
-                            libc::kill(-(_pid as i32), libc::SIGKILL);
-                        }
-                        info!("[Section Render] Sent SIGKILL to process group {}", _pid);
-                    }
-                }
-                // Also try the standard kill as fallback
-                let _ = render_child.kill().await;
 
                 last_error = Some(format!(
                     "视频渲染超时（{}分钟）。可能是视频过长，请尝试缩短段落或重试。",
@@ -618,8 +576,9 @@ pub async fn render_section_video(
         )
         .await?;
     } else {
-        info!("[Section Render] No audio file, copying silent video to output");
-        copy_video_file(&silent_video_str, &output_path_str)?;
+        return Err(AppError::FileSystem(
+            "Section audio is missing; regenerate section audio before rendering".to_string(),
+        ));
     }
 
     // --- Done ---

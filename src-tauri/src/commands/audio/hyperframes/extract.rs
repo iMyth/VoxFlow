@@ -15,15 +15,15 @@ pub fn extract_html(response: &str) -> Result<String, String> {
     let trimmed = cleaned.trim();
 
     if let Some(html) = try_extract_raw_html(trimmed) {
-        return Ok(html);
+        return require_complete_document(html);
     }
 
     if let Some(html) = try_extract_from_code_fences(trimmed) {
-        return Ok(html);
+        return require_complete_document(html);
     }
 
     if let Some(html) = try_extract_embedded_html(trimmed) {
-        return Ok(html);
+        return require_complete_document(html);
     }
 
     let preview: String = trimmed.chars().take(300).collect();
@@ -31,6 +31,16 @@ pub fn extract_html(response: &str) -> Result<String, String> {
         "LLM response does not contain valid HTML.\n\nResponse preview (first 300 chars):\n{preview}\n\n\
          Hint: Ensure the model outputs raw HTML starting with <!DOCTYPE html> or <html>."
     ))
+}
+
+/// Reject truncated output before any safety-net scripts can mask it.
+fn require_complete_document(html: String) -> Result<String, String> {
+    let lower = html.to_ascii_lowercase();
+    if !lower.contains("</body>") || !lower.contains("</html>") {
+        return Err("Generated HTML is incomplete (missing </body> or </html>). Regenerate a complete, simpler composition; do not continue the truncated fragment.".to_string());
+    }
+    let end = lower.rfind("</html>").unwrap() + 7;
+    Ok(html[..end].to_string())
 }
 
 /// Strip `<think>...` blocks from the response.
@@ -193,8 +203,27 @@ mod tests {
     fn test_extract_html_truncated_no_closing_tag() {
         let input =
             "<!DOCTYPE html>\n<html><head><title>Test</title></head><body><div>Long content that gets cut off...";
-        let result = extract_html(input).unwrap();
-        assert!(result.starts_with("<!DOCTYPE html>"));
+        assert!(extract_html(input).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_css_in_all_response_formats() {
+        let fragment = "<!DOCTYPE html><html><head><style>.scene { top:";
+        for input in [
+            fragment.to_string(),
+            format!("```html\n{fragment}\n```"),
+            format!("Here is the composition: {fragment}"),
+        ] {
+            assert!(extract_html(&input).is_err());
+        }
+    }
+
+    #[test]
+    fn strips_trailing_explanation() {
+        assert_eq!(
+            extract_html("<html><body>完整</body></html> explanation").unwrap(),
+            "<html><body>完整</body></html>"
+        );
     }
 
     #[test]
